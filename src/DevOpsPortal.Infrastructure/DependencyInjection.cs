@@ -5,6 +5,7 @@ using DevOpsPortal.Infrastructure.Build;
 using DevOpsPortal.Infrastructure.Deployments;
 using DevOpsPortal.Infrastructure.Email;
 using DevOpsPortal.Infrastructure.Git;
+using DevOpsPortal.Infrastructure.Notifications;
 using DevOpsPortal.Infrastructure.Secrets;
 using DevOpsPortal.Infrastructure.Persistence;
 using DevOpsPortal.Infrastructure.Remote;
@@ -55,6 +56,10 @@ public static class DependencyInjection
 
         services.Configure<SmtpSettings>(configuration.GetSection(SmtpSettings.SectionName));
         services.AddSingleton<IEmailSender, SmtpEmailSender>();
+        // Registered as INotificationProvider (not the concrete type) so
+        // INotificationService's IEnumerable<INotificationProvider> broadcast can
+        // add Slack/Teams/webhook providers later with no caller change.
+        services.AddSingleton<INotificationProvider, EmailNotificationProvider>();
 
         // Jenkins is reached over plain HTTP(S) from wherever the portal runs — unlike
         // Phase 5's remote Docker gap, no socket/SSH/agent infrastructure is needed, so

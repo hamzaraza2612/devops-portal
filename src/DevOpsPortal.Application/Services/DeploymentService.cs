@@ -1,5 +1,4 @@
 using System.Linq.Expressions;
-using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using DevOpsPortal.Application.Abstractions;
 using DevOpsPortal.Application.Common;
@@ -9,8 +8,6 @@ using DevOpsPortal.Domain.Constants;
 using DevOpsPortal.Domain.Entities;
 using DevOpsPortal.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
 
 namespace DevOpsPortal.Application.Services;
 
@@ -19,10 +16,15 @@ public partial class DeploymentService(
     ICurrentUserService currentUser,
     IAuditService auditService,
     IDeploymentJobQueue jobQueue,
-    IEmailSender emailSender,
-    IConfiguration configuration,
-    ILogger<DeploymentService> logger) : IDeploymentService
+    INotificationService notificationService) : IDeploymentService
 {
+    /// <summary>How long an approval-requested notification's preview deep link
+    /// stays resolvable (master requirements §4: approval links/tokens must
+    /// expire). Long enough that a CTO/approver on leave for a few days can
+    /// still use the link; the underlying PromotionRequest/ProductionApproval
+    /// itself never expires — only the read-only preview link does.</summary>
+    private const int ApprovalTokenExpiryHours = 168; // 7 days
+
     private static readonly Dictionary<string, string> PromotePermissionByEnvironment = new()
     {
         [EnvironmentNames.Qa] = PermissionCodes.DeploymentsPromoteQa,
@@ -121,6 +123,52 @@ public partial class DeploymentService(
         await db.PromotionRequests.Where(p => p.Id == promotionRequestId).Select(PromotionProjection()).FirstOrDefaultAsync(cancellationToken)
             ?? throw new NotFoundException("PromotionRequest", promotionRequestId);
 
+    /// <summary>Unauthenticated, read-only — resolves an approval-requested
+    /// notification's deep-link token to a preview with no secrets (master
+    /// requirements §4). Never a path to approve/reject: there is no decide-
+    /// by-token action anywhere in this service. Looks up by the token's hash
+    /// directly (same pattern as an API-key/password-reset-token lookup) —
+    /// the token itself is 256 bits of random entropy, so there is nothing
+    /// meaningful for a timing side-channel on the hash-equality lookup to
+    /// leak; ApprovalTokenHelper.Verify's constant-time compare exists for
+    /// defense-in-depth on top of that, not because a plain indexed lookup
+    /// here would be practically exploitable.</summary>
+    public async Task<ApprovalPreviewDto> GetPromotionPreviewByTokenAsync(string token, CancellationToken cancellationToken = default)
+    {
+        var hash = ApprovalTokenHelper.Hash(token);
+        var promotion = await db.PromotionRequests
+            .Include(p => p.Application).Include(p => p.FromEnvironmentDefinition).Include(p => p.ToEnvironmentDefinition)
+            .FirstOrDefaultAsync(p => p.ApprovalTokenHash == hash, cancellationToken)
+            ?? throw new NotFoundException("Approval", token);
+
+        var requestedByUsername = await db.Users.Where(u => u.Id == promotion.RequestedByUserId).Select(u => u.Username).FirstOrDefaultAsync(cancellationToken);
+
+        return new ApprovalPreviewDto(
+            promotion.Id, promotion.Application.Name, promotion.FromEnvironmentDefinition.Name, promotion.ToEnvironmentDefinition.Name,
+            promotion.CommitSha, requestedByUsername, promotion.RequestedAt, promotion.Status,
+            promotion.ApprovalTokenExpiresAt, promotion.ApprovalTokenExpiresAt < DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>Same contract as GetPromotionPreviewByTokenAsync, for the
+    /// CTO-specific ProductionApproval record.</summary>
+    public async Task<ApprovalPreviewDto> GetProductionApprovalPreviewByTokenAsync(string token, CancellationToken cancellationToken = default)
+    {
+        var hash = ApprovalTokenHelper.Hash(token);
+        var approval = await db.ProductionApprovals
+            .Include(a => a.PromotionRequest).ThenInclude(p => p.Application)
+            .Include(a => a.PromotionRequest).ThenInclude(p => p.ToEnvironmentDefinition)
+            .FirstOrDefaultAsync(a => a.ApprovalTokenHash == hash, cancellationToken)
+            ?? throw new NotFoundException("Approval", token);
+
+        var requestedByUsername = await db.Users
+            .Where(u => u.Id == approval.PromotionRequest.RequestedByUserId).Select(u => u.Username).FirstOrDefaultAsync(cancellationToken);
+
+        return new ApprovalPreviewDto(
+            approval.Id, approval.PromotionRequest.Application.Name, null, approval.PromotionRequest.ToEnvironmentDefinition.Name,
+            approval.PromotionRequest.CommitSha, requestedByUsername, approval.RequestedAt, approval.Status,
+            approval.ExpiresAt, approval.ExpiresAt < DateTimeOffset.UtcNow);
+    }
+
     // ------------------------------------------------------------ DEV deploy
 
     public async Task<DeploymentDto> DeployToDevAsync(
@@ -194,6 +242,7 @@ public partial class DeploymentService(
         if (alreadyPending)
             throw new ConflictException($"A promotion request into '{toEnv.Name}' is already pending approval.");
 
+        var (rawToken, tokenHash) = ApprovalTokenHelper.Generate();
         var promotion = new PromotionRequest
         {
             ApplicationId = applicationId,
@@ -202,6 +251,8 @@ public partial class DeploymentService(
             SourceDeploymentId = sourceDeployment.Id,
             CommitSha = sourceDeployment.CommitSha,
             RequestedByUserId = userId,
+            ApprovalTokenHash = tokenHash,
+            ApprovalTokenExpiresAt = DateTimeOffset.UtcNow.AddHours(ApprovalTokenExpiryHours),
         };
         db.PromotionRequests.Add(promotion);
         await db.SaveChangesAsync(cancellationToken);
@@ -210,7 +261,25 @@ public partial class DeploymentService(
             details: $"{application.Name}: {fromEnv.Name} -> {toEnv.Name}, commit {promotion.CommitSha}", cancellationToken: cancellationToken);
 
         if (toEnv.IsProductionLike)
-            await CreateProductionApprovalAsync(promotion, application, cancellationToken);
+        {
+            // Production's notification is CTO-flavored and scoped to the
+            // ProductionApproval record specifically (see CreateProductionApprovalAsync)
+            // — deployments.approve.production is the same permission that would
+            // otherwise gate the generic notification below, so sending both would
+            // just double-email the same people about the same request.
+            await CreateProductionApprovalAsync(promotion, cancellationToken);
+        }
+        else
+        {
+            // Re-load with the navigation properties NotifyPromotionApprovalRequestedAsync
+            // needs (Application/From/ToEnvironmentDefinition) — 'promotion' above only has
+            // scalar FKs populated after SaveChangesAsync.
+            var loaded = await db.PromotionRequests
+                .Include(p => p.Application).Include(p => p.FromEnvironmentDefinition).Include(p => p.ToEnvironmentDefinition)
+                .FirstAsync(p => p.Id == promotion.Id, cancellationToken);
+            var approvePermissionCode = ApprovePermissionByEnvironment[toEnv.Name];
+            await notificationService.NotifyPromotionApprovalRequestedAsync(loaded, approvePermissionCode, rawToken, cancellationToken);
+        }
 
         return await GetPromotionAsync(promotion.Id, cancellationToken);
     }
@@ -400,57 +469,25 @@ public partial class DeploymentService(
 
     // -------------------------------------------------------------- helpers
 
-    private async Task CreateProductionApprovalAsync(PromotionRequest promotion, ManagedApplication application, CancellationToken cancellationToken)
+    private async Task CreateProductionApprovalAsync(PromotionRequest promotion, CancellationToken cancellationToken)
     {
+        var (rawToken, tokenHash) = ApprovalTokenHelper.Generate();
         var approval = new ProductionApproval
         {
             PromotionRequestId = promotion.Id,
-            ApprovalToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)),
+            ApprovalTokenHash = tokenHash,
+            ExpiresAt = DateTimeOffset.UtcNow.AddHours(ApprovalTokenExpiryHours),
         };
         db.ProductionApprovals.Add(approval);
         await db.SaveChangesAsync(cancellationToken);
 
         await auditService.LogAsync("production_approval.requested", AuditResult.Success, "ProductionApproval", approval.Id.ToString(),
-            details: $"{application.Name} commit {promotion.CommitSha}", cancellationToken: cancellationToken);
+            details: $"promotion {promotion.Id} commit {promotion.CommitSha}", cancellationToken: cancellationToken);
 
-        // Permission-based, not role-name-based: whoever currently holds
-        // deployments.approve.production gets notified, consistent with how every
-        // other authorization check in this service works (not a hardcoded "CTO"
-        // role — a tenant could grant this permission to a differently-named role).
-        var ctoEmails = await db.Users
-            .Where(u => u.IsActive && u.UserRoles.Any(ur =>
-                ur.Role.RolePermissions.Any(rp => rp.Permission.Code == PermissionCodes.DeploymentsApproveProduction)))
-            .Select(u => u.Email)
-            .ToListAsync(cancellationToken);
-
-        if (ctoEmails.Count == 0)
-        {
-            logger.LogWarning(
-                "Production approval requested for application {ApplicationName} but no active user currently holds '{Permission}' to notify.",
-                application.Name, PermissionCodes.DeploymentsApproveProduction);
-            return;
-        }
-
-        var baseUrl = configuration["Portal:BaseUrl"];
-        var reference = string.IsNullOrWhiteSpace(baseUrl)
-            ? $"Approval reference: {approval.ApprovalToken}"
-            : $"Review at: {baseUrl.TrimEnd('/')}/approvals/{approval.ApprovalToken}";
-
-        var body =
-            "A production deployment approval has been requested.\n\n" +
-            $"Application: {application.Name}\n" +
-            $"Commit: {promotion.CommitSha}\n" +
-            $"Requested by: {currentUser.Username}\n\n" +
-            $"{reference}\n\n" +
-            "Log in to the DevOps Portal to review and approve or reject this request.";
-
-        var sent = await emailSender.SendAsync(
-            new EmailMessage(ctoEmails, $"Production approval requested: {application.Name}", body), cancellationToken);
-
-        approval.EmailRecipients = string.Join(",", ctoEmails);
-        if (sent)
-            approval.EmailSentAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(cancellationToken);
+        // Re-load with the navigation property NotifyProductionApprovalRequestedAsync
+        // needs — 'promotion' as passed in doesn't necessarily have Application loaded.
+        var loaded = await db.PromotionRequests.Include(p => p.Application).FirstAsync(p => p.Id == promotion.Id, cancellationToken);
+        await notificationService.NotifyProductionApprovalRequestedAsync(loaded, approval, rawToken, cancellationToken);
     }
 
     private Guid RequireUserId() => currentUser.UserId ?? throw new ForbiddenException("Not authenticated.");
@@ -549,10 +586,19 @@ public partial class DeploymentService(
         p.ToEnvironmentDefinitionId, p.ToEnvironmentDefinition.Name,
         p.SourceDeploymentId, p.CommitSha,
         p.Status, p.RequestedByUserId, db.Users.Where(u => u.Id == p.RequestedByUserId).Select(u => u.Username).FirstOrDefault(), p.RequestedAt,
-        p.DecidedByUserId, p.DecidedAt, p.DecisionNotes,
+        p.DecidedByUserId,
+        p.DecidedByUserId != null ? db.Users.Where(u => u.Id == p.DecidedByUserId).Select(u => u.Username).FirstOrDefault() : null,
+        p.DecidedAt, p.DecisionNotes, p.NotifiedAt,
         p.ToEnvironmentDefinition.IsProductionLike,
         p.ProductionApproval != null ? p.ProductionApproval.Status : (ApprovalStatus?)null,
-        p.ProductionApproval != null ? p.ProductionApproval.EmailSentAt : null);
+        p.ProductionApproval != null ? p.ProductionApproval.DecidedByUserId : null,
+        p.ProductionApproval != null && p.ProductionApproval.DecidedByUserId != null
+            ? db.Users.Where(u => u.Id == p.ProductionApproval.DecidedByUserId).Select(u => u.Username).FirstOrDefault()
+            : null,
+        p.ProductionApproval != null ? p.ProductionApproval.DecidedAt : null,
+        p.ProductionApproval != null ? p.ProductionApproval.NotifiedAt : null,
+        db.Deployments.Where(d => d.PromotionRequestId == p.Id).OrderByDescending(d => d.RequestedAt).Select(d => (Guid?)d.Id).FirstOrDefault(),
+        db.Deployments.Where(d => d.PromotionRequestId == p.Id).OrderByDescending(d => d.RequestedAt).Select(d => (DeploymentStatus?)d.Status).FirstOrDefault());
 
     [GeneratedRegex("^[0-9a-fA-F]{7,40}$")]
     private static partial Regex CommitShaPattern();

@@ -24,6 +24,7 @@ public static class DependencyInjection
         services.AddScoped<IBuildServerService, BuildServerService>();
         services.AddScoped<IBuildService, BuildService>();
         services.AddScoped<ISecretReferenceService, SecretReferenceService>();
+        services.AddScoped<INotificationService, NotificationService>();
         return services;
     }
 }

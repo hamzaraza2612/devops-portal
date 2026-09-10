@@ -225,7 +225,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         modelBuilder.Entity<PromotionRequest>(b =>
         {
             b.Property(p => p.CommitSha).HasMaxLength(64).IsRequired();
+            b.Property(p => p.ApprovalTokenHash).HasMaxLength(100).IsRequired();
             b.HasIndex(p => new { p.ApplicationId, p.ToEnvironmentDefinitionId, p.Status });
+            b.HasIndex(p => p.ApprovalTokenHash).IsUnique();
             b.HasOne(p => p.Application).WithMany()
                 .HasForeignKey(p => p.ApplicationId).OnDelete(DeleteBehavior.Restrict);
             b.HasOne(p => p.FromEnvironmentDefinition).WithMany()
@@ -239,8 +241,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         modelBuilder.Entity<ProductionApproval>(b =>
         {
             b.HasIndex(a => a.PromotionRequestId).IsUnique();
-            b.HasIndex(a => a.ApprovalToken).IsUnique();
-            b.Property(a => a.ApprovalToken).HasMaxLength(100).IsRequired();
+            b.HasIndex(a => a.ApprovalTokenHash).IsUnique();
+            b.Property(a => a.ApprovalTokenHash).HasMaxLength(100).IsRequired();
             b.HasOne(a => a.PromotionRequest).WithOne(p => p.ProductionApproval)
                 .HasForeignKey<ProductionApproval>(a => a.PromotionRequestId).OnDelete(DeleteBehavior.Cascade);
         });

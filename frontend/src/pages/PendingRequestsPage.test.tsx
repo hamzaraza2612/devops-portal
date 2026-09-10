@@ -47,11 +47,18 @@ const qaPromotion: PromotionRequestDto = {
   requestedByUsername: 'developer1',
   requestedAt: '2025-01-01T00:00:00Z',
   decidedByUserId: null,
+  decidedByUsername: null,
   decidedAt: null,
   decisionNotes: null,
+  notifiedAt: null,
   requiresCtoApproval: false,
   ctoApprovalStatus: null,
-  ctoEmailSentAt: null,
+  ctoDecidedByUserId: null,
+  ctoDecidedByUsername: null,
+  ctoDecidedAt: null,
+  ctoNotifiedAt: null,
+  linkedDeploymentId: null,
+  linkedDeploymentStatus: null,
 };
 
 const uatPromotion: PromotionRequestDto = { ...qaPromotion, id: 'promo-uat', toEnvironmentDefinitionId: 'uat', toEnvironmentName: 'UAT' };

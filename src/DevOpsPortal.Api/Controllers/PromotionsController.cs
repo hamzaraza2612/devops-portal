@@ -42,4 +42,20 @@ public class PromotionsController(IDeploymentService deploymentService) : Contro
     [HttpPost("{id:guid}/deploy")]
     public async Task<IActionResult> Deploy(Guid id, CancellationToken cancellationToken) =>
         Ok(await deploymentService.DeployApprovedPromotionAsync(id, cancellationToken));
+
+    /// <summary>The one deliberately unauthenticated endpoint on this controller —
+    /// lets an approval-requested notification email deep-link to a read-only
+    /// preview without requiring the recipient to log in first. Never a path to
+    /// approve/reject anything (master requirements §4) — see
+    /// ApprovalTokenHelper's and IDeploymentService.GetPromotionPreviewByTokenAsync's
+    /// doc comments for the full rationale.</summary>
+    [HttpGet("by-token/{token}")]
+    [AllowAnonymous]
+    public async Task<IActionResult> GetPreviewByToken(string token, CancellationToken cancellationToken) =>
+        Ok(await deploymentService.GetPromotionPreviewByTokenAsync(token, cancellationToken));
+
+    [HttpGet("production-approvals/by-token/{token}")]
+    [AllowAnonymous]
+    public async Task<IActionResult> GetProductionApprovalPreviewByToken(string token, CancellationToken cancellationToken) =>
+        Ok(await deploymentService.GetProductionApprovalPreviewByTokenAsync(token, cancellationToken));
 }
