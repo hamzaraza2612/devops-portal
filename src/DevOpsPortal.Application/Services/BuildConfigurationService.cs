@@ -14,7 +14,7 @@ public class BuildConfigurationService(IAppDbContext db, IAuditService auditServ
             throw new NotFoundException("Application", applicationId);
 
         var config = await db.BuildConfigurations.FirstOrDefaultAsync(bc => bc.ApplicationId == applicationId, cancellationToken);
-        return config is null ? null : ToDto(config);
+        return config is null ? null : await ToDtoAsync(config, cancellationToken);
     }
 
     public async Task<BuildConfigurationDto> UpsertAsync(
@@ -26,6 +26,13 @@ public class BuildConfigurationService(IAppDbContext db, IAuditService auditServ
         ValidateRelativePathIfSet(request.ProjectOrSolutionPath, nameof(request.ProjectOrSolutionPath));
         ValidateRelativePathIfSet(request.DockerfilePath, nameof(request.DockerfilePath));
 
+        if (request.BuildServerId is { } buildServerId &&
+            !await db.BuildServers.AnyAsync(bs => bs.Id == buildServerId, cancellationToken))
+            throw new ValidationException($"Build server '{buildServerId}' was not found.");
+
+        if (request.BuildServerId is not null && string.IsNullOrWhiteSpace(request.JobName))
+            throw new ValidationException("JobName is required when a BuildServerId is configured.");
+
         var config = await db.BuildConfigurations.FirstOrDefaultAsync(bc => bc.ApplicationId == applicationId, cancellationToken);
         var isNew = config is null;
         config ??= new BuildConfiguration { ApplicationId = applicationId };
@@ -36,6 +43,10 @@ public class BuildConfigurationService(IAppDbContext db, IAuditService auditServ
         config.ImageRegistry = NormalizeOrNull(request.ImageRegistry);
         config.ImageRepository = NormalizeOrNull(request.ImageRepository);
         config.ImageTagStrategy = request.ImageTagStrategy;
+        config.BuildServerId = request.BuildServerId;
+        config.JobName = NormalizeOrNull(request.JobName);
+        config.SdkVersion = NormalizeOrNull(request.SdkVersion);
+        config.PublishArguments = NormalizeOrNull(request.PublishArguments);
         config.UpdatedAt = DateTimeOffset.UtcNow;
 
         if (isNew)
@@ -45,7 +56,7 @@ public class BuildConfigurationService(IAppDbContext db, IAuditService auditServ
         await auditService.LogAsync(isNew ? "buildconfiguration.create" : "buildconfiguration.update", AuditResult.Success,
             "BuildConfiguration", config.Id.ToString(), details: $"application {applicationId}", cancellationToken: cancellationToken);
 
-        return ToDto(config);
+        return await ToDtoAsync(config, cancellationToken);
     }
 
     private static void ValidateRelativePathIfSet(string? path, string fieldName)
@@ -56,7 +67,21 @@ public class BuildConfigurationService(IAppDbContext db, IAuditService auditServ
 
     private static string? NormalizeOrNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
-    private static BuildConfigurationDto ToDto(BuildConfiguration c) => new(
-        c.Id, c.ApplicationId, c.ProjectOrSolutionPath, c.PublishConfiguration, c.DockerfilePath,
-        c.ImageRegistry, c.ImageRepository, c.ImageTagStrategy, c.CreatedAt, c.UpdatedAt);
+    private async Task<BuildConfigurationDto> ToDtoAsync(BuildConfiguration c, CancellationToken cancellationToken)
+    {
+        string? buildServerName = null;
+        if (c.BuildServerId is { } buildServerId)
+        {
+            buildServerName = await db.BuildServers
+                .Where(bs => bs.Id == buildServerId)
+                .Select(bs => bs.Name)
+                .FirstOrDefaultAsync(cancellationToken);
+        }
+
+        return new BuildConfigurationDto(
+            c.Id, c.ApplicationId, c.ProjectOrSolutionPath, c.PublishConfiguration, c.DockerfilePath,
+            c.ImageRegistry, c.ImageRepository, c.ImageTagStrategy,
+            c.BuildServerId, buildServerName, c.JobName, c.SdkVersion, c.PublishArguments,
+            c.CreatedAt, c.UpdatedAt);
+    }
 }

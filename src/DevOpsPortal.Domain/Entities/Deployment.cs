@@ -34,6 +34,16 @@ public class Deployment
     /// <summary>Free-form build/version label (e.g. a CI build number), independent of CommitSha.</summary>
     public string? VersionLabel { get; set; }
 
+    /// <summary>The immutable Release this deployment was built from, when the
+    /// Modern (Jenkins → Docker image) pipeline produced one (master requirements
+    /// §6: "Deployment should reference an immutable release"). Null for every
+    /// Legacy-path deployment, and for every Modern-path deployment too until a
+    /// future phase wires deploy-from-release request creation into
+    /// IDeploymentService — see PROJECT_STATE.md's Phase 6 "Known limitations".
+    /// Purely additive: no existing deployment behavior reads or requires this.</summary>
+    public Guid? ReleaseId { get; set; }
+    public Release? Release { get; set; }
+
     public DeploymentStatus Status { get; set; } = DeploymentStatus.Pending;
 
     public bool IsRollback { get; set; }

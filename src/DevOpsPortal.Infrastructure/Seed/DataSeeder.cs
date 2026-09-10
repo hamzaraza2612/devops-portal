@@ -117,6 +117,8 @@ public static class DataSeeder
                 PermissionCodes.DeploymentsDeployDev,
                 PermissionCodes.DeploymentsPromoteQa,
                 PermissionCodes.ContainersView,
+                PermissionCodes.BuildsView,
+                PermissionCodes.BuildsRequest,
             ],
             [RoleNames.Qa] =
             [
@@ -126,6 +128,7 @@ public static class DataSeeder
                 PermissionCodes.DeploymentsApproveQa,
                 PermissionCodes.DeploymentsDeployQa,
                 PermissionCodes.ContainersView,
+                PermissionCodes.BuildsView,
             ],
             [RoleNames.Uat] =
             [
@@ -135,6 +138,7 @@ public static class DataSeeder
                 PermissionCodes.DeploymentsApproveUat,
                 PermissionCodes.DeploymentsDeployUat,
                 PermissionCodes.ContainersView,
+                PermissionCodes.BuildsView,
             ],
             [RoleNames.DevOps] =
             [
@@ -156,6 +160,10 @@ public static class DataSeeder
                 PermissionCodes.ContainersView,
                 PermissionCodes.ContainersControl,
                 PermissionCodes.ContainersRecreate,
+                PermissionCodes.BuildServersView,
+                PermissionCodes.BuildServersManage,
+                PermissionCodes.BuildsView,
+                PermissionCodes.BuildsRequest,
             ],
             [RoleNames.Cto] =
             [
@@ -164,6 +172,7 @@ public static class DataSeeder
                 PermissionCodes.DeploymentsView,
                 PermissionCodes.DeploymentsApproveProduction,
                 PermissionCodes.ContainersView,
+                PermissionCodes.BuildsView,
             ],
         };
 

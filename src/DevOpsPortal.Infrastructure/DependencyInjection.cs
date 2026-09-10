@@ -1,6 +1,7 @@
 using DevOpsPortal.Application.Abstractions;
 using DevOpsPortal.Application.Common;
 using DevOpsPortal.Infrastructure.Authorization;
+using DevOpsPortal.Infrastructure.Build;
 using DevOpsPortal.Infrastructure.Deployments;
 using DevOpsPortal.Infrastructure.Email;
 using DevOpsPortal.Infrastructure.Git;
@@ -53,6 +54,14 @@ public static class DependencyInjection
 
         services.Configure<SmtpSettings>(configuration.GetSection(SmtpSettings.SectionName));
         services.AddSingleton<IEmailSender, SmtpEmailSender>();
+
+        // Jenkins is reached over plain HTTP(S) from wherever the portal runs — unlike
+        // Phase 5's remote Docker gap, no socket/SSH/agent infrastructure is needed, so
+        // this is a real, operational implementation once a BuildServer is configured.
+        // Registered as IBuildProvider (not the concrete type) so IBuildService's
+        // IEnumerable<IBuildProvider> lookup-by-ProviderType pattern can add another
+        // provider later without any caller change (master requirements §1).
+        services.AddHttpClient<IBuildProvider, JenkinsBuildProvider>(client => client.Timeout = TimeSpan.FromSeconds(30));
 
         return services;
     }
