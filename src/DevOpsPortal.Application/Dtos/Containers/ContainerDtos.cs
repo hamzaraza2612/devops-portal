@@ -26,11 +26,22 @@ public record HealthCheckStatusDto(
     DateTimeOffset LastProbeAt,
     DateTimeOffset? LastSuccessfulCheckAt);
 
+/// <summary>`IsConfigured` = does this application environment have a compose
+/// config row to operate on at all. `IsReachable` = independently, could the
+/// target server's Docker engine actually be reached right now — today this is
+/// always false (see NotConfiguredRemoteExecutionProvider / PROJECT_STATE.md),
+/// so `Containers` is always empty and `UnreachableReason` always explains why,
+/// regardless of `IsConfigured`. The two are deliberately separate: a caller
+/// needs to know whether to say "configure this environment" versus "remote
+/// monitoring isn't available yet" — those are different problems.</summary>
 public record ContainerEnvironmentStatusDto(
     Guid ApplicationId,
     Guid EnvironmentDefinitionId,
     string EnvironmentName,
     bool IsConfigured,
+    bool IsReachable,
+    string? UnreachableReason,
+    string? TargetServerName,
     string? ExpectedServiceName,
     string? ExpectedContainerName,
     IReadOnlyList<ContainerInfoDto> Containers,

@@ -21,14 +21,14 @@ public class ContainerOperationsServiceTests
         ManagedApplication App,
         EnvironmentDefinition DevEnv,
         ApplicationEnvironment AppEnv,
+        TargetServer TargetServer,
         Guid ViewUserId,
         Guid ControlUserId,
         Guid RecreateUserId,
         Guid NoPermissionUserId);
 
     private static async Task<Fixture> CreateFixtureAsync(
-        IContainerInspector? inspector = null,
-        IComposeCommandExecutor? composeExecutor = null,
+        IContainerRuntimeProvider? runtimeProvider = null,
         IHealthCheckProbe? healthProbe = null,
         bool useDownWithVolumesOnDeploy = false,
         bool appEnvActive = true)
@@ -40,7 +40,7 @@ public class ContainerOperationsServiceTests
         var app = new ManagedApplication { Name = "Sample", Slug = "sample", DeploymentMode = DeploymentMode.LegacyFilesystem };
         db.Applications.Add(app);
 
-        var server = new TargetServer { Name = "server-1", IsActive = true };
+        var server = new TargetServer { Name = "server-1", Hostname = "10.0.0.5", IsActive = true };
         server.AllowedDeploymentRoots.Add(new AllowedDeploymentRoot { RootPath = "/tmp", IsActive = true, TargetServerId = server.Id });
         db.TargetServers.Add(server);
         await db.SaveChangesAsync();
@@ -66,8 +66,7 @@ public class ContainerOperationsServiceTests
         var audit = new AuditService(db, currentUser);
         var sut = new ContainerOperationsService(
             db, currentUser, audit,
-            inspector ?? new FakeContainerInspector([]),
-            composeExecutor ?? new FakeComposeCommandExecutor(true),
+            runtimeProvider ?? new FakeContainerRuntimeProvider(),
             healthProbe ?? new FakeHealthCheckProbe(true));
 
         var viewUserId = await TestDb.CreateUserWithPermissionsAsync(db, "viewer", PermissionCodes.ContainersView);
@@ -77,33 +76,67 @@ public class ContainerOperationsServiceTests
             db, "recreator", PermissionCodes.ContainersView, PermissionCodes.ContainersControl, PermissionCodes.ContainersRecreate);
         var noPermissionUserId = await TestDb.CreateUserWithPermissionsAsync(db, "nobody", PermissionCodes.UsersView);
 
-        return new Fixture(sut, db, currentUser, app, devEnv, appEnv, viewUserId, controlUserId, recreateUserId, noPermissionUserId);
+        return new Fixture(sut, db, currentUser, app, devEnv, appEnv, server, viewUserId, controlUserId, recreateUserId, noPermissionUserId);
     }
 
-    // ------------------------------------------------------------- status retrieval
+    // ---------------------------------------------------- reachability (default provider)
 
     [Fact]
-    public async Task GetStatusAsync_WithConfiguredEnvironment_ReturnsContainersAndHealthCheck()
+    public async Task GetStatusAsync_WithNoRemoteExecutionConfigured_ReportsUnreachable_NotEmptySuccess()
     {
-        var container = new ContainerStatusInfo("web", "sample-web-1", "sample", "abc1234", ContainerState.Running, "healthy", DateTimeOffset.UtcNow.AddMinutes(-10), 0, ["8080->80/tcp"]);
-        var f = await CreateFixtureAsync(inspector: new FakeContainerInspector([container]), healthProbe: new FakeHealthCheckProbe(true, "HTTP 200 OK"));
+        // The default fixture provider mirrors NotConfiguredRemoteExecutionProvider's
+        // real behavior: every target server is honestly reported unreachable.
+        var f = await CreateFixtureAsync();
         f.CurrentUser.UserId = f.ViewUserId;
 
         var status = await f.Sut.GetStatusAsync(f.App.Id, f.DevEnv.Id);
 
         Assert.True(status.IsConfigured);
+        Assert.False(status.IsReachable);
+        Assert.NotNull(status.UnreachableReason);
+        Assert.Empty(status.Containers);
+        Assert.Equal("server-1", status.TargetServerName);
+    }
+
+    [Fact]
+    public async Task RestartAsync_WithNoRemoteExecutionConfigured_ReturnsUnreachableFailure_NotAttemptedSuccess()
+    {
+        var f = await CreateFixtureAsync();
+        f.CurrentUser.UserId = f.ControlUserId;
+
+        var result = await f.Sut.RestartAsync(f.App.Id, f.DevEnv.Id);
+
+        Assert.False(result.Success);
+        Assert.Contains("No remote execution mechanism is configured", result.Message);
+    }
+
+    // ------------------------------------------------------------- status retrieval
+
+    [Fact]
+    public async Task GetStatusAsync_WhenTargetServerReachable_ReturnsContainersAndHealthCheck()
+    {
+        var container = new ContainerStatusInfo("web", "sample-web-1", "sample", "abc1234", ContainerState.Running, "healthy", DateTimeOffset.UtcNow.AddMinutes(-10), 0, ["8080->80/tcp"]);
+        var provider = new FakeContainerRuntimeProvider(statusResult: new ContainerRuntimeStatusResult(true, null, [container]));
+        var f = await CreateFixtureAsync(runtimeProvider: provider, healthProbe: new FakeHealthCheckProbe(true, "HTTP 200 OK"));
+        f.CurrentUser.UserId = f.ViewUserId;
+
+        var status = await f.Sut.GetStatusAsync(f.App.Id, f.DevEnv.Id);
+
+        Assert.True(status.IsReachable);
         var c = Assert.Single(status.Containers);
         Assert.Equal("web", c.ServiceName);
         Assert.Equal(ContainerState.Running, c.State);
         Assert.NotNull(c.Uptime);
         Assert.Equal("sample:abc1234", status.CurrentImageOrVersion);
+        Assert.Equal(f.TargetServer.Id, provider.LastGetStatusTargetServer?.Id);
     }
 
     [Fact]
     public async Task GetStatusAsync_WhenContainerReportsUnhealthy_ReflectsUnhealthyState()
     {
         var container = new ContainerStatusInfo("web", "sample-web-1", "sample", "abc1234", ContainerState.Unhealthy, "unhealthy", DateTimeOffset.UtcNow, 3, []);
-        var f = await CreateFixtureAsync(inspector: new FakeContainerInspector([container]));
+        var provider = new FakeContainerRuntimeProvider(statusResult: new ContainerRuntimeStatusResult(true, null, [container]));
+        var f = await CreateFixtureAsync(runtimeProvider: provider);
         f.CurrentUser.UserId = f.ViewUserId;
 
         var status = await f.Sut.GetStatusAsync(f.App.Id, f.DevEnv.Id);
@@ -147,58 +180,63 @@ public class ContainerOperationsServiceTests
     // ---------------------------------------------------------- restart/start/stop
 
     [Fact]
-    public async Task RestartAsync_WithoutControlPermission_ThrowsForbidden_AndNeverInvokesCompose()
+    public async Task RestartAsync_WithoutControlPermission_ThrowsForbidden_AndNeverInvokesProvider()
     {
-        var composeExecutor = new FakeComposeCommandExecutor(true);
-        var f = await CreateFixtureAsync(composeExecutor: composeExecutor);
+        var provider = new FakeContainerRuntimeProvider(operationResult: new ContainerRuntimeOperationResult(true, true, "ok"));
+        var f = await CreateFixtureAsync(runtimeProvider: provider);
         f.CurrentUser.UserId = f.ViewUserId; // holds View but not Control
 
         await Assert.ThrowsAsync<ForbiddenException>(() => f.Sut.RestartAsync(f.App.Id, f.DevEnv.Id));
-        Assert.Equal(0, composeExecutor.InvocationCount);
+        Assert.Equal(0, provider.OperationInvocationCount);
     }
 
     [Fact]
-    public async Task RestartAsync_WithControlPermission_Succeeds_AndRecordsSuccessAudit()
+    public async Task RestartAsync_WhenReachableAndSucceeds_ReturnsSuccess_AndRecordsSuccessAudit_AndPassesTargetServer()
     {
-        var f = await CreateFixtureAsync(composeExecutor: new FakeComposeCommandExecutor(true, output: "Restarting sample-web-1..."));
+        var provider = new FakeContainerRuntimeProvider(operationResult: new ContainerRuntimeOperationResult(true, true, "Restarting sample-web-1..."));
+        var f = await CreateFixtureAsync(runtimeProvider: provider);
         f.CurrentUser.UserId = f.ControlUserId;
 
         var result = await f.Sut.RestartAsync(f.App.Id, f.DevEnv.Id);
 
         Assert.True(result.Success);
+        Assert.Equal(f.TargetServer.Id, provider.OperationsInvoked[0].Server.Id);
+        Assert.Equal(ComposeOperation.Restart, provider.OperationsInvoked[0].Operation);
         var auditEntry = await f.Db.AuditLogs.SingleAsync(a => a.Action == "container.restart");
         Assert.Equal(AuditResult.Success, auditEntry.Result);
         Assert.Contains("Sample", auditEntry.Details);
+        Assert.Contains("server-1", auditEntry.Details);
     }
 
     [Fact]
-    public async Task StartAsync_InvokesComposeStartOperation()
+    public async Task StartAsync_InvokesRestartOperation()
     {
-        var composeExecutor = new FakeComposeCommandExecutor(true);
-        var f = await CreateFixtureAsync(composeExecutor: composeExecutor);
+        var provider = new FakeContainerRuntimeProvider(operationResult: new ContainerRuntimeOperationResult(true, true, "ok"));
+        var f = await CreateFixtureAsync(runtimeProvider: provider);
         f.CurrentUser.UserId = f.ControlUserId;
 
         await f.Sut.StartAsync(f.App.Id, f.DevEnv.Id);
 
-        Assert.Equal(ComposeOperation.Start, composeExecutor.LastOperation);
+        Assert.Equal(ComposeOperation.Start, provider.OperationsInvoked[0].Operation);
     }
 
     [Fact]
-    public async Task StopAsync_InvokesComposeStopOperation()
+    public async Task StopAsync_InvokesStopOperation()
     {
-        var composeExecutor = new FakeComposeCommandExecutor(true);
-        var f = await CreateFixtureAsync(composeExecutor: composeExecutor);
+        var provider = new FakeContainerRuntimeProvider(operationResult: new ContainerRuntimeOperationResult(true, true, "ok"));
+        var f = await CreateFixtureAsync(runtimeProvider: provider);
         f.CurrentUser.UserId = f.ControlUserId;
 
         await f.Sut.StopAsync(f.App.Id, f.DevEnv.Id);
 
-        Assert.Equal(ComposeOperation.Stop, composeExecutor.LastOperation);
+        Assert.Equal(ComposeOperation.Stop, provider.OperationsInvoked[0].Operation);
     }
 
     [Fact]
-    public async Task RestartAsync_WhenComposeFails_ReturnsFailureResult_AndRecordsFailureAudit_WithoutThrowing()
+    public async Task RestartAsync_WhenReachableButComposeFails_ReturnsFailureResult_AndRecordsFailureAudit_WithoutThrowing()
     {
-        var f = await CreateFixtureAsync(composeExecutor: new FakeComposeCommandExecutor(false, error: "cannot connect to the Docker daemon"));
+        var provider = new FakeContainerRuntimeProvider(operationResult: new ContainerRuntimeOperationResult(true, false, "exit 1: cannot connect to the Docker daemon"));
+        var f = await CreateFixtureAsync(runtimeProvider: provider);
         f.CurrentUser.UserId = f.ControlUserId;
 
         var result = await f.Sut.RestartAsync(f.App.Id, f.DevEnv.Id);
@@ -210,9 +248,10 @@ public class ContainerOperationsServiceTests
     }
 
     [Fact]
-    public async Task RestartAsync_SanitizesSecretsFromComposeOutputBeforeAuditing()
+    public async Task RestartAsync_SanitizesSecretsFromResultMessageBeforeAuditing()
     {
-        var f = await CreateFixtureAsync(composeExecutor: new FakeComposeCommandExecutor(true, output: "DB_PASSWORD=hunter2 restart complete"));
+        var provider = new FakeContainerRuntimeProvider(operationResult: new ContainerRuntimeOperationResult(true, true, "DB_PASSWORD=hunter2 restart complete"));
+        var f = await CreateFixtureAsync(runtimeProvider: provider);
         f.CurrentUser.UserId = f.ControlUserId;
 
         await f.Sut.RestartAsync(f.App.Id, f.DevEnv.Id);
@@ -252,14 +291,14 @@ public class ContainerOperationsServiceTests
     }
 
     [Fact]
-    public async Task RecreateWithVolumesAsync_WithoutConfirmFlag_ThrowsValidation_AndNeverInvokesCompose()
+    public async Task RecreateWithVolumesAsync_WithoutConfirmFlag_ThrowsValidation_AndNeverInvokesProvider()
     {
-        var composeExecutor = new FakeComposeCommandExecutor(true);
-        var f = await CreateFixtureAsync(composeExecutor: composeExecutor, useDownWithVolumesOnDeploy: true);
+        var provider = new FakeContainerRuntimeProvider(operationResult: new ContainerRuntimeOperationResult(true, true, "ok"));
+        var f = await CreateFixtureAsync(runtimeProvider: provider, useDownWithVolumesOnDeploy: true);
         f.CurrentUser.UserId = f.RecreateUserId;
 
         await Assert.ThrowsAsync<ValidationException>(() => f.Sut.RecreateWithVolumesAsync(f.App.Id, f.DevEnv.Id, new RecreateWithVolumesRequest(false)));
-        Assert.Equal(0, composeExecutor.InvocationCount);
+        Assert.Equal(0, provider.OperationInvocationCount);
     }
 
     [Fact]
@@ -295,16 +334,16 @@ public class ContainerOperationsServiceTests
     }
 
     [Fact]
-    public async Task RecreateWithVolumesAsync_WithConfirmAndExplicitOptIn_Succeeds_AndAuditsRequestedAndSucceeded()
+    public async Task RecreateWithVolumesAsync_WhenReachableWithConfirmAndExplicitOptIn_Succeeds_AndAuditsRequestedAndSucceeded()
     {
-        var composeExecutor = new FakeComposeCommandExecutor(true);
-        var f = await CreateFixtureAsync(composeExecutor: composeExecutor, useDownWithVolumesOnDeploy: true);
+        var provider = new FakeContainerRuntimeProvider(operationResult: new ContainerRuntimeOperationResult(true, true, "ok"));
+        var f = await CreateFixtureAsync(runtimeProvider: provider, useDownWithVolumesOnDeploy: true);
         f.CurrentUser.UserId = f.RecreateUserId;
 
         var result = await f.Sut.RecreateWithVolumesAsync(f.App.Id, f.DevEnv.Id, new RecreateWithVolumesRequest(true));
 
         Assert.True(result.Success);
-        Assert.Equal([ComposeOperation.DownWithVolumes, ComposeOperation.Up], composeExecutor.OperationsInvoked);
+        Assert.Equal([ComposeOperation.DownWithVolumes, ComposeOperation.Up], provider.OperationsInvoked.Select(o => o.Operation).ToList());
 
         var requested = await f.Db.AuditLogs.SingleAsync(a => a.Action == "container.recreate.requested");
         Assert.Contains("destroys volumes", requested.Details);
@@ -315,21 +354,27 @@ public class ContainerOperationsServiceTests
     [Fact]
     public async Task RecreateWithVolumesAsync_ProceedsToUpEvenWhenDownFails_MatchingDeployExecutorTolerance()
     {
-        var composeExecutor = new FakeComposeCommandExecutor(downSucceeds: false, upSucceeds: true);
-        var f = await CreateFixtureAsync(composeExecutor: composeExecutor, useDownWithVolumesOnDeploy: true);
+        var provider = new FakeContainerRuntimeProvider(perOperationResult: op =>
+            op == ComposeOperation.DownWithVolumes
+                ? new ContainerRuntimeOperationResult(true, false, "down failed")
+                : new ContainerRuntimeOperationResult(true, true, "up succeeded"));
+        var f = await CreateFixtureAsync(runtimeProvider: provider, useDownWithVolumesOnDeploy: true);
         f.CurrentUser.UserId = f.RecreateUserId;
 
         var result = await f.Sut.RecreateWithVolumesAsync(f.App.Id, f.DevEnv.Id, new RecreateWithVolumesRequest(true));
 
         Assert.True(result.Success);
-        Assert.Equal([ComposeOperation.DownWithVolumes, ComposeOperation.Up], composeExecutor.OperationsInvoked);
+        Assert.Equal([ComposeOperation.DownWithVolumes, ComposeOperation.Up], provider.OperationsInvoked.Select(o => o.Operation).ToList());
     }
 
     [Fact]
     public async Task RecreateWithVolumesAsync_WhenUpFails_ReturnsFailure_AndAuditsFailed()
     {
-        var composeExecutor = new FakeComposeCommandExecutor(downSucceeds: true, upSucceeds: false);
-        var f = await CreateFixtureAsync(composeExecutor: composeExecutor, useDownWithVolumesOnDeploy: true);
+        var provider = new FakeContainerRuntimeProvider(perOperationResult: op =>
+            op == ComposeOperation.DownWithVolumes
+                ? new ContainerRuntimeOperationResult(true, true, "down succeeded")
+                : new ContainerRuntimeOperationResult(true, false, "up failed"));
+        var f = await CreateFixtureAsync(runtimeProvider: provider, useDownWithVolumesOnDeploy: true);
         f.CurrentUser.UserId = f.RecreateUserId;
 
         var result = await f.Sut.RecreateWithVolumesAsync(f.App.Id, f.DevEnv.Id, new RecreateWithVolumesRequest(true));
@@ -339,14 +384,22 @@ public class ContainerOperationsServiceTests
         Assert.Equal(AuditResult.Failure, failed.Result);
     }
 
-    // ---------------------------------------------------------------------- fakes
-
-    private sealed class FakeContainerInspector(IReadOnlyList<ContainerStatusInfo> containers) : IContainerInspector
+    [Fact]
+    public async Task RecreateWithVolumesAsync_WhenTargetServerUnreachable_ReturnsFailure_AndAuditsFailed_WithoutAttemptingUp()
     {
-        public Task<IReadOnlyList<ContainerStatusInfo>> GetStatusAsync(
-            string workingDirectory, string composeFilePath, string? projectName, CancellationToken cancellationToken = default) =>
-            Task.FromResult(containers);
+        var provider = new FakeContainerRuntimeProvider(operationResult: new ContainerRuntimeOperationResult(false, false, "not configured"));
+        var f = await CreateFixtureAsync(runtimeProvider: provider, useDownWithVolumesOnDeploy: true);
+        f.CurrentUser.UserId = f.RecreateUserId;
+
+        var result = await f.Sut.RecreateWithVolumesAsync(f.App.Id, f.DevEnv.Id, new RecreateWithVolumesRequest(true));
+
+        Assert.False(result.Success);
+        Assert.Single(provider.OperationsInvoked); // only DownWithVolumes attempted, not Up
+        var failed = await f.Db.AuditLogs.SingleAsync(a => a.Action == "container.recreate.failed");
+        Assert.Equal(AuditResult.Failure, failed.Result);
     }
+
+    // ---------------------------------------------------------------------- fakes
 
     private sealed class FakeHealthCheckProbe(bool passed, string detail = "ok") : IHealthCheckProbe
     {
@@ -355,38 +408,38 @@ public class ContainerOperationsServiceTests
             Task.FromResult(new HealthCheckResult(passed, detail));
     }
 
-    private sealed class FakeComposeCommandExecutor : IComposeCommandExecutor
+    private sealed class FakeContainerRuntimeProvider : IContainerRuntimeProvider
     {
-        private readonly bool? _uniformSuccess;
-        private readonly bool _downSucceeds;
-        private readonly bool _upSucceeds;
-        private readonly string _output;
-        private readonly string _error;
+        private readonly ContainerRuntimeStatusResult _statusResult;
+        private readonly Func<ComposeOperation, ContainerRuntimeOperationResult> _operationResultFor;
 
-        public List<ComposeOperation> OperationsInvoked { get; } = [];
-        public int InvocationCount => OperationsInvoked.Count;
-        public ComposeOperation? LastOperation => OperationsInvoked.Count == 0 ? null : OperationsInvoked[^1];
+        public List<(TargetServer Server, ComposeOperation Operation)> OperationsInvoked { get; } = [];
+        public int OperationInvocationCount => OperationsInvoked.Count;
+        public TargetServer? LastGetStatusTargetServer { get; private set; }
 
-        public FakeComposeCommandExecutor(bool succeeds, string output = "", string error = "")
+        public FakeContainerRuntimeProvider(
+            ContainerRuntimeStatusResult? statusResult = null,
+            ContainerRuntimeOperationResult? operationResult = null,
+            Func<ComposeOperation, ContainerRuntimeOperationResult>? perOperationResult = null)
         {
-            _uniformSuccess = succeeds;
-            _output = output;
-            _error = error;
+            _statusResult = statusResult ?? new ContainerRuntimeStatusResult(false, "No remote execution mechanism is configured for target server.", []);
+            _operationResultFor = perOperationResult
+                ?? (_ => operationResult ?? new ContainerRuntimeOperationResult(false, false, "No remote execution mechanism is configured for target server."));
         }
 
-        public FakeComposeCommandExecutor(bool downSucceeds, bool upSucceeds)
+        public Task<ContainerRuntimeStatusResult> GetStatusAsync(
+            TargetServer targetServer, string workingDirectory, string composeFilePath, string? projectName, CancellationToken cancellationToken = default)
         {
-            _downSucceeds = downSucceeds;
-            _upSucceeds = upSucceeds;
-            _output = string.Empty;
-            _error = string.Empty;
+            LastGetStatusTargetServer = targetServer;
+            return Task.FromResult(_statusResult);
         }
 
-        public Task<ComposeCommandResult> RunAsync(ComposeCommandRequest request, CancellationToken cancellationToken = default)
+        public Task<ContainerRuntimeOperationResult> RunOperationAsync(
+            TargetServer targetServer, string workingDirectory, string composeFilePath, string? projectName, ComposeOperation operation,
+            CancellationToken cancellationToken = default)
         {
-            OperationsInvoked.Add(request.Operation);
-            var success = _uniformSuccess ?? (request.Operation == ComposeOperation.DownWithVolumes ? _downSucceeds : _upSucceeds);
-            return Task.FromResult(new ComposeCommandResult(success, success ? 0 : 1, _output, success ? string.Empty : _error));
+            OperationsInvoked.Add((targetServer, operation));
+            return Task.FromResult(_operationResultFor(operation));
         }
     }
 }

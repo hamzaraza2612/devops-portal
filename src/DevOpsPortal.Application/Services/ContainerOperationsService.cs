@@ -9,12 +9,22 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DevOpsPortal.Application.Services;
 
+/// <summary>
+/// Every container status/control operation resolves its target exclusively
+/// through the ApplicationEnvironment's own configured TargetServer, and reaches
+/// it only via IContainerRuntimeProvider — this service has no other path to
+/// Docker, and never assumes the portal process itself can see any target
+/// server's containers (see PROJECT_STATE.md's Phase 5 remote-execution
+/// correction). With only NotConfiguredRemoteExecutionProvider registered
+/// today, every call below honestly reports the target server as unreachable;
+/// the permission/validation/audit logic is real and ready for when a real
+/// provider is plugged in.
+/// </summary>
 public class ContainerOperationsService(
     IAppDbContext db,
     ICurrentUserService currentUser,
     IAuditService auditService,
-    IContainerInspector containerInspector,
-    IComposeCommandExecutor composeExecutor,
+    IContainerRuntimeProvider containerRuntimeProvider,
     IHealthCheckProbe healthCheckProbe) : IContainerOperationsService
 {
     public async Task<ContainerEnvironmentStatusDto> GetStatusAsync(
@@ -36,16 +46,17 @@ public class ContainerOperationsService(
         {
             return new ContainerEnvironmentStatusDto(
                 applicationId, environmentDefinitionId, environmentDefinition.Name,
-                IsConfigured: false, ExpectedServiceName: appEnv?.ServiceName, ExpectedContainerName: appEnv?.ContainerName,
+                IsConfigured: false, IsReachable: false, UnreachableReason: null, TargetServerName: appEnv?.TargetServer.Name,
+                ExpectedServiceName: appEnv?.ServiceName, ExpectedContainerName: appEnv?.ContainerName,
                 Containers: [], HealthCheck: null, CurrentImageOrVersion: null, LastRestartAt: null,
                 latestDeployment?.Id, latestDeployment?.Status);
         }
 
-        var allContainers = await containerInspector.GetStatusAsync(
-            appEnv.DeploymentRootPath, appEnv.ComposeFilePath, appEnv.ComposeProjectName, cancellationToken);
+        var runtimeStatus = await containerRuntimeProvider.GetStatusAsync(
+            appEnv.TargetServer, appEnv.DeploymentRootPath, appEnv.ComposeFilePath, appEnv.ComposeProjectName, cancellationToken);
         var filtered = string.IsNullOrWhiteSpace(appEnv.ServiceName)
-            ? allContainers
-            : allContainers.Where(c => c.ServiceName == appEnv.ServiceName).ToList();
+            ? runtimeStatus.Containers
+            : runtimeStatus.Containers.Where(c => c.ServiceName == appEnv.ServiceName).ToList();
         var containers = filtered.Select(ToDto).ToList();
 
         var healthCheck = await BuildHealthCheckStatusAsync(applicationId, environmentDefinitionId, appEnv, cancellationToken);
@@ -58,7 +69,8 @@ public class ContainerOperationsService(
 
         return new ContainerEnvironmentStatusDto(
             applicationId, environmentDefinitionId, environmentDefinition.Name,
-            IsConfigured: true, appEnv.ServiceName, appEnv.ContainerName,
+            IsConfigured: true, runtimeStatus.IsReachable, runtimeStatus.UnreachableReason, appEnv.TargetServer.Name,
+            appEnv.ServiceName, appEnv.ContainerName,
             containers, healthCheck, currentImageOrVersion, lastRestartAt,
             latestDeployment?.Id, latestDeployment?.Status);
     }
@@ -81,13 +93,17 @@ public class ContainerOperationsService(
         var (application, environmentDefinition, appEnv) = await LoadAsync(applicationId, environmentDefinitionId, cancellationToken);
         RequireConfigured(application, appEnv);
 
-        var result = await composeExecutor.RunAsync(
-            new ComposeCommandRequest(appEnv!.DeploymentRootPath!, appEnv.ComposeFilePath, appEnv.ComposeProjectName, operation), cancellationToken);
+        var result = await containerRuntimeProvider.RunOperationAsync(
+            appEnv!.TargetServer, appEnv.DeploymentRootPath!, appEnv.ComposeFilePath, appEnv.ComposeProjectName, operation, cancellationToken);
 
-        var sanitizedDetail = LogSanitizer.Sanitize($"exit {result.ExitCode}: {(result.Success ? result.StandardOutput : result.StandardError)}".Trim());
+        var sanitizedDetail = LogSanitizer.Sanitize(result.Message);
         await auditService.LogAsync(
-            auditAction, result.Success ? AuditResult.Success : AuditResult.Failure, "ApplicationEnvironment", appEnv.Id.ToString(),
-            details: $"{application.Name}/{environmentDefinition.Name}: {sanitizedDetail}", cancellationToken: cancellationToken);
+            auditAction, result.IsReachable && result.Success ? AuditResult.Success : AuditResult.Failure, "ApplicationEnvironment", appEnv.Id.ToString(),
+            details: $"{application.Name}/{environmentDefinition.Name} (target server '{appEnv.TargetServer.Name}'): {sanitizedDetail}",
+            cancellationToken: cancellationToken);
+
+        if (!result.IsReachable)
+            return new ContainerActionResultDto(false, sanitizedDetail, DateTimeOffset.UtcNow);
 
         return new ContainerActionResultDto(
             result.Success,
@@ -123,26 +139,36 @@ public class ContainerOperationsService(
 
         await auditService.LogAsync(
             "container.recreate.requested", AuditResult.Success, "ApplicationEnvironment", appEnv.Id.ToString(),
-            details: $"{application.Name}/{environmentDefinition.Name}: docker compose down -v / up -d requested (destroys volumes).",
+            details: $"{application.Name}/{environmentDefinition.Name} (target server '{appEnv.TargetServer.Name}'): docker compose down -v / up -d requested (destroys volumes).",
             cancellationToken: cancellationToken);
 
-        var downResult = await composeExecutor.RunAsync(
-            new ComposeCommandRequest(appEnv.DeploymentRootPath!, appEnv.ComposeFilePath, appEnv.ComposeProjectName, ComposeOperation.DownWithVolumes),
-            cancellationToken);
+        var downResult = await containerRuntimeProvider.RunOperationAsync(
+            appEnv.TargetServer, appEnv.DeploymentRootPath!, appEnv.ComposeFilePath, appEnv.ComposeProjectName, ComposeOperation.DownWithVolumes, cancellationToken);
+
+        if (!downResult.IsReachable)
+        {
+            var unreachableDetail = LogSanitizer.Sanitize(downResult.Message);
+            await auditService.LogAsync(
+                "container.recreate.failed", AuditResult.Failure, "ApplicationEnvironment", appEnv.Id.ToString(),
+                details: $"{application.Name}/{environmentDefinition.Name} (target server '{appEnv.TargetServer.Name}'): {unreachableDetail}",
+                cancellationToken: cancellationToken);
+            return new ContainerActionResultDto(false, unreachableDetail, DateTimeOffset.UtcNow);
+        }
         // A failing "down -v" (e.g. the stack wasn't running yet) is not fatal — proceed to "up",
         // matching DeploymentExecutor's existing tolerance for the same sequence during a deploy.
 
-        var upResult = await composeExecutor.RunAsync(
-            new ComposeCommandRequest(appEnv.DeploymentRootPath!, appEnv.ComposeFilePath, appEnv.ComposeProjectName, ComposeOperation.Up),
-            cancellationToken);
+        var upResult = await containerRuntimeProvider.RunOperationAsync(
+            appEnv.TargetServer, appEnv.DeploymentRootPath!, appEnv.ComposeFilePath, appEnv.ComposeProjectName, ComposeOperation.Up, cancellationToken);
 
-        var sanitizedDetail = LogSanitizer.Sanitize(
-            $"down -v: exit {downResult.ExitCode}; up -d: exit {upResult.ExitCode}: {(upResult.Success ? upResult.StandardOutput : upResult.StandardError)}".Trim());
+        var sanitizedDetail = LogSanitizer.Sanitize($"down -v: {downResult.Message}; up -d: {upResult.Message}");
 
         await auditService.LogAsync(
-            upResult.Success ? "container.recreate.succeeded" : "container.recreate.failed",
-            upResult.Success ? AuditResult.Success : AuditResult.Failure, "ApplicationEnvironment", appEnv.Id.ToString(),
-            details: $"{application.Name}/{environmentDefinition.Name}: {sanitizedDetail}", cancellationToken: cancellationToken);
+            upResult.IsReachable && upResult.Success ? "container.recreate.succeeded" : "container.recreate.failed",
+            upResult.IsReachable && upResult.Success ? AuditResult.Success : AuditResult.Failure, "ApplicationEnvironment", appEnv.Id.ToString(),
+            details: $"{application.Name}/{environmentDefinition.Name} (target server '{appEnv.TargetServer.Name}'): {sanitizedDetail}", cancellationToken: cancellationToken);
+
+        if (!upResult.IsReachable)
+            return new ContainerActionResultDto(false, LogSanitizer.Sanitize(upResult.Message), DateTimeOffset.UtcNow);
 
         return new ContainerActionResultDto(
             upResult.Success,
@@ -170,6 +196,12 @@ public class ContainerOperationsService(
         if (appEnv.HealthCheckType == HealthCheckType.None)
             return new HealthCheckStatusDto(HealthCheckType.None, null, null, DateTimeOffset.UtcNow, lastSuccessfulCheckAt);
 
+        // Unlike Docker container inspection, this is a plain HTTP/TCP call to
+        // ApplicationEnvironment.HealthCheckEndpoint — Phase 3 already requires
+        // that endpoint to be "independently reachable from wherever the
+        // deployment engine runs" (i.e. over the network, not via a local
+        // socket), so it is unaffected by the portal/TargetServer separation
+        // that IContainerRuntimeProvider exists to handle.
         var probe = await healthCheckProbe.ProbeAsync(appEnv.HealthCheckType, appEnv.HealthCheckEndpoint, appEnv.HealthCheckTimeoutSeconds, cancellationToken);
         return new HealthCheckStatusDto(appEnv.HealthCheckType, probe.Passed, LogSanitizer.Sanitize(probe.Detail), DateTimeOffset.UtcNow, lastSuccessfulCheckAt);
     }
@@ -183,8 +215,9 @@ public class ContainerOperationsService(
         var environmentDefinition = await db.EnvironmentDefinitions.FirstOrDefaultAsync(e => e.Id == environmentDefinitionId, cancellationToken)
             ?? throw new NotFoundException("EnvironmentDefinition", environmentDefinitionId);
 
-        var appEnv = await db.ApplicationEnvironments.FirstOrDefaultAsync(
-            ae => ae.ApplicationId == applicationId && ae.EnvironmentDefinitionId == environmentDefinitionId && ae.IsActive, cancellationToken);
+        var appEnv = await db.ApplicationEnvironments
+            .Include(ae => ae.TargetServer)
+            .FirstOrDefaultAsync(ae => ae.ApplicationId == applicationId && ae.EnvironmentDefinitionId == environmentDefinitionId && ae.IsActive, cancellationToken);
 
         return (application, environmentDefinition, appEnv);
     }

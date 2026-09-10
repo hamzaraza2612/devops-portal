@@ -1,57 +1,75 @@
-using System.Diagnostics;
-using System.Text;
 using System.Text.Json;
 using DevOpsPortal.Application.Abstractions;
 using DevOpsPortal.Application.Common;
-using DevOpsPortal.Domain.Enums;
+using DevOpsPortal.Domain.Entities;
 using Microsoft.Extensions.Logging;
 
-namespace DevOpsPortal.Infrastructure.Deployments;
+namespace DevOpsPortal.Infrastructure.Remote;
 
 /// <summary>
-/// Two-step, read-only container inspection: (1) `docker compose ps -a --format
-/// json` — scoped entirely to the already-validated working directory/compose
-/// file, discovers this project's own container names; (2) `docker inspect
-/// &lt;name&gt;` per discovered name for the rich fields `compose ps` doesn't
-/// reliably carry (restart count, exact start time, native health status).
-/// Container names passed to step 2 are never caller input — they only ever
-/// come back from this instance's own step-1 call, so there is no path from a
-/// request to an arbitrary container name. Both steps use `Process` with
-/// `ArgumentList` exclusively, matching ComposeCommandExecutor. Never throws
-/// for an expected failure (project not found, Docker unreachable, malformed
-/// output) — returns as much as could be determined, defaulting to an empty
-/// list or ContainerState.Unknown rather than propagating an exception into a
-/// status page.
+/// Docker/Compose-domain orchestration on top of <see cref="IRemoteExecutionProvider"/>:
+/// discovers a target server's containers for a compose project (`compose ps`),
+/// enriches each with `docker inspect` for the fields `ps` doesn't reliably
+/// carry, and maps Docker's own state/health vocabulary via
+/// <see cref="ContainerStateMapper"/>. Always checks
+/// <see cref="IRemoteExecutionProvider.IsConfigured"/> first and short-circuits
+/// to <c>IsReachable: false</c> without attempting anything if the target
+/// server can't be reached — with only <c>NotConfiguredRemoteExecutionProvider</c>
+/// registered today, that is every call, every target server. This class's own
+/// parsing/orchestration logic is still fully real and tested (see
+/// DockerComposeContainerRuntimeProviderTests using a fake
+/// IRemoteExecutionProvider) so it is ready the moment a real provider is
+/// plugged in — nothing here needs to change when that happens.
 /// </summary>
-public class ContainerInspector(IComposeCommandExecutor composeExecutor, ILogger<ContainerInspector> logger) : IContainerInspector
+public class DockerComposeContainerRuntimeProvider(IRemoteExecutionProvider remoteExecutionProvider, ILogger<DockerComposeContainerRuntimeProvider> logger)
+    : IContainerRuntimeProvider
 {
-    public async Task<IReadOnlyList<ContainerStatusInfo>> GetStatusAsync(
-        string workingDirectory, string composeFilePath, string? projectName, CancellationToken cancellationToken = default)
+    public async Task<ContainerRuntimeStatusResult> GetStatusAsync(
+        TargetServer targetServer, string workingDirectory, string composeFilePath, string? projectName, CancellationToken cancellationToken = default)
     {
-        var psResult = await composeExecutor.RunAsync(
-            new ComposeCommandRequest(workingDirectory, composeFilePath, projectName, ComposeOperation.Ps), cancellationToken);
+        if (!remoteExecutionProvider.IsConfigured(targetServer))
+            return new ContainerRuntimeStatusResult(false, UnreachableReason(targetServer), []);
 
+        var psResult = await remoteExecutionProvider.RunComposeAsync(
+            targetServer, new ComposeCommandRequest(workingDirectory, composeFilePath, projectName, ComposeOperation.Ps), cancellationToken);
         if (!psResult.Success)
         {
             logger.LogInformation(
-                "docker compose ps returned no usable status for '{WorkingDirectory}': {Error}",
-                workingDirectory, psResult.StandardError);
-            return [];
+                "docker compose ps returned no usable status for '{WorkingDirectory}' on target server '{TargetServerName}': {Error}",
+                workingDirectory, targetServer.Name, psResult.StandardError);
+            return new ContainerRuntimeStatusResult(true, psResult.StandardError, []);
         }
 
         var discovered = ParsePsOutput(psResult.StandardOutput);
         if (discovered.Count == 0)
-            return [];
+            return new ContainerRuntimeStatusResult(true, null, []);
 
         var results = new List<ContainerStatusInfo>(discovered.Count);
         foreach (var container in discovered)
         {
-            var inspected = await InspectContainerAsync(container.Name, cancellationToken);
+            var inspectResult = await remoteExecutionProvider.InspectContainerAsync(targetServer, container.Name, cancellationToken);
+            var inspected = inspectResult.Success ? ParseInspectOutput(inspectResult.RawJson) : null;
             results.Add(inspected ?? FallbackFromPs(container));
         }
 
-        return results;
+        return new ContainerRuntimeStatusResult(true, null, results);
     }
+
+    public async Task<ContainerRuntimeOperationResult> RunOperationAsync(
+        TargetServer targetServer, string workingDirectory, string composeFilePath, string? projectName, ComposeOperation operation,
+        CancellationToken cancellationToken = default)
+    {
+        if (!remoteExecutionProvider.IsConfigured(targetServer))
+            return new ContainerRuntimeOperationResult(false, false, UnreachableReason(targetServer));
+
+        var result = await remoteExecutionProvider.RunComposeAsync(
+            targetServer, new ComposeCommandRequest(workingDirectory, composeFilePath, projectName, operation), cancellationToken);
+        var detail = $"exit {result.ExitCode}: {(result.Success ? result.StandardOutput : result.StandardError)}".Trim();
+        return new ContainerRuntimeOperationResult(true, result.Success, detail);
+    }
+
+    private static string UnreachableReason(TargetServer targetServer) =>
+        $"No remote execution mechanism is configured for target server '{targetServer.Name}'.";
 
     private static ContainerStatusInfo FallbackFromPs(PsEntry entry)
     {
@@ -59,47 +77,6 @@ public class ContainerInspector(IComposeCommandExecutor composeExecutor, ILogger
         return new ContainerStatusInfo(
             entry.Service, entry.Name, image, tag,
             ContainerStateMapper.Map(entry.State, entry.Health), entry.Health, null, 0, []);
-    }
-
-    private async Task<ContainerStatusInfo?> InspectContainerAsync(string containerName, CancellationToken cancellationToken)
-    {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = "docker",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-        startInfo.ArgumentList.Add("inspect");
-        startInfo.ArgumentList.Add(containerName);
-
-        using var process = new Process { StartInfo = startInfo };
-        var stdout = new StringBuilder();
-        var stderr = new StringBuilder();
-        process.OutputDataReceived += (_, e) => { if (e.Data is not null) stdout.AppendLine(e.Data); };
-        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderr.AppendLine(e.Data); };
-
-        try
-        {
-            process.Start();
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-            await process.WaitForExitAsync(cancellationToken);
-        }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
-        {
-            logger.LogWarning(ex, "Failed to start docker inspect for container {ContainerName}", containerName);
-            return null;
-        }
-
-        if (process.ExitCode != 0)
-        {
-            logger.LogInformation("docker inspect {ContainerName} exited {ExitCode}: {Error}", containerName, process.ExitCode, stderr.ToString());
-            return null;
-        }
-
-        return ParseInspectOutput(stdout.ToString());
     }
 
     /// <summary>`docker compose ps --format json` output has varied across Compose

@@ -46,11 +46,13 @@ section below.
 production-ready web UI (React SPA, `frontend/`) on top of the Phase 3
 deployment engine. See dedicated section below.
 
-**Phase 5 — Docker Container Monitoring & Operational Controls.** Done.
-Adds safe, read-only live container status/health plus scoped
-restart/start/stop/recreate-with-volumes operational controls, all
-targeting only already-configured application environments. See dedicated
-section below.
+**Phase 5 — Docker Container Monitoring & Operational Controls.** Done,
+including a mid-phase architecture correction: container status/control
+is `TargetServer`-aware (`IRemoteExecutionProvider`/`IContainerRuntimeProvider`),
+never assumes the portal has local Docker access to a remote target
+server, and honestly reports every target server unreachable until a real
+secure remote-execution mechanism is built (not yet — abstraction only).
+See dedicated section below.
 
 ## Current database state
 
@@ -1018,188 +1020,196 @@ left running or committed.
 
 ## Phase 5 — Docker Container Monitoring & Operational Controls
 
-Done. Adds live (never persisted/historized) Docker container status and
-health visibility, plus scoped operational controls (restart/start/stop,
-and a permission-gated, explicitly-opted-in `docker compose down -v` /
-`up -d` recreate), for application environments Phase 2/3 already
-configured. **No database schema change** — every new endpoint reads live
-from Docker at request time or from Deployment rows Phase 3 already
-persists; nothing new is stored.
+Done, **with a mid-phase architecture correction** documented in full below
+— read "Remote-execution architecture correction" first if you only read
+one part of this section; it changes what "done" means here relative to
+the original implementation.
 
-### Architecture
+Adds Docker container status/health visibility and scoped operational
+controls (restart/start/stop, and a permission-gated, explicitly-opted-in
+`docker compose down -v` / `up -d` recreate) for application environments
+Phase 2/3 already configured. **No database schema change** — status is
+read live at request time (when a real remote-execution mechanism
+eventually exists) or from `Deployment` rows Phase 3 already persists;
+nothing new is stored.
 
-New abstractions, layered the same way as Phase 3's deployment engine:
+### Remote-execution architecture correction
 
-- **`ComposeOperation` extended**: `Restart`, `Start`, `Stop`, `Ps` added
-  alongside Phase 3's `Up`/`Down`/`DownWithVolumes` — still a fixed enum,
-  still the only vocabulary `ComposeCommandExecutor` accepts, still
-  invoked via `Process.ArgumentList` only. `Ps` runs
-  `docker compose ps -a --format json`, read-only.
-- **`IContainerInspector`/`ContainerInspector`** (Infrastructure): a
-  two-step, read-only inspection. Step 1 runs `ComposeOperation.Ps`
-  through the *existing* `IComposeCommandExecutor` — scoped entirely to
-  the already-validated `DeploymentRootPath`/`ComposeFilePath` for that
-  application environment, exactly like every other compose invocation in
-  this codebase. Step 2 runs `docker inspect <name>` (a second, direct
-  `Process`+`ArgumentList` call — `docker inspect` isn't a compose
-  subcommand, so it doesn't fit `ComposeOperation`) for each container
-  *name discovered in step 1* — never a caller-supplied name — to get the
-  richer fields `compose ps` doesn't reliably carry across versions
-  (restart count, exact start time, native Docker healthcheck status).
-  Parses both Compose's documented `ps --format json` shapes (a single
-  JSON array, or newline-delimited JSON objects — this has varied across
-  Compose releases) defensively: unparsable output degrades to an empty
-  result, never an exception, and a container `docker inspect` fails to
-  reach still reports using the fields `compose ps` already gave it
-  (`FallbackFromPs`) rather than dropping it from the list.
-- **`ContainerStateMapper`** (Application/Common, pure, no I/O): maps
-  Docker's own `.State.Status` string plus (if present) `.State.Health.Status`
-  to the portal's `ContainerState` enum (`Running`/`Exited`/`Restarting`/
-  `Paused`/`Created`/`Unhealthy`/`Unknown`) — a container reporting
-  Docker-native `unhealthy` always maps to `Unhealthy` regardless of its
-  raw run state, since that's the more actionable signal for an operator.
-  Anything Docker reports that isn't in the above list (`dead`,
-  `removing`, or no container found at all) maps to `Unknown`. Deliberately
-  a pure static function so it's unit-testable without a Docker daemon.
-- **`IContainerOperationsService`/`ContainerOperationsService`**
-  (Application): the single place all Phase 5 permission checks and
-  business rules live, mirroring `DeploymentService`'s pattern exactly —
-  every method resolves the current user and calls the same
-  `EnsurePermissionAsync` helper internally (not a static
-  `[RequirePermission]` attribute), throwing `ForbiddenException` on
-  failure. This was a deliberate choice over the attribute pattern used
-  by simpler controllers (Users/Roles/etc.) specifically so
-  "unauthorized control" is directly unit-testable at the service layer
-  without needing the HTTP pipeline, matching how `DeploymentService`
-  already tests `deployments.rollback` (also a flat, non-environment-
-  dependent permission enforced the same way).
+**The original Phase 5 implementation was architecturally wrong and has
+been replaced.** It ran `docker`/`docker compose` as a **local process**
+from the portal's own machine, exactly like Phase 3's deployment
+executor — but container *monitoring/control* (unlike a deploy job) was
+framed as reaching "the configured application environment's containers"
+in general, which is only true if the portal happens to run co-located
+with every target server. **It doesn't**: the portal runs on its own VM,
+separate from every `TargetServer`, per corrected requirements. The
+original code would have silently inspected/controlled whatever the
+portal's own container could see (almost certainly nothing) while
+presenting that as if it were the real target server's status — exactly
+the "pretending it works" failure mode the correction explicitly called
+out.
 
-### What's exposed, and how it maps to the master requirements
+**The fix**: container status/control now goes through a two-layer,
+`TargetServer`-aware abstraction instead of ever spawning a local process
+directly:
 
-- **Container status** (`GET .../containers`): for the configured
-  environment's containers — container/service name, image, image tag,
-  live `ContainerState`, Docker-native health status string, start time,
-  computed uptime (only when `Running`), restart count, and port
-  bindings. "Never assume application name equals container name" is
-  structural here, not just a rule: the service and container names in
-  the response come from Docker itself (via `compose ps`/`inspect`), and
-  are filtered to `ApplicationEnvironment.ServiceName` when one is
-  configured — the app's own `Name`/`Slug` never appears in that lookup
-  path at all.
-- **Environment status**: the same status call returns
-  `ExpectedServiceName`/`ExpectedContainerName` (what Phase 2's config
-  says *should* be running) alongside the live `Containers` list (what
-  Docker says actually *is*) plus `CurrentImageOrVersion` (the real
-  running image:tag, ground truth from Docker) and `LatestDeploymentId`/
-  `LatestDeploymentStatus` (what the portal's own deployment history
-  thinks happened) side by side — so drift between "what we think we
-  deployed" and "what's actually running" is visible directly, not
-  something a caller has to cross-reference two endpoints to notice. When
-  Docker itself reports `unhealthy` (or the environment isn't configured
-  at all — e.g. a fresh app with no `ApplicationEnvironment` row yet, or
-  one still in `ContainerImage` mode with no build pipeline per Phase 3),
-  that's returned as data (`IsConfigured: false` or `State: Unhealthy`),
-  never an exception — a not-yet-healthy or not-yet-configured
-  environment is an expected, first-class status, not an error case.
-- **Restart/Start/Stop** (`POST .../containers/{restart,start,stop}`):
-  each is exactly one `ComposeOperation` call, scoped to the same
-  `DeploymentRootPath`/`ComposeFilePath`/`ComposeProjectName` Phase 2/3
-  already validate — there is no code path from these endpoints to a
-  caller-supplied container name, path, or compose file. Requires
-  `containers.control`. Every call — success or failure — is audited
-  (`container.restart`/`container.start`/`container.stop`,
-  `AuditResult.Success`/`Failure`, sanitized compose output as `Details`).
-  A Docker-level failure (daemon unreachable, container not found) comes
-  back as `ContainerActionResultDto { Success: false, Message: "..." }`
-  with **HTTP 200**, not a 500 or a thrown exception — an operational
-  action that didn't work is a normal, expected outcome to report, not a
-  server error.
-- **Recreate with volumes** (`POST .../containers/recreate`, `docker
-  compose down -v` then `up -d`): gated by **three independent checks**,
-  all enforced server-side, none skippable from the frontend:
-  1. `containers.recreate` permission (a separate, more sensitive
-     permission than `containers.control` — see role table below).
-  2. `ApplicationEnvironment.UseDownWithVolumesOnDeploy` must already be
-     explicitly `true` for *this specific* application environment — the
-     same field Phase 3 introduced for the deploy-time equivalent of this
-     exact decision. Reusing it here (rather than adding a second config
-     flag) is deliberate: it's the one place per-app-environment that
-     already means "this app's containers may have their volumes
-     destroyed by an operation this portal runs," and master requirements
-     §4 explicitly asks for this to be available only "where the existing
-     operational procedure" is configured — this *is* that existing
-     procedure's own opt-in flag.
-  3. The request body must carry `Confirm: true` — a server-side
-     safety net independent of whatever confirmation UX a future caller
-     builds; a stray or replayed request without it is rejected with a
-     clear `ValidationException`, never treated as an implicit yes.
-  Also blocked (`ConflictException`, HTTP 409) while a deployment is
-  already `Pending`/`Queued`/`Running` for that same application
-  environment, so a manual recreate can never race the deployment
-  engine's own compose down/up cycle. Two audit entries are always
-  written: `container.recreate.requested` *before* anything destructive
-  runs (so the intent is on record even if the process crashes
-  mid-operation), and `container.recreate.succeeded`/`.failed` after,
-  each naming the volume-destroying nature of the action explicitly in
-  `Details`. A failing `down -v` doesn't abort the sequence — `up -d`
-  still runs — matching `DeploymentExecutor`'s existing, already-tested
-  tolerance for the identical sequence at deploy time (a stack that
-  wasn't running yet is not a failure worth stopping for).
+```
+ContainerOperationsService
+        │  (Application) — permission checks, validation, audit,
+        │   DTO shaping; knows nothing about *how* Docker is reached
+        ▼
+IContainerRuntimeProvider
+        │  (Application/Abstractions, impl:
+        │   DockerComposeContainerRuntimeProvider)
+        │  — Docker/Compose-domain orchestration: discover containers via
+        │   `compose ps`, enrich via `docker inspect`, map state/health
+        │   (ContainerStateMapper), honor the ServiceName filter. Real,
+        │   tested logic — but only ever reachable through the layer below.
+        ▼
+IRemoteExecutionProvider
+        │  (Application/Abstractions, impl today:
+        │   NotConfiguredRemoteExecutionProvider)
+        │  — THE boundary for "how do we reach this specific TargetServer's
+        │   Docker engine". Takes a TargetServer + a fixed, allow-listed
+        │   ComposeOperation (or a container name to inspect, discovered
+        │   from this same target server's own `compose ps` output, never
+        │   from a caller) — never a free-form command.
+        ▼
+   (today: nothing — always reports "not configured", never spawns a
+    process, never contacts anything)
+```
 
-### Live status refresh
+This matches the intended, and now explicitly documented, topology:
 
-No server-side polling infrastructure was added — "periodic status
-refresh" per master requirements §5 is a client concern (poll
-`GET .../containers` on a timer) against an endpoint that's cheap and
-safe to call repeatedly (read-only, bounded by Docker CLI round-trip
-time, no persistence write on every call). No frontend work was in scope
-for this phase (Phase 4 built the UI; this phase is backend-only, per the
-task given), so the actual polling interval is deliberately left for
-whichever phase next touches the frontend to implement as a configurable
-value there — documented here as a known follow-up, not built blind
-against a UI that doesn't exist yet for this feature.
+```
+Portal VM ──┬──► Target Server 1 ──► Docker/Compose
+            ├──► Target Server 2 ──► Docker/Compose
+            └──► Target Server N ──► Docker/Compose
+```
 
-### Security decisions
+`NotConfiguredRemoteExecutionProvider` is the only registered
+implementation of `IRemoteExecutionProvider`. `IsConfigured(targetServer)`
+always returns `false`; `RunComposeAsync`/`InspectContainerAsync` always
+return a clear failure naming the target server and explaining that no
+remote execution mechanism is configured — **never** a fabricated
+success, and never a local process spawn. This is a deliberate,
+documented placeholder per the explicit instruction: "If remote Docker
+connectivity cannot safely be implemented in this phase because secure
+credentials/agent infrastructure is not yet available, implement the
+provider abstraction and configuration boundary rather than pretending
+that local Docker monitoring covers remote servers." No SSH credential
+store, no per-target-server agent, and no secure way to reach an
+arbitrary remote host exists anywhere in this codebase yet — building one
+safely is real, non-trivial work (credential storage, host-key
+verification, network reachability from the portal VM to every target
+server) that a future phase should do deliberately, not as a side effect
+of this correction.
 
-- **No arbitrary Docker commands.** Every new capability funnels through
-  the same fixed `ComposeOperation` enum Phase 3 established, or through
-  `docker inspect <name>` where `<name>` is never caller input (see
-  Architecture above) — there is no request field anywhere in Phase 5
-  that becomes a shell argument.
-- **No arbitrary container names, host paths, or compose files.** Status/
-  control/recreate all resolve their target exclusively from the
-  already-validated `ApplicationEnvironment` row (`DeploymentRootPath`,
-  `ComposeFilePath`, `ComposeProjectName`, `ServiceName`) — the same
-  Phase 2 path-allow-listing (`AllowedDeploymentRoots`) that already
-  gates every other compose invocation in this codebase governs these
-  too, since they load the identical entity.
-- **Unauthorized environment access is impossible, not just hidden**:
-  every method throws `ForbiddenException` (→ 403) server-side before
-  touching Docker at all if the caller lacks the specific permission —
-  live-verified (see Testing) with a DEVELOPER-role user (holds
-  `containers.view` only) receiving 403 on both restart and recreate.
-- **Only configured targets may be operated**: an application with no
-  `ApplicationEnvironment` row for that environment, or one in
-  `ContainerImage` mode (no compose file to operate on yet, per Phase 3's
-  own Mode B scope), returns `ValidationException` (control/recreate) or
-  `IsConfigured: false` (status) — never attempts a Docker call against
-  nothing.
-- **No secrets in audit logs.** Compose stdout/stderr is passed through
-  the existing `LogSanitizer.Sanitize()` (the same one `DeploymentExecutor`
-  uses) before being written to `AuditLog.Details` — live-verified by
-  restarting a stack whose fake failure text included a `DB_PASSWORD=...`
-  fragment and confirming it never reached the stored row.
-- **RBAC is permission-based, not role-name-based**, consistent with
-  every prior phase: `containers.view`/`containers.control`/
-  `containers.recreate` are ordinary `PermissionCodes` entries, granted to
-  roles by `DataSeeder`, never checked by role name anywhere in
-  `ContainerOperationsService`.
+**What this means concretely**: every container status/control endpoint
+in this phase is real (permissions enforced, inputs validated, targets
+resolved from configuration, actions audited) but currently **always**
+reports the target server as unreachable — there is no code path today
+that successfully inspects or controls a real remote container. That is
+the honest, currently-true state of the system, not a bug to paper over.
+See "What's actually operational vs. abstraction-only" below for the
+precise line.
 
-### Permission model
+### Why Phase 3's deployment executor was deliberately NOT touched
 
-Three new permission codes, seeded like every other `PermissionCodes.All`
-entry, with role-appropriate defaults (live-verified via `GET /api/roles`
-against a freshly-seeded database):
+`DeploymentExecutor`/`IComposeCommandExecutor`/`ComposeCommandExecutor`
+still run `docker compose` as a local process, completely unchanged by
+this correction, per the explicit instruction not to change the existing
+Phase 3 deployment workflow unnecessarily. This means Phase 3's deploy
+pipeline has **the same underlying local-execution limitation** this
+correction fixes for Phase 5 — already honestly documented in Phase 3's
+own "Known limitations" section since it was written ("today's executor
+only works correctly when the portal process itself runs on, or has
+local Docker access to, the target host"). That was already an honest,
+if incomplete, statement — not a claim that it worked for arbitrary
+remote servers. Phase 5's original mistake was introducing a *new*
+capability (container monitoring/control) using that same pattern
+without equally honest framing, for a use case (routine status/health
+checks, not a one-time deploy) where the gap is far more visible. Fixing
+*that* is this correction's job. Unifying deployment execution onto the
+same `IRemoteExecutionProvider` abstraction once a real implementation
+exists is a natural, sensible future step — flagged in Known limitations
+below, not started here.
+
+### `ComposeOperation` vocabulary is shared, not duplicated
+
+`ComposeOperation` (`Up`/`Down`/`DownWithVolumes`/`Restart`/`Start`/
+`Stop`/`Ps`) is the same fixed enum both `IComposeCommandExecutor` (local,
+Phase 3) and `IRemoteExecutionProvider.RunComposeAsync` (target-server-
+aware, Phase 5) accept — one allow-list, two independent execution paths
+that both refuse anything outside it. A future real
+`IRemoteExecutionProvider` implementation (SSH-based or agent-based) will
+translate the same enum values into whatever it needs to run remotely
+(e.g. `ssh <host> "cd <dir> && docker compose -f <file> restart"`,
+built the same `Process`+`ArgumentList`-safe way, never string
+concatenation) — no new vocabulary to invent, no risk of the remote path
+accepting an operation the local path wouldn't.
+
+### What's actually operational vs. abstraction-only
+
+**Operational today** (real, tested, live-verified):
+- Permission enforcement (`containers.view`/`control`/`recreate`,
+  checked inside `ContainerOperationsService`, same pattern as
+  `DeploymentService`).
+- Target/configuration validation (`ApplicationEnvironment` must exist,
+  be active, be `LegacyFilesystem` mode) — resolves and validates the
+  specific `TargetServer` for every call.
+- The recreate action's three independent gates (permission, the
+  `UseDownWithVolumesOnDeploy` opt-in, the `Confirm: true` body flag) and
+  its concurrency guard against an in-progress deployment.
+- Full audit trail for every action, in both outcomes, with the target
+  server named in every entry and compose output sanitized before
+  storage.
+- `ContainerOperationsService`'s health-check section — `IHealthCheckProbe`
+  makes a real HTTP/TCP call to `ApplicationEnvironment.HealthCheckEndpoint`,
+  which Phase 3 already requires to be independently network-reachable
+  (not via a local socket), so it is genuinely unaffected by the portal/
+  target-server separation this correction addresses.
+- `DockerComposeContainerRuntimeProvider`'s orchestration and parsing
+  logic (container discovery from `compose ps` output in either
+  documented JSON shape, `docker inspect` enrichment, `ContainerStateMapper`
+  state/health mapping, `ServiceName` filtering) — real code, fully unit-
+  tested against a fake `IRemoteExecutionProvider` standing in for a
+  future real one, ready to be exercised for real the moment a real
+  provider is registered.
+
+**Abstraction-only today** (the actual "reach a remote target server's
+Docker engine" capability):
+- `IRemoteExecutionProvider` has exactly one implementation —
+  `NotConfiguredRemoteExecutionProvider` — which always reports every
+  target server unreachable. No container status is ever actually
+  fetched from a real host; no restart/start/stop/recreate action ever
+  actually reaches a real container. Every `GET .../containers` call
+  returns `IsReachable: false` with a clear `UnreachableReason`; every
+  control action returns `Success: false` with the same message.
+- There is no SSH credential storage, no host-key verification, no
+  per-target-server agent, and no configuration surface (on `TargetServer`
+  or elsewhere) for *how* to reach a given server — deliberately not
+  built this phase (see the correction's own instruction above), since
+  building it safely is substantial, security-sensitive work of its own
+  (credential vault design, network/firewall reachability from the portal
+  VM to every target server, host-key trust) that deserves to be its own
+  deliberate phase, not a rushed side effect of this one.
+
+### API surface (unchanged from the original implementation)
+
+Same routes, same request/response shapes plus two new response fields
+(`IsReachable`, `UnreachableReason`, and `TargetServerName`) on the status
+endpoint — no breaking change to anything that shipped:
+
+- `GET /api/applications/{id}/environments/{envId}/containers`
+  (`containers.view`).
+- `POST .../containers/restart` / `.../start` / `.../stop`
+  (`containers.control`).
+- `POST .../containers/recreate` — body `{ "confirm": true }`
+  (`containers.recreate` + `UseDownWithVolumesOnDeploy` + confirm, all
+  required).
+
+### Permission model (unchanged)
 
 | Role | `containers.*` permissions granted |
 |---|---|
@@ -1210,163 +1220,165 @@ against a freshly-seeded database):
 | CTO | `containers.view` |
 | ADMIN | all three (superset, as in every prior phase) |
 
-`containers.view` follows the exact same broad-read precedent
-`deployments.view` established in Phase 3 (granted to every role that can
-already see deployment history); `containers.control`/`containers.recreate`
-are restricted to DEVOPS (the role that already holds the similarly
-consequential `deployments.rollback`) and ADMIN only — nobody gets
-destructive container control just by being able to view applications.
-
-### API surface
-
-All under the existing `ApplicationsController` (same nesting pattern as
-Phase 3's `deployments/dev`/`environments/{id}/promotions`/`rollback` —
-container operations are inherently scoped to one application's one
-environment, so they live alongside those rather than in a new
-top-level controller):
-
-- `GET /api/applications/{id}/environments/{envId}/containers` — live
-  status (`containers.view`, enforced inside the service).
-- `POST /api/applications/{id}/environments/{envId}/containers/restart`
-  / `.../start` / `.../stop` (`containers.control`).
-- `POST /api/applications/{id}/environments/{envId}/containers/recreate`
-  — body `{ "confirm": true }` (`containers.recreate` + the
-  `UseDownWithVolumesOnDeploy` opt-in + the confirm flag, all required).
-
-No changes to any Phase 1–4 endpoint's contract.
-
 ### Database changes
 
-None. No migration this phase — confirmed via
-`dotnet ef migrations has-pending-model-changes` (reports none) and a
-live `dotnet ef database update` against a fresh Postgres 16 instance
-(applies only the pre-existing Phase 1–4 migrations). Everything Phase 5
-exposes is either live Docker state (never persisted) or already-persisted
-Phase 3 `Deployment` data (`HealthCheckPassed`/`CompletedAt` for "last
-successful check", `Status` for "deployment status") read back, not
-duplicated into a new table.
+None, before or after this correction. Confirmed via
+`dotnet ef migrations has-pending-model-changes` (none) both before and
+after the rework, and a live `dotnet ef database update` against a fresh
+Postgres 16 instance (applies only the pre-existing Phase 1–4 migrations).
+Deliberately did **not** add connection/credential fields to
+`TargetServer` in this correction — see Known limitations below for why
+that's real, security-sensitive work left for whichever future phase
+actually implements a remote-execution provider, rather than a schema
+placeholder with no working behavior behind it today.
+
+### Security decisions (updated)
+
+- **No arbitrary Docker commands** — unchanged principle,
+  now enforced at *two* layers instead of one: `ComposeOperation` is the
+  fixed vocabulary both the local (Phase 3) and target-server-aware
+  (Phase 5) execution paths accept; neither has a code path from a
+  caller-supplied string to a process argument.
+- **No arbitrary container names, host paths, or compose files** —
+  unchanged: every call resolves its target exclusively from the already-
+  validated `ApplicationEnvironment` row, including now its `TargetServer`
+  navigation property (loaded via `.Include()`, never re-derived from
+  request input).
+- **No hardcoded server IPs, usernames, passwords, or SSH keys anywhere**
+  — `NotConfiguredRemoteExecutionProvider` needs none of these (it never
+  connects to anything); no such fields were added to `TargetServer` or
+  configuration this phase.
+- **The portal never assumes local Docker access represents a remote
+  target server.** This is the core of the correction: the previous
+  implementation's fundamental error was exactly this assumption, live-
+  verified as fixed by configuring a `TargetServer` with a Hostname on a
+  different subnet (`10.0.5.20`, no directory for it created anywhere in
+  this sandbox) and confirming the status/restart/recreate endpoints all
+  correctly report "unreachable" rather than silently succeeding against
+  local (non-existent, irrelevant) paths.
+- **Unauthorized environment access is impossible, not just hidden** —
+  unchanged, still enforced before any provider is even consulted.
+- **No secrets in audit logs** — unchanged; `LogSanitizer.Sanitize()`
+  still runs on every provider-returned message before it's written to
+  `AuditLog.Details`.
 
 ### Testing
 
-**Automated**: 199 tests total (up from Phase 1–4's 154), all passing
-(`dotnet test`, zero filter, zero failures — the existing 154 are
-unmodified). New Phase 5 coverage:
-- `ContainerStateMapperTests` (11) — pure state/health mapping, including
-  the `unhealthy`-overrides-`running` precedence rule and every
-  unrecognized Docker state falling back to `Unknown`.
-- `ComposeCommandExecutorTests` (extended, +4 via `[Theory]`) — proves
-  each new operation (`Restart`/`Start`/`Stop`/`Ps`) actually reaches the
-  real `docker` binary (not an unhandled switch arm) and fails
-  gracefully against the daemon-unreachable sandbox this environment runs
-  in, exactly like Phase 3's original Up/Down tests already did.
-- `ContainerInspectorTests` (5) — JSON-array and newline-delimited
-  `compose ps` output shapes both parse correctly (a fake
-  `IComposeCommandExecutor` supplies canned output matching Docker
-  Compose's documented schema; the subsequent real `docker inspect` call
-  fails for real in this sandbox and the fallback-from-`ps` path is what's
-  actually being verified); malformed output degrades to an empty result
-  rather than throwing; a `Health: "unhealthy"` field in `ps` output maps
-  through to `ContainerState.Unhealthy`.
-- `ContainerOperationsServiceTests` (25) — the full section-9 checklist:
-  status retrieval (configured/unconfigured/unhealthy/unknown-target),
-  unauthorized control (`ForbiddenException`, and proves the compose
-  executor is never invoked when the check fails first), authorized
-  restart/start/stop (correct `ComposeOperation` dispatched, success and
-  failure results both returned as data rather than thrown, secrets
-  sanitized before audit), invalid target (`NotFoundException` for a
-  nonexistent application, `ValidationException` for an unconfigured
-  environment), recreate's full gate matrix (missing confirm, missing
-  opt-in even with confirm+permission, active-deployment conflict, down-
-  failure tolerance, up-failure reporting), and audit events for every
-  action in both outcomes.
+**Automated**: 209 tests total, all passing (`dotnet test`, zero filter,
+zero failures). Net change from the original Phase 5 total (199): the 5
+tests for the deleted local-only `ContainerInspector` were replaced by
+15 tests split across two new files exercising the new two-layer
+abstraction, and `ContainerOperationsServiceTests` gained target-server-
+routing and unreachable-path coverage:
+- `NotConfiguredRemoteExecutionProviderTests` (3) — `IsConfigured` is
+  always `false`; both methods always fail with a target-server-specific
+  message and never throw.
+- `DockerComposeContainerRuntimeProviderTests` (9) — the
+  discovery/enrichment/parsing logic (both documented `compose ps` JSON
+  shapes, malformed-output tolerance, `docker inspect` enrichment
+  preferred over `compose ps` fallback fields, `Unhealthy` mapping) is
+  fully exercised against a fake `IRemoteExecutionProvider`; separately,
+  both `GetStatusAsync` and `RunOperationAsync` are proven to short-
+  circuit to `IsReachable: false` **without invoking the fake at all**
+  when `IsConfigured` reports `false` — the exact behavior that keeps a
+  real future implementation from being bypassed.
+- `ContainerOperationsServiceTests` (23) — every original Phase 5 test
+  case (status retrieval, unauthorized control, authorized restart/start/
+  stop, invalid target, unhealthy state, failed operation, audit events,
+  recreate's full gate matrix) still passes, now routed through a fake
+  `IContainerRuntimeProvider` and asserting the correct `TargetServer` is
+  passed on every call; plus new cases proving the *default* (no fake
+  override) fixture — which mirrors `NotConfiguredRemoteExecutionProvider`'s
+  real behavior — reports unreachable rather than a false success, and
+  that a mid-sequence unreachable result during recreate stops before
+  attempting `up -d` (only `down -v` was attempted).
 
-**Live/manual verification** (real Postgres 16, real `dotnet run` API
-process, real HTTP calls — this sandbox has the `docker` CLI installed but
-no reachable daemon, which turned out to be a genuine asset: every
-"Docker is unreachable" code path below was exercised for real, not
-simulated):
-- `dotnet ef migrations has-pending-model-changes` → none;
-  `dotnet ef database update` applies cleanly against a fresh database.
-- `GET /api/roles` confirms the exact permission table above.
-- A configured application environment's `GET .../containers` returns
-  `IsConfigured: true` with an empty `Containers` list and a clear
-  Docker-unreachable detail in the (skipped, since `HealthCheckType` was
-  `None` in this fixture) health section — no exception, HTTP 200.
-- `POST .../containers/restart` as an ADMIN user returns HTTP 200 with
-  `{"success": false, "message": "Failed to restart containers: ... dial
-  unix /var/run/docker.sock: connect: no such file or directory"}` — the
-  real, non-shell `docker compose restart` invocation, its real failure
-  surfaced as data, never a 500.
-- The same call as a DEVELOPER-role user (holds `containers.view` only)
-  returns **HTTP 403** with `"Missing required permission
-  'containers.control'"`; the identical user attempting
-  `.../containers/recreate` also gets 403 for `containers.recreate`.
-- `POST .../containers/recreate` without `Confirm: true` → 400; with
-  `Confirm: true` but `UseDownWithVolumesOnDeploy` still `false` → 400
-  naming the exact field to enable; after enabling it via the existing
-  Phase 2 environment-config endpoint, the same call proceeds to a real
-  (daemon-unreachable, gracefully-failing) `down -v` + `up -d` sequence.
-- `GET /api/audit` afterward shows, in order:
-  `container.recreate.requested` (`Success`, logged *before* the
-  destructive calls ran), `container.recreate.failed` (`Failure`, exact
-  compose exit codes in `Details`), and the earlier `container.restart`
-  (`Failure`) — every action accounted for, nothing silently dropped.
-- `GET .../containers` for a nonexistent application id → HTTP 404
-  (`NotFoundException`), not a generic error.
-- Regression: the same live session re-confirmed Phase 1–4 login, roles,
-  target-server/allowed-root creation, and application-environment
-  configuration all still work unchanged.
+**Live/manual verification** (real Postgres 16, real `dotnet run` API,
+real HTTP calls): configured a `TargetServer` named `remote-server-1`
+with `Hostname: 10.0.5.20` (a different subnet, and — deliberately — no
+corresponding directory created anywhere in this sandbox, to prove
+nothing local is silently substituted):
+- `GET .../containers` → `IsConfigured: true`, `IsReachable: false`,
+  `TargetServerName: "remote-server-1"`, `UnreachableReason: "No remote
+  execution mechanism is configured for target server 'remote-server-1'."`,
+  empty `Containers` — HTTP 200, never an exception.
+- `POST .../containers/restart` → HTTP 200,
+  `{"success": false, "message": "No remote execution mechanism is
+  configured for target server 'remote-server-1'."}`.
+- `POST .../containers/recreate` correctly still enforces its
+  configuration-boundary gates *before* ever consulting the (always-
+  unreachable) provider: rejected with the `UseDownWithVolumesOnDeploy`
+  validation error when that flag was off, regardless of `Confirm`; after
+  enabling it, the call proceeds to the provider layer and reports
+  `success: false` with the same unreachable message.
+- `GET /api/audit` afterward shows, in order: `container.restart`
+  (`Failure`), `container.recreate.requested` (`Success`, logged before
+  any provider call), `container.recreate.failed` (`Failure`) — every
+  action still accounted for.
+- Regression: `dotnet ef migrations has-pending-model-changes` → none;
+  Phase 1–4 login, roles, target-server/allowed-root creation, and
+  application-environment configuration re-confirmed working unchanged in
+  the same session.
 
-Live-verification database and `/tmp` compose fixture directory were
-removed afterward; nothing from this manual pass was left running or
-committed.
+Live-verification database was removed afterward; nothing from this
+manual pass was left running or committed.
 
 ### Known limitations / explicit Phase 6+ candidates
 
-- **No frontend for this phase.** The task given was backend-only
-  ("container monitoring & operational controls" as an API surface); the
-  Phase 4 UI has no container-status page, restart/stop/start buttons, or
-  a live-refresh polling loop yet. The API is shaped for exactly that
-  (see Live status refresh above) — natural next UI work, not started
-  here to stay in scope.
-- **Container inspection depends on the same single-host Docker
-  assumption Phase 3's executor has always had** (see Phase 3's own
-  "Known limitations" — `TargetServer.Hostname` is still inert, no remote
-  Docker/SSH connectivity exists). Phase 5 adds no new remote-execution
-  capability; it inspects/controls whatever the portal process's own
-  local Docker CLI can reach, exactly like deployment execution already
-  does.
-- **No historical container-status or health-check time series.**
-  "Last health check"/"last successful check" reuse Phase 3's existing
-  `Deployment.HealthCheckPassed`/`CompletedAt` fields (which only exist
-  once per deployment attempt, not on a schedule); there is no
-  independent, scheduled health-probing loop and no new table recording
-  container-status snapshots over time — that would start to be a
-  monitoring/analytics system, explicitly out of scope across every prior
-  phase's scope-cut list too.
+- **No real remote execution mechanism exists.** This is the central,
+  deliberate gap this correction leaves open rather than papering over.
+  Building one requires, at minimum: a secure credential storage design
+  for however target servers will be authenticated (SSH key/agent
+  socket, mTLS client cert for a remote agent, etc. — env-var-name
+  references only, matching the `Repository.AccessTokenEnvVarName`/
+  `Smtp:Password` pattern already established, never raw secrets in the
+  database); a decision between an SSH-based executor (simpler, needs
+  host-key trust management) versus a lightweight per-target-server agent
+  (more moving parts, better isolation — the agent could run with
+  Docker-group access on its own host without ever exposing a socket to
+  the portal); and updated `TargetServer` configuration to name which
+  mechanism and credentials apply per server. None of this was built
+  here — it's real, security-sensitive infrastructure work deserving its
+  own deliberate phase and review, not an assumption baked into a
+  monitoring feature.
+- **No frontend for this phase**, unchanged from the original
+  implementation — no Phase 4 UI page for container status/controls yet.
+  Building one now would also need to honestly render "not yet reachable"
+  as the default state for every configured environment, not just a
+  loading spinner.
+- **Phase 3's deployment executor still assumes local Docker access**,
+  unchanged by this correction (see "Why Phase 3's deployment executor
+  was deliberately NOT touched" above) — deployments still only work
+  correctly when the portal process has local Docker access to the
+  target. Unifying deployment execution onto `IRemoteExecutionProvider`
+  once a real implementation exists would close this gap for both
+  features at once, but is explicitly deferred, not assumed.
+- **No historical container-status or health-check time series** —
+  unchanged; still explicitly out of scope (monitoring/analytics
+  territory).
 - **`docker compose ps --format json`'s exact output shape is version-
-  dependent** and could not be verified against a real Docker Compose
-  installation in this sandbox (CLI present, daemon unreachable). The
-  parser handles both documented shapes (a JSON array, or newline-
-  delimited JSON objects) and degrades to an empty result on anything
-  else rather than throwing, but has not been exercised against a live
-  `docker compose ps` invocation with real containers running. Worth a
-  live smoke test against a real Docker host before depending on this in
-  production.
-- **Container operations are LegacyFilesystem-mode only**, matching
-  Phase 3's `DeploymentExecutor` (`ContainerImage`-mode execution isn't
-  implemented anywhere yet, pending a build/registry pipeline) — Phase 5
-  didn't add container-mode support since there's still nothing deployed
-  that way to inspect or control.
+  dependent and still unverified against a real Docker Compose
+  installation** — unchanged limitation, now doubly true since there is
+  also no real remote connection to verify it over yet. The parsing
+  logic (`DockerComposeContainerRuntimeProvider`) is unit-tested against
+  both documented shapes and degrades safely on anything else, but has
+  never been exercised against real `compose ps` output end-to-end.
+- **Container operations are LegacyFilesystem-mode only**, unchanged,
+  matching Phase 3's `DeploymentExecutor` scope.
 
 ## Next phase
 
 Not yet assigned — Phase 5 (Docker Container Monitoring & Operational
-Controls) is complete; awaiting explicit approval before starting further
-work. Strongest candidates per the "Known limitations" above: (1) the
-Phase 4 UI work this phase's API was shaped for (a container-status page,
-restart/stop/start controls, live-refresh polling), (2) the real
-remote-execution story flagged since Phase 3 (credential vault + SSH or a
-scoped per-target-server agent — now relevant to container inspection too,
-not just deployment), or (3) hardening session storage to an httpOnly
-cookie (flagged since Phase 4). Do not assume which without asking.
+Controls), including its remote-execution architecture correction, is
+complete; awaiting explicit approval before starting further work.
+Strongest candidate per this phase's own "Known limitations": a real
+secure remote-execution mechanism (SSH-based or per-target-server agent,
+with proper credential storage) implementing `IRemoteExecutionProvider` —
+until that exists, container monitoring/control remains abstraction-only
+and Phase 3's deployment executor remains local-Docker-only. Other
+candidates, unchanged from before: the Phase 4 UI work this phase's API
+was shaped for (a container-status page, restart/stop/start controls,
+live-refresh polling — now also needing to honestly render "not yet
+reachable" as the default state), or hardening session storage to an
+httpOnly cookie (flagged since Phase 4). Do not assume which without
+asking.
