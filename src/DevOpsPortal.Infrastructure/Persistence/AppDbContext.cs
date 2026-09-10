@@ -26,6 +26,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<BuildServer> BuildServers => Set<BuildServer>();
     public DbSet<BuildRequest> BuildRequests => Set<BuildRequest>();
     public DbSet<Release> Releases => Set<Release>();
+    public DbSet<SecretReference> SecretReferences => Set<SecretReference>();
+
+    /// <summary>Deliberately NOT on IAppDbContext — see SecretValueRecord's own
+    /// doc comment. Only EncryptedSecretProvider (constructed with this
+    /// concrete AppDbContext, not the interface) can reach this DbSet.</summary>
+    public DbSet<SecretValueRecord> SecretValues => Set<SecretValueRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -155,6 +161,31 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .HasForeignKey(r => r.ApplicationId).OnDelete(DeleteBehavior.Restrict);
             b.HasOne(r => r.BuildRequest).WithOne(br => br.Release)
                 .HasForeignKey<Release>(r => r.BuildRequestId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<SecretReference>(b =>
+        {
+            // No DB-level unique index here — SQL NULL comparison semantics don't
+            // give the right uniqueness behavior across the nullable Application/
+            // EnvironmentDefinition columns; SecretReferenceService enforces
+            // uniqueness explicitly instead. See that class's CreateAsync.
+            b.HasIndex(s => new { s.ApplicationId, s.EnvironmentDefinitionId });
+            b.Property(s => s.Name).HasMaxLength(200).IsRequired();
+            b.Property(s => s.ProviderKey).HasMaxLength(100).IsRequired();
+            b.Property(s => s.StoreKey).HasMaxLength(100).IsRequired();
+            b.HasOne(s => s.Application).WithMany()
+                .HasForeignKey(s => s.ApplicationId).OnDelete(DeleteBehavior.Cascade);
+            b.HasOne(s => s.EnvironmentDefinition).WithMany()
+                .HasForeignKey(s => s.EnvironmentDefinitionId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<SecretValueRecord>(b =>
+        {
+            b.HasKey(v => v.StoreKey);
+            b.Property(v => v.StoreKey).HasMaxLength(100);
+            b.Property(v => v.Ciphertext).IsRequired();
+            b.Property(v => v.Nonce).IsRequired();
+            b.Property(v => v.Tag).IsRequired();
         });
 
         modelBuilder.Entity<Deployment>(b =>

@@ -164,6 +164,8 @@ public static class DataSeeder
                 PermissionCodes.BuildServersManage,
                 PermissionCodes.BuildsView,
                 PermissionCodes.BuildsRequest,
+                PermissionCodes.SecretsView,
+                PermissionCodes.SecretsManage,
             ],
             [RoleNames.Cto] =
             [

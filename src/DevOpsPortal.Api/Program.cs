@@ -5,6 +5,7 @@ using DevOpsPortal.Application;
 using DevOpsPortal.Application.Abstractions;
 using DevOpsPortal.Infrastructure;
 using DevOpsPortal.Infrastructure.Persistence;
+using DevOpsPortal.Infrastructure.Secrets;
 using DevOpsPortal.Infrastructure.Security;
 using DevOpsPortal.Infrastructure.Seed;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -47,6 +48,13 @@ if (string.IsNullOrWhiteSpace(jwtSettings.SigningKey) || Encoding.UTF8.GetByteCo
 {
     throw new InvalidOperationException(
         "Jwt:SigningKey (env JWT_SIGNING_KEY) must be configured with at least 32 bytes before starting the API.");
+}
+
+var secretEncryptionSettings = builder.Configuration.GetSection(SecretEncryptionSettings.SectionName).Get<SecretEncryptionSettings>() ?? new SecretEncryptionSettings();
+if (string.IsNullOrWhiteSpace(secretEncryptionSettings.EncryptionKey) || Encoding.UTF8.GetByteCount(secretEncryptionSettings.EncryptionKey) < 32)
+{
+    throw new InvalidOperationException(
+        "Secrets:EncryptionKey (env SECRET_ENCRYPTION_KEY) must be configured with at least 32 bytes before starting the API.");
 }
 
 builder.Services.AddAuthentication(options =>

@@ -23,6 +23,7 @@ public static class DependencyInjection
         services.AddScoped<IContainerOperationsService, ContainerOperationsService>();
         services.AddScoped<IBuildServerService, BuildServerService>();
         services.AddScoped<IBuildService, BuildService>();
+        services.AddScoped<ISecretReferenceService, SecretReferenceService>();
         return services;
     }
 }

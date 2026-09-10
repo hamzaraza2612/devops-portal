@@ -41,6 +41,9 @@ public static class PermissionCodes
     public const string BuildsView = "builds.view";
     public const string BuildsRequest = "builds.request";
 
+    public const string SecretsView = "secrets.view";
+    public const string SecretsManage = "secrets.manage";
+
     public static readonly IReadOnlyList<(string Code, string Description)> All = new (string, string)[]
     {
         (UsersView, "View users"),
@@ -74,5 +77,7 @@ public static class PermissionCodes
         (BuildServersManage, "Create and configure build servers"),
         (BuildsView, "View build requests, their status, logs, and resulting releases"),
         (BuildsRequest, "Request a build of an application from a configured build server"),
+        (SecretsView, "View secret reference metadata (never secret values)"),
+        (SecretsManage, "Create, rotate, and delete secret references"),
     };
 }
