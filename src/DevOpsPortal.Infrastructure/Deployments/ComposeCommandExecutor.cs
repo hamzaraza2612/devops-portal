@@ -76,6 +76,10 @@ public class ComposeCommandExecutor(ILogger<ComposeCommandExecutor> logger) : IC
         ComposeOperation.Up => ["up", "-d"],
         ComposeOperation.Down => ["down"],
         ComposeOperation.DownWithVolumes => ["down", "-v"],
+        ComposeOperation.Restart => ["restart"],
+        ComposeOperation.Start => ["start"],
+        ComposeOperation.Stop => ["stop"],
+        ComposeOperation.Ps => ["ps", "-a", "--format", "json"],
         _ => throw new ArgumentOutOfRangeException(nameof(operation), operation, "Unsupported compose operation."),
     };
 }

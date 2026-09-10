@@ -40,6 +40,7 @@ public static class DependencyInjection
         services.AddHostedService<DeploymentWorker>();
 
         services.AddSingleton<IComposeCommandExecutor, ComposeCommandExecutor>();
+        services.AddSingleton<IContainerInspector, ContainerInspector>();
         services.AddHttpClient<IHealthCheckProbe, HealthCheckProbe>(client => client.Timeout = TimeSpan.FromSeconds(30));
 
         services.Configure<SmtpSettings>(configuration.GetSection(SmtpSettings.SectionName));

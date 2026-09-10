@@ -20,6 +20,7 @@ public static class DependencyInjection
         services.AddScoped<IDeploymentExecutor, DeploymentExecutor>();
         services.AddScoped<IDeploymentService, DeploymentService>();
         services.AddScoped<IBuildConfigurationService, BuildConfigurationService>();
+        services.AddScoped<IContainerOperationsService, ContainerOperationsService>();
         return services;
     }
 }

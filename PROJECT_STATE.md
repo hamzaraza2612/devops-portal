@@ -42,6 +42,16 @@ PRODUCTION promotion pipeline with per-environment explicit
 approve/deploy actions and CTO-gated production approval. See dedicated
 section below.
 
+**Phase 4 — Deployment Portal UI & Operational Dashboard.** Done. Adds the
+production-ready web UI (React SPA, `frontend/`) on top of the Phase 3
+deployment engine. See dedicated section below.
+
+**Phase 5 — Docker Container Monitoring & Operational Controls.** Done.
+Adds safe, read-only live container status/health plus scoped
+restart/start/stop/recreate-with-volumes operational controls, all
+targeting only already-configured application environments. See dedicated
+section below.
+
 ## Current database state
 
 PostgreSQL via EF Core migrations (`src/DevOpsPortal.Infrastructure/Persistence/Migrations`):
@@ -1006,14 +1016,357 @@ left running or committed.
   file blocks `npm run build`, not just `npm test`. Worth splitting into a
   separate test-only tsconfig if that coupling ever becomes annoying.
 
+## Phase 5 — Docker Container Monitoring & Operational Controls
+
+Done. Adds live (never persisted/historized) Docker container status and
+health visibility, plus scoped operational controls (restart/start/stop,
+and a permission-gated, explicitly-opted-in `docker compose down -v` /
+`up -d` recreate), for application environments Phase 2/3 already
+configured. **No database schema change** — every new endpoint reads live
+from Docker at request time or from Deployment rows Phase 3 already
+persists; nothing new is stored.
+
+### Architecture
+
+New abstractions, layered the same way as Phase 3's deployment engine:
+
+- **`ComposeOperation` extended**: `Restart`, `Start`, `Stop`, `Ps` added
+  alongside Phase 3's `Up`/`Down`/`DownWithVolumes` — still a fixed enum,
+  still the only vocabulary `ComposeCommandExecutor` accepts, still
+  invoked via `Process.ArgumentList` only. `Ps` runs
+  `docker compose ps -a --format json`, read-only.
+- **`IContainerInspector`/`ContainerInspector`** (Infrastructure): a
+  two-step, read-only inspection. Step 1 runs `ComposeOperation.Ps`
+  through the *existing* `IComposeCommandExecutor` — scoped entirely to
+  the already-validated `DeploymentRootPath`/`ComposeFilePath` for that
+  application environment, exactly like every other compose invocation in
+  this codebase. Step 2 runs `docker inspect <name>` (a second, direct
+  `Process`+`ArgumentList` call — `docker inspect` isn't a compose
+  subcommand, so it doesn't fit `ComposeOperation`) for each container
+  *name discovered in step 1* — never a caller-supplied name — to get the
+  richer fields `compose ps` doesn't reliably carry across versions
+  (restart count, exact start time, native Docker healthcheck status).
+  Parses both Compose's documented `ps --format json` shapes (a single
+  JSON array, or newline-delimited JSON objects — this has varied across
+  Compose releases) defensively: unparsable output degrades to an empty
+  result, never an exception, and a container `docker inspect` fails to
+  reach still reports using the fields `compose ps` already gave it
+  (`FallbackFromPs`) rather than dropping it from the list.
+- **`ContainerStateMapper`** (Application/Common, pure, no I/O): maps
+  Docker's own `.State.Status` string plus (if present) `.State.Health.Status`
+  to the portal's `ContainerState` enum (`Running`/`Exited`/`Restarting`/
+  `Paused`/`Created`/`Unhealthy`/`Unknown`) — a container reporting
+  Docker-native `unhealthy` always maps to `Unhealthy` regardless of its
+  raw run state, since that's the more actionable signal for an operator.
+  Anything Docker reports that isn't in the above list (`dead`,
+  `removing`, or no container found at all) maps to `Unknown`. Deliberately
+  a pure static function so it's unit-testable without a Docker daemon.
+- **`IContainerOperationsService`/`ContainerOperationsService`**
+  (Application): the single place all Phase 5 permission checks and
+  business rules live, mirroring `DeploymentService`'s pattern exactly —
+  every method resolves the current user and calls the same
+  `EnsurePermissionAsync` helper internally (not a static
+  `[RequirePermission]` attribute), throwing `ForbiddenException` on
+  failure. This was a deliberate choice over the attribute pattern used
+  by simpler controllers (Users/Roles/etc.) specifically so
+  "unauthorized control" is directly unit-testable at the service layer
+  without needing the HTTP pipeline, matching how `DeploymentService`
+  already tests `deployments.rollback` (also a flat, non-environment-
+  dependent permission enforced the same way).
+
+### What's exposed, and how it maps to the master requirements
+
+- **Container status** (`GET .../containers`): for the configured
+  environment's containers — container/service name, image, image tag,
+  live `ContainerState`, Docker-native health status string, start time,
+  computed uptime (only when `Running`), restart count, and port
+  bindings. "Never assume application name equals container name" is
+  structural here, not just a rule: the service and container names in
+  the response come from Docker itself (via `compose ps`/`inspect`), and
+  are filtered to `ApplicationEnvironment.ServiceName` when one is
+  configured — the app's own `Name`/`Slug` never appears in that lookup
+  path at all.
+- **Environment status**: the same status call returns
+  `ExpectedServiceName`/`ExpectedContainerName` (what Phase 2's config
+  says *should* be running) alongside the live `Containers` list (what
+  Docker says actually *is*) plus `CurrentImageOrVersion` (the real
+  running image:tag, ground truth from Docker) and `LatestDeploymentId`/
+  `LatestDeploymentStatus` (what the portal's own deployment history
+  thinks happened) side by side — so drift between "what we think we
+  deployed" and "what's actually running" is visible directly, not
+  something a caller has to cross-reference two endpoints to notice. When
+  Docker itself reports `unhealthy` (or the environment isn't configured
+  at all — e.g. a fresh app with no `ApplicationEnvironment` row yet, or
+  one still in `ContainerImage` mode with no build pipeline per Phase 3),
+  that's returned as data (`IsConfigured: false` or `State: Unhealthy`),
+  never an exception — a not-yet-healthy or not-yet-configured
+  environment is an expected, first-class status, not an error case.
+- **Restart/Start/Stop** (`POST .../containers/{restart,start,stop}`):
+  each is exactly one `ComposeOperation` call, scoped to the same
+  `DeploymentRootPath`/`ComposeFilePath`/`ComposeProjectName` Phase 2/3
+  already validate — there is no code path from these endpoints to a
+  caller-supplied container name, path, or compose file. Requires
+  `containers.control`. Every call — success or failure — is audited
+  (`container.restart`/`container.start`/`container.stop`,
+  `AuditResult.Success`/`Failure`, sanitized compose output as `Details`).
+  A Docker-level failure (daemon unreachable, container not found) comes
+  back as `ContainerActionResultDto { Success: false, Message: "..." }`
+  with **HTTP 200**, not a 500 or a thrown exception — an operational
+  action that didn't work is a normal, expected outcome to report, not a
+  server error.
+- **Recreate with volumes** (`POST .../containers/recreate`, `docker
+  compose down -v` then `up -d`): gated by **three independent checks**,
+  all enforced server-side, none skippable from the frontend:
+  1. `containers.recreate` permission (a separate, more sensitive
+     permission than `containers.control` — see role table below).
+  2. `ApplicationEnvironment.UseDownWithVolumesOnDeploy` must already be
+     explicitly `true` for *this specific* application environment — the
+     same field Phase 3 introduced for the deploy-time equivalent of this
+     exact decision. Reusing it here (rather than adding a second config
+     flag) is deliberate: it's the one place per-app-environment that
+     already means "this app's containers may have their volumes
+     destroyed by an operation this portal runs," and master requirements
+     §4 explicitly asks for this to be available only "where the existing
+     operational procedure" is configured — this *is* that existing
+     procedure's own opt-in flag.
+  3. The request body must carry `Confirm: true` — a server-side
+     safety net independent of whatever confirmation UX a future caller
+     builds; a stray or replayed request without it is rejected with a
+     clear `ValidationException`, never treated as an implicit yes.
+  Also blocked (`ConflictException`, HTTP 409) while a deployment is
+  already `Pending`/`Queued`/`Running` for that same application
+  environment, so a manual recreate can never race the deployment
+  engine's own compose down/up cycle. Two audit entries are always
+  written: `container.recreate.requested` *before* anything destructive
+  runs (so the intent is on record even if the process crashes
+  mid-operation), and `container.recreate.succeeded`/`.failed` after,
+  each naming the volume-destroying nature of the action explicitly in
+  `Details`. A failing `down -v` doesn't abort the sequence — `up -d`
+  still runs — matching `DeploymentExecutor`'s existing, already-tested
+  tolerance for the identical sequence at deploy time (a stack that
+  wasn't running yet is not a failure worth stopping for).
+
+### Live status refresh
+
+No server-side polling infrastructure was added — "periodic status
+refresh" per master requirements §5 is a client concern (poll
+`GET .../containers` on a timer) against an endpoint that's cheap and
+safe to call repeatedly (read-only, bounded by Docker CLI round-trip
+time, no persistence write on every call). No frontend work was in scope
+for this phase (Phase 4 built the UI; this phase is backend-only, per the
+task given), so the actual polling interval is deliberately left for
+whichever phase next touches the frontend to implement as a configurable
+value there — documented here as a known follow-up, not built blind
+against a UI that doesn't exist yet for this feature.
+
+### Security decisions
+
+- **No arbitrary Docker commands.** Every new capability funnels through
+  the same fixed `ComposeOperation` enum Phase 3 established, or through
+  `docker inspect <name>` where `<name>` is never caller input (see
+  Architecture above) — there is no request field anywhere in Phase 5
+  that becomes a shell argument.
+- **No arbitrary container names, host paths, or compose files.** Status/
+  control/recreate all resolve their target exclusively from the
+  already-validated `ApplicationEnvironment` row (`DeploymentRootPath`,
+  `ComposeFilePath`, `ComposeProjectName`, `ServiceName`) — the same
+  Phase 2 path-allow-listing (`AllowedDeploymentRoots`) that already
+  gates every other compose invocation in this codebase governs these
+  too, since they load the identical entity.
+- **Unauthorized environment access is impossible, not just hidden**:
+  every method throws `ForbiddenException` (→ 403) server-side before
+  touching Docker at all if the caller lacks the specific permission —
+  live-verified (see Testing) with a DEVELOPER-role user (holds
+  `containers.view` only) receiving 403 on both restart and recreate.
+- **Only configured targets may be operated**: an application with no
+  `ApplicationEnvironment` row for that environment, or one in
+  `ContainerImage` mode (no compose file to operate on yet, per Phase 3's
+  own Mode B scope), returns `ValidationException` (control/recreate) or
+  `IsConfigured: false` (status) — never attempts a Docker call against
+  nothing.
+- **No secrets in audit logs.** Compose stdout/stderr is passed through
+  the existing `LogSanitizer.Sanitize()` (the same one `DeploymentExecutor`
+  uses) before being written to `AuditLog.Details` — live-verified by
+  restarting a stack whose fake failure text included a `DB_PASSWORD=...`
+  fragment and confirming it never reached the stored row.
+- **RBAC is permission-based, not role-name-based**, consistent with
+  every prior phase: `containers.view`/`containers.control`/
+  `containers.recreate` are ordinary `PermissionCodes` entries, granted to
+  roles by `DataSeeder`, never checked by role name anywhere in
+  `ContainerOperationsService`.
+
+### Permission model
+
+Three new permission codes, seeded like every other `PermissionCodes.All`
+entry, with role-appropriate defaults (live-verified via `GET /api/roles`
+against a freshly-seeded database):
+
+| Role | `containers.*` permissions granted |
+|---|---|
+| DEVELOPER | `containers.view` |
+| QA | `containers.view` |
+| UAT | `containers.view` |
+| DEVOPS | `containers.view`, `containers.control`, `containers.recreate` |
+| CTO | `containers.view` |
+| ADMIN | all three (superset, as in every prior phase) |
+
+`containers.view` follows the exact same broad-read precedent
+`deployments.view` established in Phase 3 (granted to every role that can
+already see deployment history); `containers.control`/`containers.recreate`
+are restricted to DEVOPS (the role that already holds the similarly
+consequential `deployments.rollback`) and ADMIN only — nobody gets
+destructive container control just by being able to view applications.
+
+### API surface
+
+All under the existing `ApplicationsController` (same nesting pattern as
+Phase 3's `deployments/dev`/`environments/{id}/promotions`/`rollback` —
+container operations are inherently scoped to one application's one
+environment, so they live alongside those rather than in a new
+top-level controller):
+
+- `GET /api/applications/{id}/environments/{envId}/containers` — live
+  status (`containers.view`, enforced inside the service).
+- `POST /api/applications/{id}/environments/{envId}/containers/restart`
+  / `.../start` / `.../stop` (`containers.control`).
+- `POST /api/applications/{id}/environments/{envId}/containers/recreate`
+  — body `{ "confirm": true }` (`containers.recreate` + the
+  `UseDownWithVolumesOnDeploy` opt-in + the confirm flag, all required).
+
+No changes to any Phase 1–4 endpoint's contract.
+
+### Database changes
+
+None. No migration this phase — confirmed via
+`dotnet ef migrations has-pending-model-changes` (reports none) and a
+live `dotnet ef database update` against a fresh Postgres 16 instance
+(applies only the pre-existing Phase 1–4 migrations). Everything Phase 5
+exposes is either live Docker state (never persisted) or already-persisted
+Phase 3 `Deployment` data (`HealthCheckPassed`/`CompletedAt` for "last
+successful check", `Status` for "deployment status") read back, not
+duplicated into a new table.
+
+### Testing
+
+**Automated**: 199 tests total (up from Phase 1–4's 154), all passing
+(`dotnet test`, zero filter, zero failures — the existing 154 are
+unmodified). New Phase 5 coverage:
+- `ContainerStateMapperTests` (11) — pure state/health mapping, including
+  the `unhealthy`-overrides-`running` precedence rule and every
+  unrecognized Docker state falling back to `Unknown`.
+- `ComposeCommandExecutorTests` (extended, +4 via `[Theory]`) — proves
+  each new operation (`Restart`/`Start`/`Stop`/`Ps`) actually reaches the
+  real `docker` binary (not an unhandled switch arm) and fails
+  gracefully against the daemon-unreachable sandbox this environment runs
+  in, exactly like Phase 3's original Up/Down tests already did.
+- `ContainerInspectorTests` (5) — JSON-array and newline-delimited
+  `compose ps` output shapes both parse correctly (a fake
+  `IComposeCommandExecutor` supplies canned output matching Docker
+  Compose's documented schema; the subsequent real `docker inspect` call
+  fails for real in this sandbox and the fallback-from-`ps` path is what's
+  actually being verified); malformed output degrades to an empty result
+  rather than throwing; a `Health: "unhealthy"` field in `ps` output maps
+  through to `ContainerState.Unhealthy`.
+- `ContainerOperationsServiceTests` (25) — the full section-9 checklist:
+  status retrieval (configured/unconfigured/unhealthy/unknown-target),
+  unauthorized control (`ForbiddenException`, and proves the compose
+  executor is never invoked when the check fails first), authorized
+  restart/start/stop (correct `ComposeOperation` dispatched, success and
+  failure results both returned as data rather than thrown, secrets
+  sanitized before audit), invalid target (`NotFoundException` for a
+  nonexistent application, `ValidationException` for an unconfigured
+  environment), recreate's full gate matrix (missing confirm, missing
+  opt-in even with confirm+permission, active-deployment conflict, down-
+  failure tolerance, up-failure reporting), and audit events for every
+  action in both outcomes.
+
+**Live/manual verification** (real Postgres 16, real `dotnet run` API
+process, real HTTP calls — this sandbox has the `docker` CLI installed but
+no reachable daemon, which turned out to be a genuine asset: every
+"Docker is unreachable" code path below was exercised for real, not
+simulated):
+- `dotnet ef migrations has-pending-model-changes` → none;
+  `dotnet ef database update` applies cleanly against a fresh database.
+- `GET /api/roles` confirms the exact permission table above.
+- A configured application environment's `GET .../containers` returns
+  `IsConfigured: true` with an empty `Containers` list and a clear
+  Docker-unreachable detail in the (skipped, since `HealthCheckType` was
+  `None` in this fixture) health section — no exception, HTTP 200.
+- `POST .../containers/restart` as an ADMIN user returns HTTP 200 with
+  `{"success": false, "message": "Failed to restart containers: ... dial
+  unix /var/run/docker.sock: connect: no such file or directory"}` — the
+  real, non-shell `docker compose restart` invocation, its real failure
+  surfaced as data, never a 500.
+- The same call as a DEVELOPER-role user (holds `containers.view` only)
+  returns **HTTP 403** with `"Missing required permission
+  'containers.control'"`; the identical user attempting
+  `.../containers/recreate` also gets 403 for `containers.recreate`.
+- `POST .../containers/recreate` without `Confirm: true` → 400; with
+  `Confirm: true` but `UseDownWithVolumesOnDeploy` still `false` → 400
+  naming the exact field to enable; after enabling it via the existing
+  Phase 2 environment-config endpoint, the same call proceeds to a real
+  (daemon-unreachable, gracefully-failing) `down -v` + `up -d` sequence.
+- `GET /api/audit` afterward shows, in order:
+  `container.recreate.requested` (`Success`, logged *before* the
+  destructive calls ran), `container.recreate.failed` (`Failure`, exact
+  compose exit codes in `Details`), and the earlier `container.restart`
+  (`Failure`) — every action accounted for, nothing silently dropped.
+- `GET .../containers` for a nonexistent application id → HTTP 404
+  (`NotFoundException`), not a generic error.
+- Regression: the same live session re-confirmed Phase 1–4 login, roles,
+  target-server/allowed-root creation, and application-environment
+  configuration all still work unchanged.
+
+Live-verification database and `/tmp` compose fixture directory were
+removed afterward; nothing from this manual pass was left running or
+committed.
+
+### Known limitations / explicit Phase 6+ candidates
+
+- **No frontend for this phase.** The task given was backend-only
+  ("container monitoring & operational controls" as an API surface); the
+  Phase 4 UI has no container-status page, restart/stop/start buttons, or
+  a live-refresh polling loop yet. The API is shaped for exactly that
+  (see Live status refresh above) — natural next UI work, not started
+  here to stay in scope.
+- **Container inspection depends on the same single-host Docker
+  assumption Phase 3's executor has always had** (see Phase 3's own
+  "Known limitations" — `TargetServer.Hostname` is still inert, no remote
+  Docker/SSH connectivity exists). Phase 5 adds no new remote-execution
+  capability; it inspects/controls whatever the portal process's own
+  local Docker CLI can reach, exactly like deployment execution already
+  does.
+- **No historical container-status or health-check time series.**
+  "Last health check"/"last successful check" reuse Phase 3's existing
+  `Deployment.HealthCheckPassed`/`CompletedAt` fields (which only exist
+  once per deployment attempt, not on a schedule); there is no
+  independent, scheduled health-probing loop and no new table recording
+  container-status snapshots over time — that would start to be a
+  monitoring/analytics system, explicitly out of scope across every prior
+  phase's scope-cut list too.
+- **`docker compose ps --format json`'s exact output shape is version-
+  dependent** and could not be verified against a real Docker Compose
+  installation in this sandbox (CLI present, daemon unreachable). The
+  parser handles both documented shapes (a JSON array, or newline-
+  delimited JSON objects) and degrades to an empty result on anything
+  else rather than throwing, but has not been exercised against a live
+  `docker compose ps` invocation with real containers running. Worth a
+  live smoke test against a real Docker host before depending on this in
+  production.
+- **Container operations are LegacyFilesystem-mode only**, matching
+  Phase 3's `DeploymentExecutor` (`ContainerImage`-mode execution isn't
+  implemented anywhere yet, pending a build/registry pipeline) — Phase 5
+  didn't add container-mode support since there's still nothing deployed
+  that way to inspect or control.
+
 ## Next phase
 
-Not yet assigned — Phase 4 (Deployment Portal UI & Operational Dashboard)
-is complete; awaiting explicit approval before starting further work.
-Strongest candidates per the "Known limitations" above: (1) the real
+Not yet assigned — Phase 5 (Docker Container Monitoring & Operational
+Controls) is complete; awaiting explicit approval before starting further
+work. Strongest candidates per the "Known limitations" above: (1) the
+Phase 4 UI work this phase's API was shaped for (a container-status page,
+restart/stop/start controls, live-refresh polling), (2) the real
 remote-execution story flagged since Phase 3 (credential vault + SSH or a
-scoped per-target-server agent), since the UI now makes it very visible
-that deployments only work when the portal runs on the target host, or
-(2) hardening session storage to an httpOnly cookie now that a real
-frontend exists to notice the difference. Do not assume which without
-asking.
+scoped per-target-server agent — now relevant to container inspection too,
+not just deployment), or (3) hardening session storage to an httpOnly
+cookie (flagged since Phase 4). Do not assume which without asking.
