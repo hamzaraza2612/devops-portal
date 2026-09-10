@@ -19,8 +19,9 @@ public class PromotionsController(IDeploymentService deploymentService) : Contro
     [HttpGet]
     [RequirePermission(PermissionCodes.DeploymentsView)]
     public async Task<IActionResult> ListPending(
-        [FromQuery] Guid? applicationId, [FromQuery] Guid? toEnvironmentDefinitionId, CancellationToken cancellationToken) =>
-        Ok(await deploymentService.ListPendingPromotionsAsync(applicationId, toEnvironmentDefinitionId, cancellationToken));
+        [FromQuery] Guid? applicationId, [FromQuery] Guid? toEnvironmentDefinitionId,
+        [FromQuery] bool includeApprovedAwaitingDeploy, CancellationToken cancellationToken) =>
+        Ok(await deploymentService.ListPendingPromotionsAsync(applicationId, toEnvironmentDefinitionId, includeApprovedAwaitingDeploy, cancellationToken));
 
     [HttpGet("{id:guid}")]
     [RequirePermission(PermissionCodes.DeploymentsView)]

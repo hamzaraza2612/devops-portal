@@ -24,6 +24,7 @@ public record ApplicationEnvironmentDto(
     string? HealthCheckEndpoint,
     int HealthCheckIntervalSeconds,
     int HealthCheckTimeoutSeconds,
+    string? ApplicationUrl,
     bool IsActive,
     DateTimeOffset CreatedAt,
     DateTimeOffset? UpdatedAt);
@@ -47,4 +48,5 @@ public record UpsertApplicationEnvironmentRequest(
     string? HealthCheckEndpoint,
     int HealthCheckIntervalSeconds,
     int HealthCheckTimeoutSeconds,
+    string? ApplicationUrl,
     bool IsActive);

@@ -28,8 +28,14 @@ public interface IDeploymentService
     Task<PromotionRequestDto> RequestPromotionAsync(
         Guid applicationId, Guid toEnvironmentDefinitionId, CreatePromotionRequest request, CancellationToken cancellationToken = default);
 
+    /// <summary>By default, only promotions still awaiting approval (Status == PendingApproval).
+    /// With <paramref name="includeApprovedAwaitingDeploy"/>, also includes promotions that have
+    /// been approved but have no Deployment row yet — i.e. still need someone to click "Deploy"
+    /// (Phase 4 UI's "what still needs action" view; approving never creates that Deployment row
+    /// itself, so without this an approved-but-undeployed promotion would otherwise be
+    /// undiscoverable through this list endpoint once it leaves PendingApproval).</summary>
     Task<IReadOnlyList<PromotionRequestDto>> ListPendingPromotionsAsync(
-        Guid? applicationId, Guid? toEnvironmentDefinitionId, CancellationToken cancellationToken = default);
+        Guid? applicationId, Guid? toEnvironmentDefinitionId, bool includeApprovedAwaitingDeploy = false, CancellationToken cancellationToken = default);
 
     Task<PromotionRequestDto> GetPromotionAsync(Guid promotionRequestId, CancellationToken cancellationToken = default);
 

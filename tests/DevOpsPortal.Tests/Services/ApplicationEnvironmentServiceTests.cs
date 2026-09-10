@@ -34,7 +34,7 @@ public class ApplicationEnvironmentServiceTests
 
     private static UpsertApplicationEnvironmentRequest ValidRequest(Guid targetServerId, string? rootPath = "/mnt/data/apps/sample") =>
         new(targetServerId, "develop", rootPath, "publish", "Backups", null, "docker-compose.yml",
-            null, "SampleApi", "SampleApi", null, false, HealthCheckType.None, null, 30, 5, true);
+            null, "SampleApi", "SampleApi", null, false, HealthCheckType.None, null, 30, 5, null, true);
 
     [Fact]
     public async Task UpsertAsync_WithPathUnderAllowedRoot_Succeeds()

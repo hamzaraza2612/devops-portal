@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+@theme {
+  --color-slate-950: #0a0e14;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased;
+}
+
+a {
+  color: inherit;
+}
+
+/* Compact, readable monospace block for deployment logs. */
+.log-viewer {
+  @apply whitespace-pre-wrap break-words rounded-md bg-slate-950 p-3 font-mono text-[12.5px] leading-relaxed text-slate-200;
+}

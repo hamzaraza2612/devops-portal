@@ -73,6 +73,7 @@ public class ApplicationEnvironmentService(IAppDbContext db, IAuditService audit
         row.HealthCheckEndpoint = string.IsNullOrWhiteSpace(request.HealthCheckEndpoint) ? null : request.HealthCheckEndpoint.Trim();
         row.HealthCheckIntervalSeconds = request.HealthCheckIntervalSeconds;
         row.HealthCheckTimeoutSeconds = request.HealthCheckTimeoutSeconds;
+        row.ApplicationUrl = NormalizedUrlOrNull(request.ApplicationUrl);
         row.IsActive = request.IsActive;
         row.UpdatedAt = DateTimeOffset.UtcNow;
 
@@ -123,10 +124,24 @@ public class ApplicationEnvironmentService(IAppDbContext db, IAuditService audit
             if (request.HealthCheckIntervalSeconds <= 0 || request.HealthCheckTimeoutSeconds <= 0)
                 throw new ValidationException("HealthCheckIntervalSeconds and HealthCheckTimeoutSeconds must be positive.");
         }
+
+        if (!string.IsNullOrWhiteSpace(request.ApplicationUrl) && !IsSafeApplicationUrl(request.ApplicationUrl))
+            throw new ValidationException("ApplicationUrl must be an absolute http(s) URL with no embedded credentials.");
     }
+
+    /// <summary>Same validation Repository.Url uses (RepositoryService.ValidateUrl) — absolute
+    /// http(s), no embedded userinfo credentials. Duplicated rather than shared because the two
+    /// entities' URL fields have independent optionality/error-message requirements.</summary>
+    private static bool IsSafeApplicationUrl(string url) =>
+        Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri) &&
+        uri.Scheme is "https" or "http" &&
+        string.IsNullOrEmpty(uri.UserInfo);
 
     private static string? NormalizedOrNull(string? path) =>
         DeploymentPathValidator.TryNormalize(path, out var normalized) ? normalized : null;
+
+    private static string? NormalizedUrlOrNull(string? url) =>
+        string.IsNullOrWhiteSpace(url) ? null : url.Trim();
 
     private async Task<ApplicationEnvironment?> LoadAsync(Guid applicationId, Guid environmentDefinitionId, CancellationToken cancellationToken) =>
         await db.ApplicationEnvironments
@@ -140,7 +155,7 @@ public class ApplicationEnvironmentService(IAppDbContext db, IAuditService audit
         ae.PublishSubPath, ae.BackupSubPath, ae.BackupRetentionCount, ae.ComposeFilePath,
         ae.ComposeProjectName, ae.ServiceName, ae.ContainerName, ae.ExternalNetworkName, ae.UseDownWithVolumesOnDeploy,
         ae.HealthCheckType, ae.HealthCheckEndpoint, ae.HealthCheckIntervalSeconds, ae.HealthCheckTimeoutSeconds,
-        ae.IsActive, ae.CreatedAt, ae.UpdatedAt);
+        ae.ApplicationUrl, ae.IsActive, ae.CreatedAt, ae.UpdatedAt);
 
     public async Task<GitProviderResult<GitCommitInfo>> GetLatestCommitAsync(
         Guid applicationId, Guid environmentDefinitionId, CancellationToken cancellationToken = default)
