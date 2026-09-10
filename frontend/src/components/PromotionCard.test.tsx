@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { PromotionCard } from './PromotionCard';
 import { AuthContext, type AuthContextValue } from '../auth/AuthContext';
 import { Permissions } from '../auth/permissions';
-import { ApprovalStatus, type PromotionRequestDto } from '../types/api';
+import { ApprovalStatus, DeploymentStatus, type PromotionRequestDto } from '../types/api';
 
 function authValue(permissions: string[]): AuthContextValue {
   return {
@@ -42,11 +42,18 @@ const baseQaPromotion: PromotionRequestDto = {
   requestedByUsername: 'developer1',
   requestedAt: '2025-01-01T00:00:00Z',
   decidedByUserId: null,
+  decidedByUsername: null,
   decidedAt: null,
   decisionNotes: null,
+  notifiedAt: null,
   requiresCtoApproval: false,
   ctoApprovalStatus: null,
-  ctoEmailSentAt: null,
+  ctoDecidedByUserId: null,
+  ctoDecidedByUsername: null,
+  ctoDecidedAt: null,
+  ctoNotifiedAt: null,
+  linkedDeploymentId: null,
+  linkedDeploymentStatus: null,
 };
 
 describe('PromotionCard', () => {
@@ -99,5 +106,47 @@ describe('PromotionCard', () => {
 
     const deployButton = screen.getByRole('button', { name: /Deploy to PRODUCTION/ });
     expect(deployButton).not.toBeDisabled();
+  });
+
+  it('shows the approver and decision time once a promotion has been decided', () => {
+    const decided: PromotionRequestDto = {
+      ...baseQaPromotion,
+      status: ApprovalStatus.Approved,
+      decidedByUserId: 'user-2',
+      decidedByUsername: 'qa-approver',
+      decidedAt: '2025-01-02T00:00:00Z',
+    };
+    renderCard(decided, [Permissions.DeploymentsApproveQa]);
+
+    expect(screen.getByText('Approver')).toBeInTheDocument();
+    expect(screen.getByText('qa-approver')).toBeInTheDocument();
+  });
+
+  it('shows the resulting deployment status once the promotion has been deployed', () => {
+    const deployed: PromotionRequestDto = {
+      ...baseQaPromotion,
+      status: ApprovalStatus.Approved,
+      linkedDeploymentId: 'deploy-1',
+      linkedDeploymentStatus: DeploymentStatus.Succeeded,
+    };
+    renderCard(deployed, [Permissions.DeploymentsApproveQa]);
+
+    expect(screen.getByText('Deployment status')).toBeInTheDocument();
+  });
+
+  it('shows who granted CTO approval and when, for a decided Production promotion', () => {
+    const ctoDecided: PromotionRequestDto = {
+      ...baseQaPromotion,
+      toEnvironmentName: 'PRODUCTION',
+      status: ApprovalStatus.Approved,
+      requiresCtoApproval: true,
+      ctoApprovalStatus: ApprovalStatus.Approved,
+      ctoDecidedByUserId: 'user-3',
+      ctoDecidedByUsername: 'cto-user',
+      ctoDecidedAt: '2025-01-03T00:00:00Z',
+    };
+    renderCard(ctoDecided, [Permissions.DeploymentsDeployProduction]);
+
+    expect(screen.getByText('cto-user')).toBeInTheDocument();
   });
 });

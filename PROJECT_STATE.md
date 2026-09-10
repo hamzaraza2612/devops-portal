@@ -75,6 +75,17 @@ Production) and resolved only at deployment execution time, injected into
 arguments, never persisted, never returned by any API response. See
 dedicated section below.
 
+**Phase 8 — Notifications & Approval Workflow.** Done. Adds
+`INotificationProvider` (real first implementation: `EmailNotificationProvider`,
+wrapping Phase 3's SMTP plumbing) and `INotificationService`, which notifies
+the right users — resolved by permission, never role name — on every
+QA/UAT/production approval request, deployment started/succeeded/failed,
+and rollback completed/failed. Production/CTO approval keeps Phase 3's
+exact state machine (never auto-deploys); its notification email now
+deep-links to a read-only, unauthenticated preview via a secure, expiring,
+SHA-256-hashed one-time token that is never itself a path to approve or
+reject anything. See dedicated section below.
+
 ## Current database state
 
 PostgreSQL via EF Core migrations (`src/DevOpsPortal.Infrastructure/Persistence/Migrations`):
@@ -82,8 +93,10 @@ PostgreSQL via EF Core migrations (`src/DevOpsPortal.Infrastructure/Persistence/
 `Phase6_BuildPipelineJenkins` (Phase 6 — see dedicated section below for its
 `BuildServers`/`BuildRequests`/`Releases` tables and the additive columns on
 `BuildConfigurations`/`Deployments`), `Phase7_SecretsManagement` (Phase 7 —
-`SecretReferences` metadata table + `SecretValues` ciphertext-only table;
-see dedicated section below).
+`SecretReferences` metadata table + `SecretValues` ciphertext-only table),
+`Phase8_NotificationsApprovals` (Phase 8 — approval-token/notification
+columns on `PromotionRequests`/`ProductionApprovals`; see dedicated section
+below).
 
 Phase 1 tables: `Users`, `Roles`, `Permissions`, `UserRoles` (join),
 `RolePermissions` (join), `AuditLogs`.
@@ -2037,16 +2050,327 @@ pass was left running or committed.
   onto `SecretReference` is a natural future consolidation, not assumed
   here.
 
+## Phase 8 — Notifications & Approval Workflow
+
+Done. Makes deployment approvals and failures visible through
+notifications, per the master requirements' 6-section scope: an email
+notification abstraction, notification coverage for every listed workflow
+event, the Production/CTO flow (unchanged state machine, richer
+notification), secure approval links/tokens, and UI visibility of pending
+approvals/status/requester/approver/timestamps/deployment status.
+
+### Architecture
+
+```
+DeploymentService / DeploymentExecutor
+        │  fires one of four notification events at the right point in
+        │  the existing state machine — never a new state, never a new
+        │  auto-deploy trigger
+        ▼
+INotificationService (Application, impl: NotificationService)
+        │  resolves recipients by permission (never role name — same
+        │  principle Phase 3 established for the original CTO email),
+        │  composes the message, mints/verifies approval-preview tokens,
+        │  audits every send, broadcasts to every registered provider
+        ▼
+INotificationProvider (Application/Abstractions, impl:
+        │  EmailNotificationProvider)
+        │  channel-agnostic send — the only implementation today wraps
+        │  Phase 3's IEmailSender/SmtpEmailSender (SMTP config, credential
+        │  handling, and graceful-no-op-when-unconfigured all untouched)
+        ▼
+   SMTP (or, later, Slack/Teams/webhook via a new provider + one DI line)
+```
+
+`IEmailSender`/`SmtpEmailSender` are deliberately unchanged — email
+delivery mechanics were already right in Phase 3 (configurable SMTP, no
+hardcoded credentials, returns `false` rather than throwing when
+unconfigured or on send failure). This phase's job was the layer above it:
+deciding *when* to notify, *who* to notify, and *what* to say — that's
+`NotificationService`, and it's the only Application-layer code that talks
+to `INotificationProvider`, same ownership pattern Phase 7 used for
+`ISecretProvider`.
+
+### Notification coverage (master requirements §2)
+
+| Event | Trigger point | Recipients |
+|---|---|---|
+| QA approval requested | `RequestPromotionAsync`, target QA | holders of `deployments.approve.qa` |
+| UAT approval requested | `RequestPromotionAsync`, target UAT | holders of `deployments.approve.uat` |
+| Production approval requested | `RequestPromotionAsync`, target Production | holders of `deployments.approve.production` |
+| CTO approval requested | *(same event as above — see below)* | *(same)* |
+| Deployment started | `DeploymentExecutor.ExecuteAsync`, on `Status = Running` | the user who requested the deployment |
+| Deployment succeeded | `DeploymentExecutor.ExecuteAsync`, success path | requester |
+| Deployment failed | `DeploymentExecutor.ExecuteAsync`, catch block | requester (message includes the sanitized failure reason) |
+| Rollback completed/failed | same two hooks, `Deployment.IsRollback` picks the wording | requester |
+
+**"Production approval requested" and "CTO approval requested" are one
+event in this system, not two** — `deployments.approve.production` is the
+single permission that gates deciding a production `PromotionRequest`
+*and* its linked `ProductionApproval` (Phase 3's `ApprovePromotionAsync`
+already transitions both in one call), so the recipients are always
+identical. Sending two separately-worded emails to the same people about
+the same request would just be noise; one CTO-flavored notification
+(`NotifyProductionApprovalRequestedAsync`) covers both master-requirements
+bullets. This is documented here so a future reader doesn't "fix" it into
+two emails.
+
+Deployment-lifecycle notifications go to the requester only — not a
+broader distribution list — a deliberate scope decision to avoid
+notification fatigue on every DEV deploy; see Known limitations for the
+natural extension (CC approvers on production outcomes) this leaves open,
+not built here since master requirements §2 lists recipients only as "the
+right users," which the requester unambiguously is.
+
+### Approval security — read-only preview tokens, decisions stay authenticated
+
+Every `PromotionRequest` (all three target environments) and every
+`ProductionApproval` gets its own one-time token, minted by
+`ApprovalTokenHelper.Generate()` (256-bit random, hex) the moment the
+record is created. Only the SHA-256 hash is persisted
+(`ApprovalTokenHash`) — the raw value exists only long enough to go into
+the notification body and is never logged or stored. This satisfies every
+bullet in master requirements §4:
+
+- **Secure** — 256 bits of entropy; only a hash is ever at rest; a
+  database read alone can never reproduce a working link.
+- **Expire** — `ApprovalTokenExpiresAt`/`ProductionApproval.ExpiresAt`
+  (default 7 days from creation); `GET .../by-token/{token}` reports
+  `isExpired: true` past that point rather than pretending the link is
+  still fresh.
+- **Single-use where appropriate** — the token is read-only (see below),
+  so "single-use" applies to the *decision* it points at, not the read
+  itself: once a promotion/approval is decided, the same token keeps
+  resolving but now shows the decided state, never a stale "still
+  pending" view.
+- **Not expose secrets** — the preview DTO (`ApprovalPreviewDto`) carries
+  only application/environment/commit/requester/timestamps/status; there
+  is no field on it, anywhere, that could be a secret.
+- **Auditable** — every notification send is audited
+  (`notification.promotion_approval_requested`/
+  `notification.production_approval_requested`/
+  `notification.deployment_started`/`notification.deployment_outcome`),
+  and the existing `promotion.*`/`production_approval.*` audit trail
+  (unchanged from Phase 3) still covers every decision.
+- **Associated with the correct application/release/environment** —
+  structural, not a convention: the token is looked up by its hash
+  directly against exactly one `PromotionRequest` or `ProductionApproval`
+  row (the same `WHERE ApprovalTokenHash = X` pattern as an API-key
+  lookup), so a token minted for one promotion can never resolve, preview,
+  or be confused with another — live- and unit-verified with two
+  successive promotions of the same application (a rejected one and its
+  replacement): the first promotion's token still resolves only to the
+  first promotion's own data after the second is created.
+
+**Deliberate design choice, explicitly reversing nothing from Phase 3**:
+the token is read-only. `GET /api/promotions/by-token/{token}` and
+`GET /api/promotions/production-approvals/by-token/{token}` are the only
+two `[AllowAnonymous]` actions in the entire API — they return a preview
+DTO with no way to approve, reject, or deploy anything. Actually deciding
+a promotion still always goes through the same authenticated,
+permission-checked `POST /api/promotions/{id}/approve`/`reject` endpoints
+Phase 3 built — this was Phase 3's own explicit, reasoned decision
+("there is no separate public 'click this link to approve' endpoint — by
+design... the token is not, by itself, sufficient to approve anything")
+and master requirements §4's security checklist is fully satisfiable
+without reversing it: a magic-link-that-decides-things model was
+considered and rejected here specifically because it would add a new
+unauthenticated write surface onto the single most sensitive action in
+the system (production deployment approval) for a convenience gain
+(skipping login from the email link) that isn't asked for anywhere in the
+spec — the flow diagram in master requirements §3 reads just as correctly
+as "get the email, then log in to the portal to act," which is exactly
+what this implementation does. The read-only preview still gives the
+email real, immediate value (the recipient sees what they're being asked
+to review before logging in) without that trade-off.
+
+### Never auto-deploy (master requirements §3) — unchanged from Phase 3
+
+The Production flow's exact sequence — UAT success → promotion request →
+CTO approval email → CTO approves (via the authenticated endpoint) →
+portal shows Approved → a separately-authorized user explicitly deploys —
+is byte-for-byte the same state machine Phase 3 built.
+`DeployApprovedPromotionAsync` still re-validates
+`PromotionRequest.Status == Approved` **and**
+`ProductionApproval.Status == Approved` server-side on every call; nothing
+in this phase adds a code path from "notified" or "approved" to a
+`Deployment` row. This phase only changes what happens around that
+unchanged core: who gets told, and how securely they can preview what
+they're being asked to decide.
+
+### Database changes
+
+`Phase8_NotificationsApprovals` migration:
+- **`PromotionRequests`** gained `ApprovalTokenHash` (unique, indexed,
+  required), `ApprovalTokenExpiresAt` (required), `NotifiedAt` (nullable),
+  `NotificationRecipients` (nullable, comma-joined, audit/display only).
+- **`ProductionApprovals`**: `ApprovalToken` → `ApprovalTokenHash`
+  (renamed — Phase 3's field was already an unguessable reference; this
+  phase adds hashing so even a database read can't reconstruct a working
+  link), `EmailSentAt` → `NotifiedAt`, `EmailRecipients` →
+  `NotificationRecipients` (both renamed for provider-agnostic
+  terminology now that email is one of potentially several notification
+  channels), plus a new `ExpiresAt` (required).
+
+No `SecretValueRecord`/ciphertext table, no `IAppDbContext` change beyond
+what the renamed/added columns need — this phase touches only the
+promotion/approval tables.
+
+Confirmed via `dotnet ef migrations has-pending-model-changes` (none) and
+a live `dotnet ef database update` against a fresh Postgres 16 instance
+(applies cleanly on top of every Phase 1–7 migration).
+
+### API surface
+
+- `GET /api/promotions/by-token/{token}` — **unauthenticated**, read-only
+  preview of a `PromotionRequest` (QA/UAT/Production, whichever the token
+  was minted for).
+- `GET /api/promotions/production-approvals/by-token/{token}` — same
+  contract, for the CTO-specific `ProductionApproval`.
+- Every other Phase 3 promotion/deployment endpoint is unchanged — same
+  routes, same request/response shapes plus the new `PromotionRequestDto`
+  fields below.
+
+`PromotionRequestDto` gained (for the Phase 4 UI's "pending approvals,
+approval status, requester, approver, timestamps, deployment status" —
+master requirements §5): `decidedByUsername`, `notifiedAt`,
+`ctoDecidedByUserId`/`ctoDecidedByUsername`/`ctoDecidedAt` (previously
+only the status was exposed, not who decided or when),
+`ctoNotifiedAt` (renamed from `ctoEmailSentAt`), and
+`linkedDeploymentId`/`linkedDeploymentStatus` (the most recent `Deployment`
+row created from this promotion, if any — resolves "deployment status"
+without a separate call).
+
+### Frontend
+
+Unlike Phases 5–7 (backend-only by explicit precedent), this phase's own
+section 5 asks for concrete UI fields, and the Phase 4 `PromotionCard`
+component already existed and already covered most of them — so this
+phase made the small, targeted addition the new DTO fields unlock rather
+than leaving another explicit gap: an "Approver" row next to "Decided at",
+a "Deployment status" badge when a `Deployment` has resulted from the
+promotion, and the CTO-approval block now shows who granted/rejected it
+and when. No new page, no new route — same component, same data flow,
+just no longer silently dropping fields the backend now provides.
+
+### Testing
+
+**Automated**: 314 backend tests total, all passing (`dotnet test`, zero
+filter, zero failures) — net +25 over Phase 7's 289; frontend: 38 tests,
+all passing (+3 for the new `PromotionCard` fields):
+- `NotificationServiceTests` (7) — no-recipients case sends nothing and
+  never throws; broadcasts to every registered provider even when one
+  fails or throws (provider isolation); deployment-started/outcome
+  notifications resolve the requester's email and pick rollback vs.
+  deployment wording correctly; a failed deployment's notification
+  includes the failure reason; every send is audited.
+- `ApprovalTokenHelperTests` (5) — 256-bit hex tokens, never repeated,
+  deterministic hashing, `Verify` correct for right/wrong token.
+- New `DeploymentServiceTests` coverage (13) — QA/UAT approval-requested
+  notifications actually fire (previously only Production/CTO was
+  tested) and are audited; a valid token previews correctly with no
+  secret field; an unknown token 404s; a decided promotion's preview
+  reflects the decision; an expired token still resolves but reports
+  `isExpired: true`; **the full "wrong release" isolation matrix** — a
+  token minted for one promotion (or one `ProductionApproval`) never
+  resolves, previews, or leaks into another, even for the same
+  application, verified across a rejected-then-replaced promotion pair
+  for both QA/UAT and Production tokens; unauthenticated CTO-approval
+  preview.
+- `PromotionCard.test.tsx` (+3) — approver name/timestamp render once a
+  promotion is decided, deployment status badge renders once a
+  `Deployment` is linked, CTO approver name/timestamp render once
+  granted.
+
+Pre-existing Phase 3 coverage (`ApprovePromotionAsync_AlreadyDecided_ThrowsConflict`,
+the full RBAC/state-machine/concurrency suite) already covered "duplicate
+approval," "production authorization," and "audit" from master
+requirements §6's checklist and needed no changes — confirmed still
+passing unmodified.
+
+**Live/manual verification** (real Postgres 16, real `dotnet run` API, a
+minimal local SMTP debug server — no real relay available in this
+sandbox, same constraint every phase with an external-service dependency
+has had): drove the full DEV → QA → UAT → Production pipeline through the
+real API and confirmed, for real, over real SMTP:
+- `Deployment started`/`Deployment failed` emails delivered to the
+  requester with the correct application/environment/commit/failure
+  reason (no real Docker daemon in this sandbox, so DEV/QA/UAT deploys
+  genuinely failed at the `docker compose` step exactly like Phase 3's own
+  live verification — deployment rows were advanced to `Succeeded`
+  directly in the database only to unblock the next promotion step, never
+  by weakening the health-check/success logic itself).
+- `Approval requested: ... -> QA`/`-> UAT` emails delivered to the correct
+  permission-holders; `GET /api/promotions/by-token/{token}` with the
+  token decoded straight out of the raw SMTP payload returned the correct
+  preview with **no Authorization header** — genuinely unauthenticated;
+  an unrelated/garbage token → 404.
+- Duplicate approval of the same QA promotion → HTTP 409 on the second
+  call.
+- `Production approval requested: ...` email delivered only to
+  `deployments.approve.production` holders; its token's preview showed
+  `toEnvironmentName: "PRODUCTION"`; `POST .../deploy` before CTO approval
+  → HTTP 400; after approval (`ctoDecidedByUsername: "admin"` correctly
+  populated) → deploy succeeded.
+- `GET /api/audit` showed a `notification.*` entry for every send above
+  plus the unchanged `promotion.*`/`production_approval.*` entries; the
+  entire audit response was grepped for both raw tokens used in this
+  session — zero matches.
+- Regression: `dotnet ef migrations has-pending-model-changes` → none;
+  applications/target-servers/build-servers/secrets listings and
+  unauthenticated-request-rejection (401) all re-confirmed working
+  unchanged in the same session.
+
+Live-verification database, the local SMTP debug server, and the
+temporary `/tmp` compose fixture directory were all removed afterward;
+nothing from this manual pass was left running or committed.
+
+### Known limitations / explicit next-phase candidates
+
+- **Deployment-lifecycle notifications go to the requester only** — no CC
+  list for approvers/DevOps on a production failure, no team/channel
+  distribution. A reasonable, low-risk future addition (e.g. also
+  notifying `deployments.approve.production` holders on a *production*
+  deployment failure specifically) — not built here since master
+  requirements §2 doesn't specify a broader audience and doing so
+  unprompted risks notification fatigue.
+- **No "approval decided" notification back to the requester** — master
+  requirements §2's list is entirely about *requested* events (approvals
+  requested, deployment started/succeeded/failed, rollback
+  completed/failed); whether a promotion was approved or rejected is
+  visible in the portal (`PromotionRequestDto.status`/`decidedByUsername`)
+  but doesn't currently trigger its own email. Easy, explicitly-scoped
+  future addition if wanted.
+- **`INotificationProvider` has exactly one implementation.** Provider-
+  agnostic by design (master requirements §1's "notification
+  abstraction"), but Slack/Teams/webhook support is a future phase's new
+  class + one DI registration, not started here — same pattern Phase 6
+  left `IBuildProvider` in and Phase 7 left `ISecretProvider` in.
+  Preserved list of things "explicitly out of scope" from Phase 3's own
+  notes (Slack/Teams integrations) now has exactly the extension point it
+  was waiting for.
+- **No key/token rotation tooling beyond natural expiry** — an approval
+  token cannot be manually invalidated before its 7-day expiry (e.g. "I
+  sent that to the wrong CTO"); the only mitigation today is that the
+  token is read-only, so the worst case is someone previewing metadata
+  they weren't the intended recipient of, not an unauthorized decision.
+- **No frontend for build/release/secret-reference management still** —
+  unchanged from Phases 6/7; this phase's frontend touch was scoped
+  narrowly to the `PromotionCard` fields master requirements §5
+  explicitly asked for, not a general UI expansion.
+
 ## Next phase
 
-Not yet assigned — Phase 7 (Secrets & Secure Configuration Management) is
+Not yet assigned — Phase 8 (Notifications & Approval Workflow) is
 complete; awaiting explicit approval before starting further work.
-Strongest candidates per this phase's own "Known limitations": a Phase 4
-UI page for managing secret references (mirroring the backend-only
-precedent Phases 5–7 have all left open), or wiring actual `Repository`/
-`BuildServer` credential consumption through `SecretReference` instead of
-their standalone env-var-name fields. Other candidates, unchanged from
-before: wiring `IDeploymentService`/`DeploymentExecutor` to deploy from a
-`Release` (Phase 6), a real secure remote-execution mechanism for Phase 5's
-`IRemoteExecutionProvider`, or hardening session storage to an httpOnly
-cookie (flagged since Phase 4). Do not assume which without asking.
+Strongest candidates per this phase's own "Known limitations": broader
+notification distribution (CC approvers on production outcomes, an
+"approval decided" notification back to the requester), or a second
+`INotificationProvider` (Slack/Teams/webhook). Other candidates, unchanged
+from before: a Phase 4 UI page for managing secret/build-server
+references, wiring `Repository`/`BuildServer` credentials through
+`SecretReference`, wiring `IDeploymentService`/`DeploymentExecutor` to
+deploy from a `Release` (Phase 6), a real secure remote-execution
+mechanism for Phase 5's `IRemoteExecutionProvider`, or hardening session
+storage to an httpOnly cookie (flagged since Phase 4). Do not assume which
+without asking.

@@ -39,6 +39,34 @@ public class PromotionRequest
     public DateTimeOffset? DecidedAt { get; set; }
     public string? DecisionNotes { get; set; }
 
+    /// <summary>Hash (SHA-256, hex) of a one-time random token minted when this
+    /// request is created — never the raw token, which exists only transiently
+    /// (in memory, for inclusion in the approval-requested notification) and is
+    /// never persisted or logged. Used only to resolve
+    /// GET /api/promotions/by-token/{token} to a read-only preview of this
+    /// request for an unauthenticated notification-email recipient; deciding
+    /// (approve/reject/deploy) always requires the normal authenticated,
+    /// permission-checked endpoints — the token is never itself a bypass
+    /// credential (same design principle as ProductionApproval.ApprovalTokenHash).</summary>
+    public string ApprovalTokenHash { get; set; } = string.Empty;
+
+    /// <summary>After this, GET .../by-token/{token} reports the link as expired
+    /// rather than resolving it — bounds how long a leaked/forwarded email link
+    /// remains useful even though it only ever grants read access.</summary>
+    public DateTimeOffset ApprovalTokenExpiresAt { get; set; }
+
+    /// <summary>Null if no active user held the relevant approve.* permission at
+    /// request time, or the notification provider failed to send — the request
+    /// itself is never blocked either way (master requirements: notification
+    /// delivery must never gate the workflow, same principle as Phase 3's CTO
+    /// email).</summary>
+    public DateTimeOffset? NotifiedAt { get; set; }
+
+    /// <summary>Snapshot of who the "approval requested" notification was sent
+    /// to (role/permission membership can change later) — comma-joined,
+    /// audit/display only, never a secret.</summary>
+    public string? NotificationRecipients { get; set; }
+
     /// <summary>Only populated when ToEnvironmentDefinition is Production.</summary>
     public ProductionApproval? ProductionApproval { get; set; }
 }

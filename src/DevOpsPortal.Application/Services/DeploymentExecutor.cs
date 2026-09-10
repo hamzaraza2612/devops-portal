@@ -21,6 +21,7 @@ public class DeploymentExecutor(
     IHealthCheckProbe healthCheckProbe,
     IAuditService auditService,
     ISecretReferenceService secretReferenceService,
+    INotificationService notificationService,
     ILogger<DeploymentExecutor> logger) : IDeploymentExecutor
 {
     public async Task ExecuteAsync(Guid deploymentId, CancellationToken cancellationToken)
@@ -51,6 +52,7 @@ public class DeploymentExecutor(
         await log.WriteAsync(DeploymentLogLevel.Info,
             $"Deployment started for {deployment.Application.Name}/{deployment.EnvironmentDefinition.Name} at commit {deployment.CommitSha}.",
             cancellationToken);
+        await NotifyBestEffortAsync(() => notificationService.NotifyDeploymentStartedAsync(deployment, cancellationToken), "deployment started", deployment.Id);
 
         try
         {
@@ -91,6 +93,7 @@ public class DeploymentExecutor(
                 "Deployment", deployment.Id.ToString(),
                 details: $"{deployment.Application.Name}/{deployment.EnvironmentDefinition.Name} commit {deployment.CommitSha}",
                 cancellationToken: cancellationToken);
+            await NotifyBestEffortAsync(() => notificationService.NotifyDeploymentOutcomeAsync(deployment, cancellationToken), "deployment succeeded", deployment.Id);
         }
         catch (Exception ex)
         {
@@ -104,6 +107,24 @@ public class DeploymentExecutor(
                 "Deployment", deployment.Id.ToString(),
                 details: $"{deployment.Application.Name}/{deployment.EnvironmentDefinition.Name} commit {deployment.CommitSha}: {LogSanitizer.Sanitize(ex.Message)}",
                 cancellationToken: cancellationToken);
+            await NotifyBestEffortAsync(() => notificationService.NotifyDeploymentOutcomeAsync(deployment, cancellationToken), "deployment failed", deployment.Id);
+        }
+    }
+
+    /// <summary>Notification delivery must never break deployment execution —
+    /// INotificationService already swallows individual provider failures, but
+    /// this extra guard also catches anything unexpected inside the
+    /// notification path itself (e.g. a transient DB error resolving
+    /// recipients) so it can never be mistaken for a deployment failure.</summary>
+    private async Task NotifyBestEffortAsync(Func<Task> notify, string eventDescription, Guid deploymentId)
+    {
+        try
+        {
+            await notify();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to send '{EventDescription}' notification for deployment {DeploymentId}", eventDescription, deploymentId);
         }
     }
 

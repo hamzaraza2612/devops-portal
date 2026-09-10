@@ -285,11 +285,18 @@ export interface PromotionRequestDto {
   requestedByUsername: string | null;
   requestedAt: string;
   decidedByUserId: string | null;
+  decidedByUsername: string | null;
   decidedAt: string | null;
   decisionNotes: string | null;
+  notifiedAt: string | null;
   requiresCtoApproval: boolean;
   ctoApprovalStatus: ApprovalStatus | null;
-  ctoEmailSentAt: string | null;
+  ctoDecidedByUserId: string | null;
+  ctoDecidedByUsername: string | null;
+  ctoDecidedAt: string | null;
+  ctoNotifiedAt: string | null;
+  linkedDeploymentId: string | null;
+  linkedDeploymentStatus: DeploymentStatus | null;
 }
 
 export interface CreatePromotionRequest {

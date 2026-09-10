@@ -15,8 +15,9 @@ namespace DevOpsPortal.Tests.Deployments;
 
 public class DeploymentExecutorTests
 {
-    private static async Task<(DeploymentExecutor Sut, AppDbContext Db, Deployment Deployment)> CreateSutAsync(
-        IComposeCommandExecutor composeExecutor, IHealthCheckProbe healthProbe, ISecretReferenceService? secretReferenceService = null)
+    private static async Task<(DeploymentExecutor Sut, AppDbContext Db, Deployment Deployment, FakeNotificationService Notifications)> CreateSutAsync(
+        IComposeCommandExecutor composeExecutor, IHealthCheckProbe healthProbe,
+        ISecretReferenceService? secretReferenceService = null, FakeNotificationService? notificationService = null)
     {
         var db = TestDb.CreateInMemory();
         await TestDb.SeedEnvironmentDefinitionsAsync(db);
@@ -59,15 +60,17 @@ public class DeploymentExecutorTests
         await db.SaveChangesAsync();
 
         var audit = new AuditService(db, new FakeCurrentUserService());
+        var notifications = notificationService ?? new FakeNotificationService();
         var sut = new DeploymentExecutor(
-            db, composeExecutor, healthProbe, audit, secretReferenceService ?? new FakeSecretReferenceService(), NullLogger<DeploymentExecutor>.Instance);
-        return (sut, db, deployment);
+            db, composeExecutor, healthProbe, audit, secretReferenceService ?? new FakeSecretReferenceService(), notifications,
+            NullLogger<DeploymentExecutor>.Instance);
+        return (sut, db, deployment, notifications);
     }
 
     [Fact]
     public async Task ExecuteAsync_WhenComposeUpSucceedsAndHealthPasses_MarksSucceeded()
     {
-        var (sut, db, deployment) = await CreateSutAsync(new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(true));
+        var (sut, db, deployment, _) = await CreateSutAsync(new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(true));
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
 
@@ -81,7 +84,7 @@ public class DeploymentExecutorTests
     [Fact]
     public async Task ExecuteAsync_WhenComposeUpFails_MarksFailed()
     {
-        var (sut, db, deployment) = await CreateSutAsync(new FakeComposeCommandExecutor(true, false), new FakeHealthCheckProbe(true));
+        var (sut, db, deployment, _) = await CreateSutAsync(new FakeComposeCommandExecutor(true, false), new FakeHealthCheckProbe(true));
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
 
@@ -93,7 +96,7 @@ public class DeploymentExecutorTests
     [Fact]
     public async Task ExecuteAsync_WhenHealthCheckFails_MarksFailedNotSucceeded()
     {
-        var (sut, db, deployment) = await CreateSutAsync(new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(false));
+        var (sut, db, deployment, _) = await CreateSutAsync(new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(false));
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
 
@@ -107,7 +110,7 @@ public class DeploymentExecutorTests
     public async Task ExecuteAsync_SanitizesSecretsBeforePersistingLogs()
     {
         var composeExecutor = new FakeComposeCommandExecutor(true, true, upStdErr: "DB_PASSWORD=hunter2 leaked in output");
-        var (sut, db, deployment) = await CreateSutAsync(composeExecutor, new FakeHealthCheckProbe(true));
+        var (sut, db, deployment, _) = await CreateSutAsync(composeExecutor, new FakeHealthCheckProbe(true));
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
 
@@ -119,7 +122,7 @@ public class DeploymentExecutorTests
     [Fact]
     public async Task ExecuteAsync_ProducesSequentialLogEntries()
     {
-        var (sut, db, deployment) = await CreateSutAsync(new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(true));
+        var (sut, db, deployment, _) = await CreateSutAsync(new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(true));
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
 
@@ -133,7 +136,7 @@ public class DeploymentExecutorTests
     {
         var composeExecutor = new FakeComposeCommandExecutor(true, true);
         var secretService = new FakeSecretReferenceService(new Dictionary<string, string> { ["DB_PASSWORD"] = "hunter2" });
-        var (sut, db, deployment) = await CreateSutAsync(composeExecutor, new FakeHealthCheckProbe(true), secretService);
+        var (sut, db, deployment, _) = await CreateSutAsync(composeExecutor, new FakeHealthCheckProbe(true), secretService);
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
 
@@ -151,7 +154,7 @@ public class DeploymentExecutorTests
     {
         var composeExecutor = new FakeComposeCommandExecutor(true, true, upStdErr: "connecting with password hunter2 to db host");
         var secretService = new FakeSecretReferenceService(new Dictionary<string, string> { ["DB_PASSWORD"] = "hunter2" });
-        var (sut, db, deployment) = await CreateSutAsync(composeExecutor, new FakeHealthCheckProbe(true), secretService);
+        var (sut, db, deployment, _) = await CreateSutAsync(composeExecutor, new FakeHealthCheckProbe(true), secretService);
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
 
@@ -165,7 +168,7 @@ public class DeploymentExecutorTests
     {
         var composeExecutor = new FakeComposeCommandExecutor(true, true);
         var secretService = new FakeSecretReferenceService(resolveError: "Failed to resolve secret 'db-password' for this deployment.");
-        var (sut, db, deployment) = await CreateSutAsync(composeExecutor, new FakeHealthCheckProbe(true), secretService);
+        var (sut, db, deployment, _) = await CreateSutAsync(composeExecutor, new FakeHealthCheckProbe(true), secretService);
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
 
@@ -178,7 +181,7 @@ public class DeploymentExecutorTests
     [Fact]
     public async Task ExecuteAsync_AlreadyRunningDeployment_IsSkipped()
     {
-        var (sut, db, deployment) = await CreateSutAsync(new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(true));
+        var (sut, db, deployment, _) = await CreateSutAsync(new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(true));
         deployment.Status = DeploymentStatus.Running;
         await db.SaveChangesAsync();
 
@@ -186,6 +189,43 @@ public class DeploymentExecutorTests
 
         var updated = await db.Deployments.FindAsync(deployment.Id);
         Assert.Equal(DeploymentStatus.Running, updated!.Status);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenSucceeds_NotifiesStartedThenOutcome()
+    {
+        var (sut, db, deployment, notifications) = await CreateSutAsync(new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(true));
+
+        await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
+
+        Assert.Equal(1, notifications.StartedCallCount);
+        Assert.Equal(1, notifications.OutcomeCallCount);
+        Assert.Equal(DeploymentStatus.Succeeded, notifications.LastOutcomeStatus);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenFails_StillNotifiesStartedAndOutcome()
+    {
+        var (sut, db, deployment, notifications) = await CreateSutAsync(new FakeComposeCommandExecutor(true, false), new FakeHealthCheckProbe(true));
+
+        await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
+
+        Assert.Equal(1, notifications.StartedCallCount);
+        Assert.Equal(1, notifications.OutcomeCallCount);
+        Assert.Equal(DeploymentStatus.Failed, notifications.LastOutcomeStatus);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenNotificationServiceThrows_DeploymentOutcomeIsUnaffected()
+    {
+        var notifications = new FakeNotificationService { ThrowOnStarted = true, ThrowOnOutcome = true };
+        var (sut, db, deployment, _) = await CreateSutAsync(
+            new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(true), notificationService: notifications);
+
+        await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
+
+        var updated = await db.Deployments.FindAsync(deployment.Id);
+        Assert.Equal(DeploymentStatus.Succeeded, updated!.Status);
     }
 
     private sealed class FakeComposeCommandExecutor(bool downSucceeds, bool upSucceeds, string? upStdErr = null) : IComposeCommandExecutor
@@ -233,6 +273,40 @@ public class DeploymentExecutorTests
                 throw new DeploymentExecutionException(resolveError);
 
             return Task.FromResult(secrets ?? new Dictionary<string, string>());
+        }
+    }
+
+    private sealed class FakeNotificationService : INotificationService
+    {
+        public int StartedCallCount { get; private set; }
+        public int OutcomeCallCount { get; private set; }
+        public DeploymentStatus? LastOutcomeStatus { get; private set; }
+        public bool ThrowOnStarted { get; set; }
+        public bool ThrowOnOutcome { get; set; }
+
+        public Task NotifyPromotionApprovalRequestedAsync(
+            PromotionRequest promotion, string permissionCode, string rawApprovalToken, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task NotifyProductionApprovalRequestedAsync(
+            PromotionRequest promotion, ProductionApproval approval, string rawApprovalToken, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task NotifyDeploymentStartedAsync(Deployment deployment, CancellationToken cancellationToken = default)
+        {
+            StartedCallCount++;
+            if (ThrowOnStarted)
+                throw new InvalidOperationException("Simulated notification failure.");
+            return Task.CompletedTask;
+        }
+
+        public Task NotifyDeploymentOutcomeAsync(Deployment deployment, CancellationToken cancellationToken = default)
+        {
+            OutcomeCallCount++;
+            LastOutcomeStatus = deployment.Status;
+            if (ThrowOnOutcome)
+                throw new InvalidOperationException("Simulated notification failure.");
+            return Task.CompletedTask;
         }
     }
 }

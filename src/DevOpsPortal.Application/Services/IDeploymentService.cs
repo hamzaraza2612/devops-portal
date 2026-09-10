@@ -39,6 +39,16 @@ public interface IDeploymentService
 
     Task<PromotionRequestDto> GetPromotionAsync(Guid promotionRequestId, CancellationToken cancellationToken = default);
 
+    /// <summary>Unauthenticated, read-only preview for a promotion's
+    /// approval-requested notification deep link — never a path to approve or
+    /// reject (master requirements §4). Throws NotFoundException if the token
+    /// doesn't match any promotion.</summary>
+    Task<ApprovalPreviewDto> GetPromotionPreviewByTokenAsync(string token, CancellationToken cancellationToken = default);
+
+    /// <summary>Same contract as GetPromotionPreviewByTokenAsync, for the
+    /// CTO-specific ProductionApproval record.</summary>
+    Task<ApprovalPreviewDto> GetProductionApprovalPreviewByTokenAsync(string token, CancellationToken cancellationToken = default);
+
     /// <summary>For QA/UAT this directly approves. For Production this grants the linked
     /// CTO ProductionApproval — there is no separate non-CTO approval step for Production.</summary>
     Task<PromotionRequestDto> ApprovePromotionAsync(Guid promotionRequestId, DecidePromotionRequest request, CancellationToken cancellationToken = default);

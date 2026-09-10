@@ -19,7 +19,7 @@ public class DeploymentServiceTests
 {
     private sealed record Fixture(
         AppDbContext Db, DeploymentService Sut, FakeCurrentUserService CurrentUser,
-        FakeDeploymentJobQueue JobQueue, FakeEmailSender EmailSender,
+        FakeDeploymentJobQueue JobQueue, FakeNotificationProvider NotificationProvider,
         ManagedApplication Application, Dictionary<string, EnvironmentDefinition> Envs,
         Guid DevUserId, Guid QaUserId, Guid UatUserId, Guid DevOpsUserId, Guid CtoUserId, Guid NoPermUserId);
 
@@ -74,12 +74,14 @@ public class DeploymentServiceTests
 
         var currentUser = new FakeCurrentUserService { UserId = devUserId, Username = "dev1" };
         var jobQueue = new FakeDeploymentJobQueue();
-        var emailSender = new FakeEmailSender();
+        var notificationProvider = new FakeNotificationProvider();
         var audit = new AuditService(db, currentUser);
+        var notificationService = new NotificationService(
+            db, [notificationProvider], audit, new FakeConfiguration(), NullLogger<NotificationService>.Instance);
 
-        var sut = new DeploymentService(db, currentUser, audit, jobQueue, emailSender, new FakeConfiguration(), NullLogger<DeploymentService>.Instance);
+        var sut = new DeploymentService(db, currentUser, audit, jobQueue, notificationService);
 
-        return new Fixture(db, sut, currentUser, jobQueue, emailSender, app, envs, devUserId, qaUserId, uatUserId, devopsUserId, ctoUserId, noPermUserId);
+        return new Fixture(db, sut, currentUser, jobQueue, notificationProvider, app, envs, devUserId, qaUserId, uatUserId, devopsUserId, ctoUserId, noPermUserId);
     }
 
     private static async Task<Deployment> InsertSucceededDeploymentAsync(Fixture f, string environmentName, string commitSha)
@@ -373,9 +375,9 @@ public class DeploymentServiceTests
 
         Assert.True(promotion.RequiresCtoApproval);
         Assert.Equal(ApprovalStatus.PendingApproval, promotion.CtoApprovalStatus);
-        Assert.Single(f.EmailSender.Sent);
-        Assert.Contains("cto1@example.local", f.EmailSender.Sent[0].ToAddresses);
-        Assert.DoesNotContain("password", f.EmailSender.Sent[0].Body, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(f.NotificationProvider.Sent);
+        Assert.Contains("cto1@example.local", f.NotificationProvider.Sent[0].Recipients);
+        Assert.DoesNotContain("password", f.NotificationProvider.Sent[0].Body, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -472,6 +474,190 @@ public class DeploymentServiceTests
 
         f.CurrentUser.UserId = f.DevOpsUserId;
         await Assert.ThrowsAsync<ValidationException>(() => f.Sut.DeployApprovedPromotionAsync(promotion.Id));
+    }
+
+    // ------------------------------------------------------ notifications / approval tokens
+
+    [Fact]
+    public async Task RequestPromotionAsync_Qa_NotifiesQaApprovers()
+    {
+        var f = await CreateFixtureAsync();
+        await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
+        f.CurrentUser.UserId = f.DevUserId;
+        var devDeployment = await f.Db.Deployments.FirstAsync(d => d.CommitSha == "abc1234");
+
+        var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
+
+        Assert.Single(f.NotificationProvider.Sent);
+        Assert.Contains("qa1@example.local", f.NotificationProvider.Sent[0].Recipients);
+        Assert.NotNull(promotion.NotifiedAt);
+
+        var reloaded = await f.Db.PromotionRequests.SingleAsync(p => p.Id == promotion.Id);
+        Assert.Contains("qa1@example.local", reloaded.NotificationRecipients);
+    }
+
+    [Fact]
+    public async Task RequestPromotionAsync_AuditsNotificationSent()
+    {
+        var f = await CreateFixtureAsync();
+        await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
+        f.CurrentUser.UserId = f.DevUserId;
+        var devDeployment = await f.Db.Deployments.FirstAsync(d => d.CommitSha == "abc1234");
+
+        await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
+
+        var entry = await f.Db.AuditLogs.SingleAsync(a => a.Action == "notification.promotion_approval_requested");
+        Assert.Equal(AuditResult.Success, entry.Result);
+    }
+
+    [Fact]
+    public async Task GetPromotionPreviewByTokenAsync_WithValidToken_ReturnsPreview_NeverASecret()
+    {
+        var f = await CreateFixtureAsync();
+        await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
+        f.CurrentUser.UserId = f.DevUserId;
+        var devDeployment = await f.Db.Deployments.FirstAsync(d => d.CommitSha == "abc1234");
+        await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
+        var token = ExtractToken(f.NotificationProvider.Sent[0].Body);
+
+        var preview = await f.Sut.GetPromotionPreviewByTokenAsync(token);
+
+        Assert.Equal("Sample", preview.ApplicationName);
+        Assert.Equal(EnvironmentNames.Qa, preview.ToEnvironmentName);
+        Assert.Equal("abc1234", preview.CommitSha);
+        Assert.Equal(ApprovalStatus.PendingApproval, preview.Status);
+        Assert.False(preview.IsExpired);
+    }
+
+    [Fact]
+    public async Task GetPromotionPreviewByTokenAsync_WithUnknownToken_ThrowsNotFound()
+    {
+        var f = await CreateFixtureAsync();
+        await Assert.ThrowsAsync<NotFoundException>(() => f.Sut.GetPromotionPreviewByTokenAsync("not-a-real-token"));
+    }
+
+    [Fact]
+    public async Task GetPromotionPreviewByTokenAsync_ReflectsDecisionAfterApproval()
+    {
+        var f = await CreateFixtureAsync();
+        await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
+        f.CurrentUser.UserId = f.DevUserId;
+        var devDeployment = await f.Db.Deployments.FirstAsync(d => d.CommitSha == "abc1234");
+        var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
+        var token = ExtractToken(f.NotificationProvider.Sent[0].Body);
+
+        f.CurrentUser.UserId = f.QaUserId;
+        await f.Sut.ApprovePromotionAsync(promotion.Id, new DecidePromotionRequest(null));
+
+        var preview = await f.Sut.GetPromotionPreviewByTokenAsync(token);
+        Assert.Equal(ApprovalStatus.Approved, preview.Status);
+    }
+
+    [Fact]
+    public async Task GetPromotionPreviewByTokenAsync_TokenForOneReleaseNeverResolvesAnotherPromotion()
+    {
+        var f = await CreateFixtureAsync();
+        await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "aaa1111");
+        f.CurrentUser.UserId = f.DevUserId;
+        var devDeploymentA = await f.Db.Deployments.FirstAsync(d => d.CommitSha == "aaa1111");
+        var promotionA = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeploymentA.Id));
+        var tokenA = ExtractToken(f.NotificationProvider.Sent[0].Body);
+
+        f.CurrentUser.UserId = f.QaUserId;
+        await f.Sut.RejectPromotionAsync(promotionA.Id, new DecidePromotionRequest("superseded"));
+
+        await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "bbb2222");
+        f.CurrentUser.UserId = f.DevUserId;
+        var devDeploymentB = await f.Db.Deployments.FirstAsync(d => d.CommitSha == "bbb2222");
+        var promotionB = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeploymentB.Id));
+
+        // tokenA must still resolve to promotion A (its own preview), never promotion B —
+        // "wrong release" isolation: each token is bound to exactly the request it was minted for.
+        var previewA = await f.Sut.GetPromotionPreviewByTokenAsync(tokenA);
+        Assert.Equal(promotionA.Id, previewA.Id);
+        Assert.NotEqual(promotionB.Id, previewA.Id);
+        Assert.Equal("aaa1111", previewA.CommitSha);
+    }
+
+    [Fact]
+    public async Task GetPromotionPreviewByTokenAsync_ExpiredToken_ReportsExpired_ButStillResolves()
+    {
+        var f = await CreateFixtureAsync();
+        await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
+        f.CurrentUser.UserId = f.DevUserId;
+        var devDeployment = await f.Db.Deployments.FirstAsync(d => d.CommitSha == "abc1234");
+        var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
+        var token = ExtractToken(f.NotificationProvider.Sent[0].Body);
+
+        var entity = await f.Db.PromotionRequests.SingleAsync(p => p.Id == promotion.Id);
+        entity.ApprovalTokenExpiresAt = DateTimeOffset.UtcNow.AddHours(-1);
+        await f.Db.SaveChangesAsync();
+
+        var preview = await f.Sut.GetPromotionPreviewByTokenAsync(token);
+
+        Assert.True(preview.IsExpired);
+    }
+
+    [Fact]
+    public async Task GetProductionApprovalPreviewByTokenAsync_WithValidToken_ReturnsPreview()
+    {
+        var f = await CreateFixtureAsync();
+        await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
+        await InsertSucceededDeploymentAsync(f, EnvironmentNames.Qa, "abc1234");
+        var uatDeployment = await InsertSucceededDeploymentAsync(f, EnvironmentNames.Uat, "abc1234");
+        f.CurrentUser.UserId = f.DevOpsUserId;
+        await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Production].Id, new CreatePromotionRequest(uatDeployment.Id));
+        var token = ExtractToken(f.NotificationProvider.Sent[0].Body);
+
+        var preview = await f.Sut.GetProductionApprovalPreviewByTokenAsync(token);
+
+        Assert.Equal("Sample", preview.ApplicationName);
+        Assert.Equal(EnvironmentNames.Production, preview.ToEnvironmentName);
+        Assert.Equal(ApprovalStatus.PendingApproval, preview.Status);
+    }
+
+    [Fact]
+    public async Task GetProductionApprovalPreviewByTokenAsync_WithUnknownToken_ThrowsNotFound()
+    {
+        var f = await CreateFixtureAsync();
+        await Assert.ThrowsAsync<NotFoundException>(() => f.Sut.GetProductionApprovalPreviewByTokenAsync("not-a-real-token"));
+    }
+
+    [Fact]
+    public async Task GetProductionApprovalPreviewByTokenAsync_TokenFromOnePromotionNeverResolvesAnothers()
+    {
+        var f = await CreateFixtureAsync();
+        await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "aaa1111");
+        await InsertSucceededDeploymentAsync(f, EnvironmentNames.Qa, "aaa1111");
+        var uatDeploymentA = await InsertSucceededDeploymentAsync(f, EnvironmentNames.Uat, "aaa1111");
+        f.CurrentUser.UserId = f.DevOpsUserId;
+        var promotionA = await f.Sut.RequestPromotionAsync(
+            f.Application.Id, f.Envs[EnvironmentNames.Production].Id, new CreatePromotionRequest(uatDeploymentA.Id));
+        var tokenA = ExtractToken(f.NotificationProvider.Sent[0].Body);
+
+        f.CurrentUser.UserId = f.CtoUserId;
+        await f.Sut.RejectPromotionAsync(promotionA.Id, new DecidePromotionRequest("superseded"));
+
+        await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "bbb2222");
+        await InsertSucceededDeploymentAsync(f, EnvironmentNames.Qa, "bbb2222");
+        var uatDeploymentB = await InsertSucceededDeploymentAsync(f, EnvironmentNames.Uat, "bbb2222");
+        f.CurrentUser.UserId = f.DevOpsUserId;
+        var promotionB = await f.Sut.RequestPromotionAsync(
+            f.Application.Id, f.Envs[EnvironmentNames.Production].Id, new CreatePromotionRequest(uatDeploymentB.Id));
+
+        // tokenA (for the rejected promotion A / its ProductionApproval) must still
+        // resolve only to that same approval — never to promotion B's, even though
+        // both are ProductionApproval rows for the same application.
+        var previewA = await f.Sut.GetProductionApprovalPreviewByTokenAsync(tokenA);
+        Assert.Equal("aaa1111", previewA.CommitSha);
+        Assert.NotEqual(promotionB.Id, previewA.Id);
+    }
+
+    private static string ExtractToken(string notificationBody)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(notificationBody, @"token[=\s]([0-9A-Fa-f]{64})");
+        Assert.True(match.Success, $"No approval token found in notification body: {notificationBody}");
+        return match.Groups[1].Value;
     }
 
     // ------------------------------------------------------------- rollback
@@ -573,11 +759,11 @@ public class DeploymentServiceTests
         public Task<Guid> DequeueAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
-    private sealed class FakeEmailSender : IEmailSender
+    private sealed class FakeNotificationProvider : INotificationProvider
     {
-        public List<EmailMessage> Sent { get; } = [];
+        public List<NotificationMessage> Sent { get; } = [];
 
-        public Task<bool> SendAsync(EmailMessage message, CancellationToken cancellationToken = default)
+        public Task<bool> SendAsync(NotificationMessage message, CancellationToken cancellationToken = default)
         {
             Sent.Add(message);
             return Task.FromResult(true);

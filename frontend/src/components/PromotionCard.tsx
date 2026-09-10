@@ -6,6 +6,7 @@ import { ApprovePermissionByEnvironment, DeployPermissionByEnvironment, type Env
 import { PromotionsApi } from '../api/endpoints';
 import { ApprovalStatus, type PromotionRequestDto } from '../types/api';
 import { formatDateTime, shortSha } from '../utils/format';
+import { DeploymentStatusBadge } from './StatusBadge';
 
 /** One pending (or recently decided) promotion request, laid out so the
  * reader immediately sees which application, which environment, which
@@ -38,17 +39,34 @@ export function PromotionCard({ promotion, onChanged }: { promotion: PromotionRe
         <div className="flex justify-between gap-2"><dt className="text-slate-400">Requested by</dt><dd>{promotion.requestedByUsername ?? 'unknown'}</dd></div>
         <div className="flex justify-between gap-2"><dt className="text-slate-400">Requested at</dt><dd>{formatDateTime(promotion.requestedAt)}</dd></div>
         {promotion.decidedAt && (
-          <div className="flex justify-between gap-2"><dt className="text-slate-400">Decided at</dt><dd>{formatDateTime(promotion.decidedAt)}</dd></div>
+          <>
+            <div className="flex justify-between gap-2"><dt className="text-slate-400">Approver</dt><dd>{promotion.decidedByUsername ?? 'unknown'}</dd></div>
+            <div className="flex justify-between gap-2"><dt className="text-slate-400">Decided at</dt><dd>{formatDateTime(promotion.decidedAt)}</dd></div>
+          </>
+        )}
+        {promotion.linkedDeploymentStatus !== null && (
+          <div className="col-span-2 flex items-center justify-between gap-2">
+            <dt className="text-slate-400">Deployment status</dt>
+            <dd><DeploymentStatusBadge status={promotion.linkedDeploymentStatus} /></dd>
+          </div>
         )}
       </dl>
 
       {promotion.requiresCtoApproval && (
-        <div className="mt-2 flex items-center justify-between rounded-md bg-slate-50 px-2 py-1.5 text-xs">
-          <span className="font-medium text-slate-600">CTO approval required for Production</span>
-          {promotion.ctoApprovalStatus !== null ? (
-            <ApprovalStatusBadge status={promotion.ctoApprovalStatus} />
-          ) : (
-            <span className="text-slate-400">Not yet requested</span>
+        <div className="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-xs">
+          <div className="flex items-center justify-between">
+            <span className="font-medium text-slate-600">CTO approval required for Production</span>
+            {promotion.ctoApprovalStatus !== null ? (
+              <ApprovalStatusBadge status={promotion.ctoApprovalStatus} />
+            ) : (
+              <span className="text-slate-400">Not yet requested</span>
+            )}
+          </div>
+          {promotion.ctoDecidedAt && (
+            <div className="mt-1 flex justify-between text-slate-400">
+              <span>{promotion.ctoDecidedByUsername ?? 'unknown'}</span>
+              <span>{formatDateTime(promotion.ctoDecidedAt)}</span>
+            </div>
           )}
         </div>
       )}
