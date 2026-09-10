@@ -28,13 +28,13 @@ public class ApplicationEnvironmentServiceTests
         await db.SaveChangesAsync();
         var envDef = db.EnvironmentDefinitions.Single(e => e.Name == EnvironmentNames.Dev);
 
-        var sut = new ApplicationEnvironmentService(db, new AuditService(db, new FakeCurrentUserService()));
+        var sut = new ApplicationEnvironmentService(db, new AuditService(db, new FakeCurrentUserService()), new FakeGitProviderClient());
         return (sut, db, app, envDef, server);
     }
 
     private static UpsertApplicationEnvironmentRequest ValidRequest(Guid targetServerId, string? rootPath = "/mnt/data/apps/sample") =>
         new(targetServerId, "develop", rootPath, "publish", "Backups", null, "docker-compose.yml",
-            null, "SampleApi", "SampleApi", null, HealthCheckType.None, null, 30, 5, true);
+            null, "SampleApi", "SampleApi", null, false, HealthCheckType.None, null, 30, 5, true);
 
     [Fact]
     public async Task UpsertAsync_WithPathUnderAllowedRoot_Succeeds()

@@ -1,6 +1,9 @@
 using DevOpsPortal.Application.Abstractions;
 using DevOpsPortal.Application.Common;
 using DevOpsPortal.Infrastructure.Authorization;
+using DevOpsPortal.Infrastructure.Deployments;
+using DevOpsPortal.Infrastructure.Email;
+using DevOpsPortal.Infrastructure.Git;
 using DevOpsPortal.Infrastructure.Persistence;
 using DevOpsPortal.Infrastructure.Security;
 using Microsoft.AspNetCore.Authorization;
@@ -26,6 +29,21 @@ public static class DependencyInjection
 
         services.AddSingleton<IAuthorizationHandler, PermissionAuthorizationHandler>();
         services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
+
+        services.AddHttpClient<IGitProviderClient, GitLabProviderClient>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(10);
+            client.DefaultRequestHeaders.Add("User-Agent", "DevOpsPortal");
+        });
+
+        services.AddSingleton<IDeploymentJobQueue, InMemoryDeploymentJobQueue>();
+        services.AddHostedService<DeploymentWorker>();
+
+        services.AddSingleton<IComposeCommandExecutor, ComposeCommandExecutor>();
+        services.AddHttpClient<IHealthCheckProbe, HealthCheckProbe>(client => client.Timeout = TimeSpan.FromSeconds(30));
+
+        services.Configure<SmtpSettings>(configuration.GetSection(SmtpSettings.SectionName));
+        services.AddSingleton<IEmailSender, SmtpEmailSender>();
 
         return services;
     }

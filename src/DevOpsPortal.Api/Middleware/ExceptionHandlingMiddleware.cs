@@ -20,6 +20,7 @@ public class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Exception
                 ConflictException => (HttpStatusCode.Conflict, ex.Message),
                 ValidationException => (HttpStatusCode.BadRequest, ex.Message),
                 AuthenticationFailedException => (HttpStatusCode.Unauthorized, ex.Message),
+                ForbiddenException => (HttpStatusCode.Forbidden, ex.Message),
                 _ => (HttpStatusCode.InternalServerError, "An unexpected error occurred."),
             };
 

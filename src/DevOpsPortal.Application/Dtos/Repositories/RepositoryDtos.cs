@@ -8,9 +8,11 @@ public record RepositoryDto(
     string Url,
     RepositoryProvider Provider,
     string? Description,
+    string? AccessTokenEnvVarName,
     bool IsActive,
     DateTimeOffset CreatedAt);
 
-public record CreateRepositoryRequest(string Name, string Url, RepositoryProvider Provider, string? Description);
+public record CreateRepositoryRequest(string Name, string Url, RepositoryProvider Provider, string? Description, string? AccessTokenEnvVarName);
 
-public record UpdateRepositoryRequest(string Name, string Url, RepositoryProvider Provider, string? Description, bool IsActive);
+public record UpdateRepositoryRequest(
+    string Name, string Url, RepositoryProvider Provider, string? Description, string? AccessTokenEnvVarName, bool IsActive);

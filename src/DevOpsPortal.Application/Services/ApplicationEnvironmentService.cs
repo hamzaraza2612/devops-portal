@@ -1,3 +1,4 @@
+using DevOpsPortal.Application.Abstractions;
 using DevOpsPortal.Application.Common;
 using DevOpsPortal.Application.Dtos.Applications;
 using DevOpsPortal.Application.Exceptions;
@@ -7,7 +8,8 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DevOpsPortal.Application.Services;
 
-public class ApplicationEnvironmentService(IAppDbContext db, IAuditService auditService) : IApplicationEnvironmentService
+public class ApplicationEnvironmentService(IAppDbContext db, IAuditService auditService, IGitProviderClient gitProviderClient)
+    : IApplicationEnvironmentService
 {
     public async Task<IReadOnlyList<ApplicationEnvironmentDto>> GetForApplicationAsync(
         Guid applicationId, CancellationToken cancellationToken = default)
@@ -66,6 +68,7 @@ public class ApplicationEnvironmentService(IAppDbContext db, IAuditService audit
         row.ServiceName = string.IsNullOrWhiteSpace(request.ServiceName) ? null : request.ServiceName.Trim();
         row.ContainerName = string.IsNullOrWhiteSpace(request.ContainerName) ? null : request.ContainerName.Trim();
         row.ExternalNetworkName = string.IsNullOrWhiteSpace(request.ExternalNetworkName) ? null : request.ExternalNetworkName.Trim();
+        row.UseDownWithVolumesOnDeploy = request.UseDownWithVolumesOnDeploy;
         row.HealthCheckType = request.HealthCheckType;
         row.HealthCheckEndpoint = string.IsNullOrWhiteSpace(request.HealthCheckEndpoint) ? null : request.HealthCheckEndpoint.Trim();
         row.HealthCheckIntervalSeconds = request.HealthCheckIntervalSeconds;
@@ -135,7 +138,40 @@ public class ApplicationEnvironmentService(IAppDbContext db, IAuditService audit
         ae.Id, ae.ApplicationId, ae.EnvironmentDefinitionId, ae.EnvironmentDefinition.Name,
         ae.TargetServerId, ae.TargetServer.Name, ae.BranchName, ae.DeploymentRootPath,
         ae.PublishSubPath, ae.BackupSubPath, ae.BackupRetentionCount, ae.ComposeFilePath,
-        ae.ComposeProjectName, ae.ServiceName, ae.ContainerName, ae.ExternalNetworkName,
+        ae.ComposeProjectName, ae.ServiceName, ae.ContainerName, ae.ExternalNetworkName, ae.UseDownWithVolumesOnDeploy,
         ae.HealthCheckType, ae.HealthCheckEndpoint, ae.HealthCheckIntervalSeconds, ae.HealthCheckTimeoutSeconds,
         ae.IsActive, ae.CreatedAt, ae.UpdatedAt);
+
+    public async Task<GitProviderResult<GitCommitInfo>> GetLatestCommitAsync(
+        Guid applicationId, Guid environmentDefinitionId, CancellationToken cancellationToken = default)
+    {
+        var (repository, branch) = await ResolveRepositoryAndBranchAsync(applicationId, environmentDefinitionId, cancellationToken);
+        return await gitProviderClient.GetLatestCommitAsync(repository, branch, cancellationToken);
+    }
+
+    public async Task<GitProviderResult<IReadOnlyList<GitCommitInfo>>> GetRecentCommitsAsync(
+        Guid applicationId, Guid environmentDefinitionId, int count, CancellationToken cancellationToken = default)
+    {
+        var (repository, branch) = await ResolveRepositoryAndBranchAsync(applicationId, environmentDefinitionId, cancellationToken);
+        return await gitProviderClient.GetRecentCommitsAsync(repository, branch, count, cancellationToken);
+    }
+
+    private async Task<(Repository Repository, string Branch)> ResolveRepositoryAndBranchAsync(
+        Guid applicationId, Guid environmentDefinitionId, CancellationToken cancellationToken)
+    {
+        var application = await db.Applications.FirstOrDefaultAsync(a => a.Id == applicationId, cancellationToken)
+            ?? throw new NotFoundException("Application", applicationId);
+        if (application.RepositoryId is null)
+            throw new ValidationException("This application has no repository configured.");
+
+        var repository = await db.Repositories.FirstOrDefaultAsync(r => r.Id == application.RepositoryId, cancellationToken)
+            ?? throw new ValidationException("The configured repository could not be found.");
+
+        var appEnv = await LoadAsync(applicationId, environmentDefinitionId, cancellationToken)
+            ?? throw new NotFoundException("ApplicationEnvironment", $"{applicationId}/{environmentDefinitionId}");
+        if (string.IsNullOrWhiteSpace(appEnv.BranchName))
+            throw new ValidationException("This application-environment has no branch configured.");
+
+        return (repository, appEnv.BranchName);
+    }
 }

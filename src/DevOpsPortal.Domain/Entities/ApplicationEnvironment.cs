@@ -55,11 +55,18 @@ public class ApplicationEnvironment
     /// <summary>Pre-existing external Docker network this app's containers join, if any.</summary>
     public string? ExternalNetworkName { get; set; }
 
+    /// <summary>When true, deployment execution runs `docker compose down -v` (destroys volumes)
+    /// instead of a plain `down` before `up -d`. Per-app-environment opt-in only — never applied
+    /// by default (master requirements §5: "Do NOT automatically apply down -v to every application").</summary>
+    public bool UseDownWithVolumesOnDeploy { get; set; }
+
     // --- Health check configuration (config only — not probed in Phase 2) ---
 
     public HealthCheckType HealthCheckType { get; set; } = HealthCheckType.None;
 
-    /// <summary>URL path (Http) or "host:port" (TcpPort); meaning depends on HealthCheckType.</summary>
+    /// <summary>Absolute URL, e.g. "http://host:5555/health" (Http) or "host:port" (TcpPort);
+    /// meaning depends on HealthCheckType. Must be independently reachable from wherever the
+    /// deployment engine runs — this table has no separate host/port field of its own.</summary>
     public string? HealthCheckEndpoint { get; set; }
 
     public int HealthCheckIntervalSeconds { get; set; } = 30;
