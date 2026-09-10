@@ -32,6 +32,10 @@ public static class PermissionCodes
     public const string DeploymentsDeployProduction = "deployments.deploy.production";
     public const string DeploymentsRollback = "deployments.rollback";
 
+    public const string ContainersView = "containers.view";
+    public const string ContainersControl = "containers.control";
+    public const string ContainersRecreate = "containers.recreate";
+
     public static readonly IReadOnlyList<(string Code, string Description)> All = new (string, string)[]
     {
         (UsersView, "View users"),
@@ -58,5 +62,8 @@ public static class PermissionCodes
         (DeploymentsApproveProduction, "Grant CTO approval for a Production promotion request"),
         (DeploymentsDeployProduction, "Deploy an approved, CTO-approved promotion to Production"),
         (DeploymentsRollback, "Roll an environment back to a previous successful deployment"),
+        (ContainersView, "View live container status and health for configured application environments"),
+        (ContainersControl, "Restart, start, or stop the containers of a configured application environment"),
+        (ContainersRecreate, "Recreate a configured application environment's containers with docker compose down -v / up -d (destroys volumes)"),
     };
 }

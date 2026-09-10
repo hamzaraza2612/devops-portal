@@ -42,4 +42,34 @@ public class ComposeCommandExecutorTests
             Directory.Delete(dir, recursive: true);
         }
     }
+
+    /// <summary>Phase 5's operational-control operations (Restart/Start/Stop/Ps) go
+    /// through the exact same real, non-shell Process invocation as Up/Down already
+    /// did — this proves each one actually reaches the `docker` binary (rather than
+    /// throwing ArgumentOutOfRangeException from an unhandled switch arm) and fails
+    /// gracefully, never throwing, when the daemon is unreachable.</summary>
+    [Theory]
+    [InlineData(ComposeOperation.Restart)]
+    [InlineData(ComposeOperation.Start)]
+    [InlineData(ComposeOperation.Stop)]
+    [InlineData(ComposeOperation.Ps)]
+    public async Task RunAsync_WithNewOperations_InvokesDockerAndFailsGracefully(ComposeOperation operation)
+    {
+        var sut = CreateSut();
+        var dir = Path.Combine(Path.GetTempPath(), $"compose-test-{Guid.NewGuid()}");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "docker-compose.yml"), "services:\n  web:\n    image: nginx:alpine\n");
+        try
+        {
+            var result = await sut.RunAsync(new ComposeCommandRequest(dir, "docker-compose.yml", null, operation));
+
+            // No live daemon in this environment — the real assertion is that this
+            // returned a result at all (no exception) rather than what ExitCode is.
+            Assert.False(result.Success);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

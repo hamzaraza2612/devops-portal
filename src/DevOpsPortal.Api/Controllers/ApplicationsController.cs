@@ -1,5 +1,6 @@
 using DevOpsPortal.Application.Dtos.Applications;
 using DevOpsPortal.Application.Dtos.Builds;
+using DevOpsPortal.Application.Dtos.Containers;
 using DevOpsPortal.Application.Dtos.Deployments;
 using DevOpsPortal.Application.Services;
 using DevOpsPortal.Domain.Constants;
@@ -16,7 +17,8 @@ public class ApplicationsController(
     IApplicationService applicationService,
     IApplicationEnvironmentService environmentService,
     IDeploymentService deploymentService,
-    IBuildConfigurationService buildConfigurationService) : ControllerBase
+    IBuildConfigurationService buildConfigurationService,
+    IContainerOperationsService containerOperationsService) : ControllerBase
 {
     [HttpGet]
     [RequirePermission(PermissionCodes.ApplicationsView)]
@@ -101,4 +103,31 @@ public class ApplicationsController(
     public async Task<IActionResult> UpsertBuildConfiguration(
         Guid id, [FromBody] UpsertBuildConfigurationRequest request, CancellationToken cancellationToken) =>
         Ok(await buildConfigurationService.UpsertAsync(id, request, cancellationToken));
+
+    /// <summary>Live container status — permission (containers.view) is enforced
+    /// inside the service, same pattern as the deployment endpoints above.</summary>
+    [HttpGet("{id:guid}/environments/{environmentDefinitionId:guid}/containers")]
+    public async Task<IActionResult> GetContainerStatus(Guid id, Guid environmentDefinitionId, CancellationToken cancellationToken) =>
+        Ok(await containerOperationsService.GetStatusAsync(id, environmentDefinitionId, cancellationToken));
+
+    [HttpPost("{id:guid}/environments/{environmentDefinitionId:guid}/containers/restart")]
+    public async Task<IActionResult> RestartContainers(Guid id, Guid environmentDefinitionId, CancellationToken cancellationToken) =>
+        Ok(await containerOperationsService.RestartAsync(id, environmentDefinitionId, cancellationToken));
+
+    [HttpPost("{id:guid}/environments/{environmentDefinitionId:guid}/containers/start")]
+    public async Task<IActionResult> StartContainers(Guid id, Guid environmentDefinitionId, CancellationToken cancellationToken) =>
+        Ok(await containerOperationsService.StartAsync(id, environmentDefinitionId, cancellationToken));
+
+    [HttpPost("{id:guid}/environments/{environmentDefinitionId:guid}/containers/stop")]
+    public async Task<IActionResult> StopContainers(Guid id, Guid environmentDefinitionId, CancellationToken cancellationToken) =>
+        Ok(await containerOperationsService.StopAsync(id, environmentDefinitionId, cancellationToken));
+
+    /// <summary>docker compose down -v / up -d — destroys volumes. Requires
+    /// containers.recreate, an explicit Confirm:true body, and that this
+    /// application environment has UseDownWithVolumesOnDeploy explicitly enabled
+    /// (all enforced inside the service).</summary>
+    [HttpPost("{id:guid}/environments/{environmentDefinitionId:guid}/containers/recreate")]
+    public async Task<IActionResult> RecreateContainers(
+        Guid id, Guid environmentDefinitionId, [FromBody] RecreateWithVolumesRequest request, CancellationToken cancellationToken) =>
+        Ok(await containerOperationsService.RecreateWithVolumesAsync(id, environmentDefinitionId, request, cancellationToken));
 }

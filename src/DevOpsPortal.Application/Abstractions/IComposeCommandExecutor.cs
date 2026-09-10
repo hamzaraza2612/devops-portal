@@ -9,6 +9,22 @@ public enum ComposeOperation
     Up,
     Down,
     DownWithVolumes,
+
+    /// <summary>`docker compose restart` — Phase 5 operational control, distinct from
+    /// the deploy-time Down/Up cycle above.</summary>
+    Restart,
+
+    /// <summary>`docker compose start` — starts existing (e.g. Exited) containers
+    /// without recreating them.</summary>
+    Start,
+
+    /// <summary>`docker compose stop` — stops running containers without removing them.</summary>
+    Stop,
+
+    /// <summary>`docker compose ps -a --format json` — read-only status query, the
+    /// first step of container inspection (see IContainerInspector). Never mutates
+    /// anything.</summary>
+    Ps,
 }
 
 public record ComposeCommandRequest(string WorkingDirectory, string ComposeFilePath, string? ProjectName, ComposeOperation Operation);
