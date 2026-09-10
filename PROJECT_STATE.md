@@ -88,12 +88,64 @@ missing/too short.
 - No refresh tokens — single JWT with a configurable expiry
   (`Jwt:ExpiryMinutes`, default 8h). Fine for Phase 1; revisit if session
   UX needs improve.
-- `script.sh` and representative existing Docker Compose files (mentioned in
-  the master requirements for the legacy filesystem deployment mode) were
-  not present in this repository or environment — needed before Phase 4
-  (deployment engine) work starts; the user should provide them or confirm
-  the `/mnt/data/techbey-apps*` layout at that point.
 - No frontend yet (Phase 9).
+
+## Legacy filesystem deployment — reference notes (for Phase 4)
+
+The user supplied the actual `script.sh` and a representative app
+`docker-compose.yml`. Not implemented yet (Phase 4 scope); captured here so
+the pattern doesn't need re-deriving. Infra-specific values (real IPs,
+internal network name, DB host) are intentionally omitted — see the
+uploaded files in this session for the raw originals if needed again.
+
+- **Deploy target = existing app folder**, not created by the tool: operator
+  picks a base dir (one of several configured roots) then an existing
+  subfolder = the application. Confirms target paths must be configurable
+  per application, never derived from a naming convention.
+- **Sync, not replace**: deploy is `rsync -av` from the built/published
+  source into `<app>/publish/`, **excluding** `appsettings*.json`,
+  `*securesettings*.json`, `config.json` — environment config on the target
+  is never overwritten by a deploy and isn't source-controlled per deploy.
+  The Deployment Engine must preserve this exclusion behavior (or an
+  equivalent config-injection step) for filesystem-mode apps.
+- **Backup = rollback artifact**: before syncing, current `publish/*` is
+  copied into `<app>/Backups/<name-or-timestamp>/`. This is the mechanism
+  §9 (Rollback) means by "controlled backup/artifact" for filesystem mode —
+  rollback = restore a chosen `Backups/` snapshot back into `publish/` +
+  restart.
+- **Restart = plain compose cycle**: `docker compose down && docker compose
+  up -d` in the app directory once files are synced — no image build/push
+  involved for this mode.
+- **Containers join a pre-existing external Docker network** (not a
+  per-app bridge network created by the compose file itself) — the
+  Deployment Engine's Docker integration must support attaching to an
+  already-existing named network on the target server, not just
+  network-per-app.
+- **Per-app extras seen in the example compose**: an additional bind mount
+  for logs (beyond the `publish` bind), an explicit `working_dir`, a `TZ`
+  env var, and `extra_hosts` entries for internal-DNS-less hosts. These are
+  all per-application, per-server variables — reinforces that "everything
+  that varies must be configurable" (§10) rather than templated once.
+  Confirms an `ApplicationEnvironment`/`TargetServer` config shape needs
+  room for: extra bind mounts, working dir, env vars, and extra_hosts, not
+  just image/ports/volumes.
+- **Post-sync permission fix**: the script chowns/chmods the app directory
+  to a specific group with SGID bits before backing up/deploying. This is a
+  host/ops convention, not something to hardcode — model as an optional,
+  configurable post-deploy step per target server rather than a global
+  behavior.
+- **Script itself must NOT be shelled out to**: it's fully interactive
+  (prompts for git credentials, branch, source subdirectory, target app
+  each run) and embeds the Git password directly into the clone URL for
+  that session. The Deployment Engine reimplements the same steps
+  (clone/pull → sync → restart, with backup before sync) as parameterized,
+  non-interactive operations driven by stored Application/Repository/
+  Credential config — never by invoking this script directly (also
+  consistent with §20: never execute arbitrary shell commands).
+- **Existing informal audit trail**: the script appends plaintext lines to
+  a log file on the host (git url/branch/source/app/backup path, no
+  credentials). Phase 1's `AuditLogs` table/API is the superseding,
+  queryable replacement once deployment actions exist.
 
 ## Important decisions
 
