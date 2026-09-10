@@ -34,6 +34,13 @@ public static class TestDb
 
         return adminRole;
     }
+
+    public static async Task SeedEnvironmentDefinitionsAsync(AppDbContext db)
+    {
+        foreach (var (name, sortOrder, isProductionLike) in EnvironmentNames.All)
+            db.EnvironmentDefinitions.Add(new EnvironmentDefinition { Name = name, SortOrder = sortOrder, IsProductionLike = isProductionLike });
+        await db.SaveChangesAsync();
+    }
 }
 
 public class FakeCurrentUserService : ICurrentUserService

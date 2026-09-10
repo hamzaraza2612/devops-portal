@@ -11,6 +11,12 @@ public static class DependencyInjection
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<IRoleService, RoleService>();
         services.AddScoped<IAuditService, AuditService>();
+        services.AddScoped<IApplicationService, ApplicationService>();
+        services.AddScoped<IApplicationEnvironmentService, ApplicationEnvironmentService>();
+        services.AddScoped<IRepositoryService, RepositoryService>();
+        services.AddScoped<ITargetServerService, TargetServerService>();
+        services.AddScoped<IEnvironmentDefinitionService, EnvironmentDefinitionService>();
+        services.AddScoped<IComposeFileAnalyzer, ComposeFileAnalyzer>();
         return services;
     }
 }

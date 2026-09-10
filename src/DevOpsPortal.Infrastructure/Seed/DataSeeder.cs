@@ -33,6 +33,20 @@ public static class DataSeeder
         }
         await db.SaveChangesAsync();
 
+        foreach (var (name, sortOrder, isProductionLike) in EnvironmentNames.All)
+        {
+            if (!await db.EnvironmentDefinitions.AnyAsync(e => e.Name == name))
+            {
+                db.EnvironmentDefinitions.Add(new EnvironmentDefinition
+                {
+                    Name = name,
+                    SortOrder = sortOrder,
+                    IsProductionLike = isProductionLike,
+                });
+            }
+        }
+        await db.SaveChangesAsync();
+
         var adminRole = await db.Roles.FirstAsync(r => r.Name == RoleNames.Admin);
         var allPermissions = await db.Permissions.ToListAsync();
         foreach (var permission in allPermissions)

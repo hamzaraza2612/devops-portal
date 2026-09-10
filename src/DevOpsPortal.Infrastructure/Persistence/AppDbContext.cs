@@ -12,6 +12,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<UserRole> UserRoles => Set<UserRole>();
     public DbSet<RolePermission> RolePermissions => Set<RolePermission>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<ManagedApplication> Applications => Set<ManagedApplication>();
+    public DbSet<Repository> Repositories => Set<Repository>();
+    public DbSet<EnvironmentDefinition> EnvironmentDefinitions => Set<EnvironmentDefinition>();
+    public DbSet<TargetServer> TargetServers => Set<TargetServer>();
+    public DbSet<AllowedDeploymentRoot> AllowedDeploymentRoots => Set<AllowedDeploymentRoot>();
+    public DbSet<ApplicationEnvironment> ApplicationEnvironments => Set<ApplicationEnvironment>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -56,6 +62,52 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             b.HasIndex(a => a.Timestamp);
             b.HasIndex(a => a.UserId);
             b.HasIndex(a => a.Action);
+        });
+
+        modelBuilder.Entity<Repository>(b =>
+        {
+            b.HasIndex(r => r.Name).IsUnique();
+            b.Property(r => r.Name).HasMaxLength(200).IsRequired();
+            b.Property(r => r.Url).HasMaxLength(1000).IsRequired();
+        });
+
+        modelBuilder.Entity<ManagedApplication>(b =>
+        {
+            b.HasIndex(a => a.Slug).IsUnique();
+            b.Property(a => a.Name).HasMaxLength(200).IsRequired();
+            b.Property(a => a.Slug).HasMaxLength(100).IsRequired();
+            b.HasOne(a => a.Repository).WithMany().HasForeignKey(a => a.RepositoryId).OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<EnvironmentDefinition>(b =>
+        {
+            b.HasIndex(e => e.Name).IsUnique();
+            b.Property(e => e.Name).HasMaxLength(50).IsRequired();
+        });
+
+        modelBuilder.Entity<TargetServer>(b =>
+        {
+            b.HasIndex(s => s.Name).IsUnique();
+            b.Property(s => s.Name).HasMaxLength(200).IsRequired();
+        });
+
+        modelBuilder.Entity<AllowedDeploymentRoot>(b =>
+        {
+            b.HasIndex(r => new { r.TargetServerId, r.RootPath }).IsUnique();
+            b.Property(r => r.RootPath).HasMaxLength(500).IsRequired();
+            b.HasOne(r => r.TargetServer).WithMany(s => s.AllowedDeploymentRoots)
+                .HasForeignKey(r => r.TargetServerId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ApplicationEnvironment>(b =>
+        {
+            b.HasIndex(ae => new { ae.ApplicationId, ae.EnvironmentDefinitionId }).IsUnique();
+            b.HasOne(ae => ae.Application).WithMany(a => a.Environments)
+                .HasForeignKey(ae => ae.ApplicationId).OnDelete(DeleteBehavior.Cascade);
+            b.HasOne(ae => ae.EnvironmentDefinition).WithMany()
+                .HasForeignKey(ae => ae.EnvironmentDefinitionId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne(ae => ae.TargetServer).WithMany()
+                .HasForeignKey(ae => ae.TargetServerId).OnDelete(DeleteBehavior.Restrict);
         });
     }
 }

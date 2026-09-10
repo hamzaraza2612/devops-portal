@@ -11,6 +11,13 @@ public static class PermissionCodes
     public const string RolesView = "roles.view";
     public const string RolesManage = "roles.manage";
     public const string AuditView = "audit.view";
+    public const string ApplicationsView = "applications.view";
+    public const string ApplicationsManage = "applications.manage";
+    public const string RepositoriesView = "repositories.view";
+    public const string RepositoriesManage = "repositories.manage";
+    public const string TargetServersView = "targetservers.view";
+    public const string TargetServersManage = "targetservers.manage";
+    public const string EnvironmentsView = "environments.view";
 
     public static readonly IReadOnlyList<(string Code, string Description)> All = new (string, string)[]
     {
@@ -19,5 +26,12 @@ public static class PermissionCodes
         (RolesView, "View roles and permissions"),
         (RolesManage, "Manage roles and role-permission assignments"),
         (AuditView, "View audit logs"),
+        (ApplicationsView, "View applications and their environment configuration"),
+        (ApplicationsManage, "Create and configure applications and their environments"),
+        (RepositoriesView, "View repository references"),
+        (RepositoriesManage, "Create and configure repository references"),
+        (TargetServersView, "View target servers and their allowed deployment roots"),
+        (TargetServersManage, "Create and configure target servers and allowed deployment roots"),
+        (EnvironmentsView, "View pipeline environment definitions"),
     };
 }
