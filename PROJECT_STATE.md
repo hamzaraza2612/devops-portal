@@ -8,7 +8,7 @@
 src/DevOpsPortal.Domain          entities, enums, constants — no dependencies
 src/DevOpsPortal.Application     DTOs, service interfaces + implementations,
                                   IAppDbContext abstraction (EF Core-typed but
-                                  provider-agnostic)
+                                  provider-agnostic), YamlDotNet (compose parsing)
 src/DevOpsPortal.Infrastructure  EF Core (Npgsql) AppDbContext + migrations,
                                   password hashing, JWT issuing, permission-based
                                   authorization (policy provider + handler),
@@ -27,58 +27,129 @@ runs as the base image's built-in non-root `app` user).
 
 **Phase 1 — Core backend + database + authentication + RBAC.** Done.
 
+**Phase 2 — Legacy Deployment Discovery & Configuration.** Done. Redefined
+(per explicit instruction) from the original phase plan's "GitLab
+integration + repository/application configuration" — GitLab API
+integration itself (branch/commit discovery via GitLab's API, webhooks) is
+deferred; `Repository` here is a plain reference row (name/url/provider),
+not a live GitLab connection. No deployment *execution* — this phase is
+configuration + read-only analysis only.
+
 ## Current database state
 
-PostgreSQL via EF Core migrations (`src/DevOpsPortal.Infrastructure/Persistence/Migrations`,
-`InitialCreate`). Tables: `Users`, `Roles`, `Permissions`, `UserRoles`
-(join), `RolePermissions` (join), `AuditLogs`. Unique indexes on
-`Users.Username`, `Users.Email`, `Roles.Name`, `Permissions.Code`.
+PostgreSQL via EF Core migrations (`src/DevOpsPortal.Infrastructure/Persistence/Migrations`):
+`InitialCreate` (Phase 1), `AddLegacyDeploymentConfiguration` (Phase 2).
 
-Migrations apply automatically at API startup (`DataSeeder.SeedAsync` calls
-`Database.MigrateAsync()`), followed by idempotent seeding of the 6 system
-roles (ADMIN, DEVOPS, DEVELOPER, QA, UAT, CTO — `Domain.Constants.RoleNames`)
-and the permission catalog (`Domain.Constants.PermissionCodes`). ADMIN is
-granted all permissions; other roles get none by default in Phase 1 (every
-authenticated user can still call `/api/auth/me` and
-`/api/users/me/change-password`). A bootstrap admin user is created only if
-the `Users` table is empty; its password comes from `Seed:AdminPassword`
-(env `ADMIN_INITIAL_PASSWORD`) or, if unset, a random password logged once
-as a warning.
+Phase 1 tables: `Users`, `Roles`, `Permissions`, `UserRoles` (join),
+`RolePermissions` (join), `AuditLogs`.
+
+Phase 2 tables:
+- `Repositories` — Name (unique), Url, Provider, Description, IsActive. No credentials.
+- `Applications` — Name, Slug (unique, immutable after create), Description,
+  DeploymentMode (LegacyFilesystem/ContainerImage), RepositoryId (nullable FK),
+  SourcePath (nullable, monorepo subdirectory), IsActive.
+- `EnvironmentDefinitions` — seeded reference data: DEV(0)/QA(1)/UAT(2)/PRODUCTION(3),
+  IsProductionLike flag on PRODUCTION. Read-only via API, same pattern as Roles.
+- `TargetServers` — Name (unique), Description, Hostname (config only, not
+  contacted yet).
+- `AllowedDeploymentRoots` — TargetServerId FK, RootPath, unique per
+  (TargetServerId, RootPath). The security allow-list: every legacy-mode
+  `ApplicationEnvironment.DeploymentRootPath` on that server must normalize
+  under one of these.
+- `ApplicationEnvironments` — the per-(Application, EnvironmentDefinition)
+  config row (unique on that pair): TargetServerId, BranchName,
+  DeploymentRootPath/PublishSubPath/BackupSubPath/BackupRetentionCount,
+  ComposeFilePath/ComposeProjectName/ServiceName/ContainerName/ExternalNetworkName,
+  HealthCheckType/Endpoint/IntervalSeconds/TimeoutSeconds, IsActive. All
+  legacy-filesystem-specific fields are nullable (unused when DeploymentMode
+  is ContainerImage — no TPH/subclassing yet, extend the same table when
+  Phase 3 adds registry/image fields).
+
+Unique indexes: `Repositories.Name`, `Applications.Slug`,
+`EnvironmentDefinitions.Name`, `TargetServers.Name`,
+`(AllowedDeploymentRoots.TargetServerId, RootPath)`,
+`(ApplicationEnvironments.ApplicationId, EnvironmentDefinitionId)`.
+
+Seeding: `DataSeeder` now also seeds the 4 `EnvironmentDefinitions`
+(idempotent, same pattern as Roles) and the 7 new permission codes (picked
+up automatically by the existing generic "seed all `PermissionCodes.All`,
+grant all to ADMIN" loop — no seeder logic changes needed for this).
 
 ## Implemented features
 
-- **Auth**: `POST /api/auth/login` (username+password → JWT), `GET /api/auth/me`.
-  Passwords hashed with ASP.NET Core Identity's `PasswordHasher<T>`
-  (PBKDF2-HMAC-SHA256). JWT carries role claims and a `permission` claim per
-  granted permission code; signed HS256 with `Jwt:SigningKey` (must be ≥32
-  bytes, no default — app refuses to start without it).
-- **RBAC**: permission-based, enforced server-side via a custom
-  `IAuthorizationPolicyProvider` that resolves `"Permission:<code>"` policies
-  on demand (no per-permission registration needed as new codes are added in
-  later phases) plus `[RequirePermission(code)]` attribute. Roles/permissions
-  are read-only via API in Phase 1 (assignment happens through user
-  create/update); mutating the role→permission catalog itself is deferred.
-- **Users**: `GET/POST /api/users`, `GET/PUT /api/users/{id}`,
-  `POST /api/users/{id}/reset-password` (admin), `POST /api/users/me/change-password`
-  (self-service). Enforces unique username/email, min 8-char passwords, ≥1
-  role per user.
-- **Roles**: `GET /api/roles`, `GET /api/roles/permissions` (read-only, `roles.view`).
-- **Audit**: every login attempt (success/failure), user create/update/password
-  change/reset logged with who/what/when/where(IP)/result. `GET /api/audit`
-  (paged, filterable by user/action/date, `audit.view` permission). Never
-  logs secret values.
-- **Health**: `GET /health` (DB connectivity check) — used by the Docker
-  Compose healthcheck (bash `/dev/tcp` probe; base runtime image has no
-  curl/wget and none is installed, to keep the image minimal).
+Phase 1 (unchanged): Auth, RBAC, Users, Roles (read), Audit, Health — see
+prior phase notes below if needed; not repeated here.
+
+**Phase 2 — Applications**
+- `GET/POST /api/applications`, `GET/PUT /api/applications/{id}`
+  (`applications.view` / `applications.manage`). Slug is lowercase
+  alphanumeric-with-hyphens, unique, **immutable after creation** (Update
+  has no Slug field) — it's the stable identifier other things reference.
+- `GET /api/applications/{id}/environments` — list an app's configured
+  pipeline stages.
+- `GET/PUT /api/applications/{id}/environments/{environmentDefinitionId}` —
+  upsert the single config row for that (app, stage) pair. PUT validates:
+  - `DeploymentRootPath` required for LegacyFilesystem mode; must
+    normalize (no `..`, must be absolute) and fall under one of the target
+    server's *active* `AllowedDeploymentRoots` (exact match or subdirectory,
+    with correct `/`-boundary checking so `/mnt/data/apps2` can never match
+    an allow-listed `/mnt/data/apps`).
+  - `ComposeFilePath`/`PublishSubPath`/`BackupSubPath` must be safe relative
+    paths (no leading `/`, no `.`/`..` segments).
+  - `TargetServerId` must reference an existing, active `TargetServer`.
+  - HealthCheck fields required/positive only when `HealthCheckType != None`.
+  - ContainerImage-mode applications skip the filesystem-path checks (fields
+    stay null).
+
+**Phase 2 — Repositories**
+- `GET/POST /api/repositories`, `GET/PUT /api/repositories/{id}`
+  (`repositories.view` / `repositories.manage`). URL must be absolute
+  http(s) with **no embedded userinfo credentials** (rejects
+  `https://user:pass@host/...` outright) — the exact anti-pattern found in
+  the legacy deploy script; real repo credentials belong in a future
+  credential store, never inline in the URL.
+
+**Phase 2 — Target servers & allowed deployment roots**
+- `GET/POST /api/target-servers`, `GET/PUT /api/target-servers/{id}`,
+  `POST /api/target-servers/{id}/allowed-roots`,
+  `PUT /api/target-servers/{id}/allowed-roots/{rootId}`
+  (`targetservers.view` / `targetservers.manage`). This is the
+  server-side-enforced allow-list backing "Allowed legacy roots must remain
+  configurable but security-restricted" — paths are normalized and
+  traversal-checked before being stored or matched against.
+
+**Phase 2 — Environments (reference data)**
+- `GET /api/environments` (`environments.view`) — read-only, the 4 seeded
+  pipeline stages.
+
+**Phase 2 — Discovery**
+- `POST /api/discovery/analyze-compose` (`applications.manage`) — takes raw
+  docker-compose YAML *text the caller supplies in the request body*
+  (pasted/uploaded; nothing is fetched from any server) and returns a
+  structured, per-service parse: image, container_name, ports, working_dir,
+  entrypoint, restart policy, extra_hosts, networks (flags
+  external-network usage), and volumes — including resolving a named
+  volume back to its actual host bind path via the top-level `volumes:
+  driver_opts.device` (the exact pattern the legacy compose files use:
+  `DmsApi-volume:/app` + `driver_opts.device: .../publish`). Environment
+  variable values whose key looks secret-like (PASSWORD/SECRET/TOKEN/etc.)
+  are redacted in the response. Purely computational — no filesystem,
+  network, shell, or Docker access; nothing is persisted or deployed by
+  this endpoint. Verified against the actual uploaded `DmsApi`
+  docker-compose.yml, not just synthetic fixtures.
 
 ## Important configuration
 
-Env vars (see `.env.example`): `POSTGRES_*`, `ConnectionStrings__Default`,
-`Jwt__SigningKey` (required, ≥32 bytes), `Jwt__Issuer`/`Jwt__Audience`,
-`Jwt__ExpiryMinutes` (default 480), `Seed__AdminUsername`/`Seed__AdminEmail`/
-`Seed__AdminPassword`. No secrets are committed; `appsettings.json` ships
-empty placeholders and the app fails fast at startup if `Jwt:SigningKey` is
-missing/too short.
+Env vars: unchanged from Phase 1 (see `.env.example`) — Phase 2 added no
+new required configuration; `AllowedDeploymentRoots` and `TargetServers`
+are managed via the API/DB, not environment variables (per-tenant data,
+not deployment-time config).
+
+New package dependency: `YamlDotNet` (Application project) for compose
+parsing — untyped/dynamic deserialization (`Dictionary<object,object>` /
+`List<object>` tree-walking) rather than a fixed POCO schema, since
+compose's `environment`/`entrypoint`/`networks`/`extra_hosts` fields all
+legally take more than one shape (list or mapping, string or list).
 
 ## Known issues / deliberate Phase-1 scope cuts
 
@@ -90,62 +161,89 @@ missing/too short.
   UX needs improve.
 - No frontend yet (Phase 9).
 
-## Legacy filesystem deployment — reference notes (for Phase 4)
+## Known issues / deliberate Phase-2 scope cuts
+
+- **No deployment execution.** Nothing in this phase clones a repo, runs
+  rsync, touches a real filesystem/Docker socket, or restarts a container.
+  `ApplicationEnvironment` is pure configuration; a future phase reads it
+  to drive an actual deploy.
+- **No live GitLab integration.** `Repository` is a static reference
+  (name/url/provider) with URL validation only — no API calls, no
+  branch/commit listing, no webhooks yet. Branch selection today is just
+  the free-text `ApplicationEnvironment.BranchName` field.
+- **No credential storage.** Repository/target-server access secrets are
+  out of scope here (later phase); Repository URLs are validated to
+  *reject* embedded credentials rather than store them safely.
+- **`TargetServer.Hostname` is inert** — recorded but never contacted;
+  no SSH/Docker-API connectivity exists yet (that's when "discovery" could
+  become live filesystem scanning instead of admin-pasted compose-file
+  analysis).
+- **No health-probe execution, no post-deploy permission-fix step, no
+  backup-retention enforcement** — all three are stored as configuration
+  (`HealthCheckType`/interval/timeout, `BackupRetentionCount`) for a later
+  phase to act on; nothing runs them yet.
+- **Roles get no new default permissions.** The 7 new Phase 2 permission
+  codes are granted to ADMIN only (same pattern as Phase 1); DEVOPS/
+  DEVELOPER/etc. still get zero permissions until a workflow/approval phase
+  assigns role-appropriate defaults.
+- **No delete endpoints** — Applications/Repositories/TargetServers/
+  AllowedDeploymentRoots use `IsActive` soft-disable only, consistent with
+  Phase 1's Users/Roles pattern.
+
+## Legacy filesystem deployment — reference notes
 
 The user supplied the actual `script.sh` and a representative app
-`docker-compose.yml`. Not implemented yet (Phase 4 scope); captured here so
-the pattern doesn't need re-deriving. Infra-specific values (real IPs,
-internal network name, DB host) are intentionally omitted — see the
-uploaded files in this session for the raw originals if needed again.
+`docker-compose.yml` (the real `DmsApi` example). Infra-specific values
+(real IPs, internal network name, DB host) are intentionally not committed
+to this file or to any test fixture — tests use a generic `SampleApi`
+fixture with the same *shape*. Findings below now map directly onto the
+Phase 2 domain model (mapping noted inline); deployment *execution* itself
+is still not implemented (see Known issues above) — planned for a later
+phase.
 
-- **Deploy target = existing app folder**, not created by the tool: operator
-  picks a base dir (one of several configured roots) then an existing
-  subfolder = the application. Confirms target paths must be configurable
-  per application, never derived from a naming convention.
+- **Deploy target = existing app folder**, not created by the tool → modeled
+  as `ApplicationEnvironment.DeploymentRootPath`, validated against
+  `TargetServer.AllowedDeploymentRoots` rather than assumed from any naming
+  convention.
 - **Sync, not replace**: deploy is `rsync -av` from the built/published
   source into `<app>/publish/`, **excluding** `appsettings*.json`,
-  `*securesettings*.json`, `config.json` — environment config on the target
-  is never overwritten by a deploy and isn't source-controlled per deploy.
-  The Deployment Engine must preserve this exclusion behavior (or an
-  equivalent config-injection step) for filesystem-mode apps.
-- **Backup = rollback artifact**: before syncing, current `publish/*` is
-  copied into `<app>/Backups/<name-or-timestamp>/`. This is the mechanism
-  §9 (Rollback) means by "controlled backup/artifact" for filesystem mode —
-  rollback = restore a chosen `Backups/` snapshot back into `publish/` +
-  restart.
-- **Restart = plain compose cycle**: `docker compose down && docker compose
-  up -d` in the app directory once files are synced — no image build/push
-  involved for this mode.
-- **Containers join a pre-existing external Docker network** (not a
-  per-app bridge network created by the compose file itself) — the
-  Deployment Engine's Docker integration must support attaching to an
-  already-existing named network on the target server, not just
-  network-per-app.
-- **Per-app extras seen in the example compose**: an additional bind mount
-  for logs (beyond the `publish` bind), an explicit `working_dir`, a `TZ`
-  env var, and `extra_hosts` entries for internal-DNS-less hosts. These are
-  all per-application, per-server variables — reinforces that "everything
-  that varies must be configurable" (§10) rather than templated once.
-  Confirms an `ApplicationEnvironment`/`TargetServer` config shape needs
-  room for: extra bind mounts, working dir, env vars, and extra_hosts, not
-  just image/ports/volumes.
-- **Post-sync permission fix**: the script chowns/chmods the app directory
-  to a specific group with SGID bits before backing up/deploying. This is a
-  host/ops convention, not something to hardcode — model as an optional,
-  configurable post-deploy step per target server rather than a global
-  behavior.
-- **Script itself must NOT be shelled out to**: it's fully interactive
-  (prompts for git credentials, branch, source subdirectory, target app
-  each run) and embeds the Git password directly into the clone URL for
-  that session. The Deployment Engine reimplements the same steps
-  (clone/pull → sync → restart, with backup before sync) as parameterized,
-  non-interactive operations driven by stored Application/Repository/
-  Credential config — never by invoking this script directly (also
-  consistent with §20: never execute arbitrary shell commands).
-- **Existing informal audit trail**: the script appends plaintext lines to
-  a log file on the host (git url/branch/source/app/backup path, no
-  credentials). Phase 1's `AuditLogs` table/API is the superseding,
-  queryable replacement once deployment actions exist.
+  `*securesettings*.json`, `config.json` → `PublishSubPath` models the
+  target subdirectory; the exclude-list itself is a future execution-time
+  concern (not a config field — it was a deliberate instruction not to hardcode
+  blanket excludes into config; deploy-time logic should look at what
+  environment-specific config mechanism is in place then, not just port
+  this exact list forward unexamined).
+- **Backup = rollback artifact**: current `publish/*` copied into
+  `<app>/Backups/<name>/` before sync → `BackupSubPath` +
+  `BackupRetentionCount` model this; the copy/restore action itself is
+  execution-phase work.
+- **Restart = plain compose cycle**: `docker compose down && up -d` → maps
+  to `ComposeFilePath`/`ComposeProjectName`/`ServiceName`/`ContainerName`,
+  all independently configurable per "never assume folder = service =
+  container name".
+- **Containers join a pre-existing external Docker network** →
+  `ExternalNetworkName` (nullable — only set when relevant); confirmed via
+  the discovery endpoint's `usesExternalNetwork` flag on the real file.
+- **Per-app extras** (extra log bind mount, `working_dir`, `TZ`,
+  `extra_hosts`) → the discovery endpoint surfaces all of these from a
+  pasted compose file today; they aren't yet first-class
+  `ApplicationEnvironment` fields beyond what's listed above (adding
+  dedicated columns for e.g. arbitrary extra bind mounts was judged
+  premature before a real multi-mount use case in this phase — revisit if
+  Phase 3/4 needs to *generate* compose files rather than just describe
+  existing ones).
+- **Post-sync permission fix** (chown/chmod to a specific group, SGID) →
+  still just a documented host convention, not modeled as a field; treat as
+  an optional per-target-server execution step in a later phase.
+- **Script itself must NOT be shelled out to** — reinforced by this phase:
+  discovery only ever *parses text supplied in a request body*; there is no
+  code path anywhere in Phase 2 that runs a shell command, touches a
+  filesystem path, or calls the Docker API.
+- **Existing informal audit trail** (plaintext log file) → superseded by
+  `AuditLogs`; every Phase 2 mutation (`repository.create/update`,
+  `targetserver.create/update`, `targetserver.allowedroot.add/update`,
+  `application.create/update`, `application.environment.create/update`) is
+  audited.
 
 ## Important decisions
 
@@ -157,8 +255,36 @@ uploaded files in this session for the raw originals if needed again.
 - `IAppDbContext` abstraction in Application (not full repository-per-entity)
   keeps Application testable via EF Core InMemory without leaking Npgsql
   specifics.
+- **The Domain entity is named `ManagedApplication`, not `Application`.**
+  `Application` collides with the `DevOpsPortal.Application` project's own
+  namespace (C# resolves the bare identifier to the sibling namespace
+  before the `using`-imported type in any file under that namespace tree —
+  a real compiler ambiguity, confirmed by trying `global::`-qualification
+  and a `using`-alias first, both of which still failed; renaming the type
+  was the only clean fix). All DTOs/routes/JSON still say "application" —
+  only the C# class name differs.
+- **Discovery = parse admin-supplied text, not live filesystem/SSH
+  scanning.** No remote-execution agent exists yet, so "discovery" in this
+  phase means: an admin pastes an existing docker-compose.yml and gets back
+  a structured, validated preview to fill in `ApplicationEnvironment`
+  fields correctly (e.g. resolving a named volume to its real host path).
+  This satisfies "read-only, never auto-deploys" trivially (it's just
+  parsing a string) while still being genuinely useful. Live server
+  discovery is a natural extension once a target-server connection exists.
+- **ApplicationEnvironment is one flat, nullable-heavy table**, not
+  split/subclassed by DeploymentMode. Simpler for two modes; revisit (e.g.
+  table-per-hierarchy or a JSON column) only if Phase 3's container-image
+  fields make the flat table unwieldy.
+- **Path safety is a pure string-manipulation utility**
+  (`DeploymentPathValidator`, Application/Common) with no filesystem
+  access — deliberately testable without touching disk, and reused for
+  both the absolute allow-list check and the relative-path safety check.
 
 ## Next phase
 
-**Phase 2 — GitLab integration + repository/application configuration.**
-Not started.
+Not yet assigned — Phase 2 (Legacy Deployment Discovery & Configuration) is
+complete; awaiting explicit approval before starting further work. Natural
+candidates per the original phase plan: GitLab live integration (branch/commit
+listing via the GitLab API), or the deployment execution engine that
+actually acts on `ApplicationEnvironment` config (clone/sync/backup/restart
+for legacy-filesystem mode). Do not assume which without asking.

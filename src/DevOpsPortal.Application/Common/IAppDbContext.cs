@@ -15,6 +15,12 @@ public interface IAppDbContext
     DbSet<UserRole> UserRoles { get; }
     DbSet<RolePermission> RolePermissions { get; }
     DbSet<AuditLog> AuditLogs { get; }
+    DbSet<ManagedApplication> Applications { get; }
+    DbSet<Repository> Repositories { get; }
+    DbSet<EnvironmentDefinition> EnvironmentDefinitions { get; }
+    DbSet<TargetServer> TargetServers { get; }
+    DbSet<AllowedDeploymentRoot> AllowedDeploymentRoots { get; }
+    DbSet<ApplicationEnvironment> ApplicationEnvironments { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }
