@@ -21,6 +21,11 @@ public interface IAppDbContext
     DbSet<TargetServer> TargetServers { get; }
     DbSet<AllowedDeploymentRoot> AllowedDeploymentRoots { get; }
     DbSet<ApplicationEnvironment> ApplicationEnvironments { get; }
+    DbSet<BuildConfiguration> BuildConfigurations { get; }
+    DbSet<Deployment> Deployments { get; }
+    DbSet<DeploymentLogEntry> DeploymentLogEntries { get; }
+    DbSet<PromotionRequest> PromotionRequests { get; }
+    DbSet<ProductionApproval> ProductionApprovals { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

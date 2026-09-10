@@ -57,6 +57,8 @@ public static class DataSeeder
         }
         await db.SaveChangesAsync();
 
+        await GrantDefaultRolePermissionsAsync(db);
+
         if (!await db.Users.AnyAsync())
         {
             var username = config["Seed:AdminUsername"] ?? "admin";
@@ -95,6 +97,88 @@ public static class DataSeeder
                 logger.LogInformation("Bootstrap admin user '{Username}' created.", username);
             }
         }
+    }
+
+    /// <summary>
+    /// Default, idempotent role→permission grants for the non-admin roles, per
+    /// master requirements §9. Additive only — never removes a grant, so any
+    /// future manual customization (once role-permission mutation ships) is
+    /// preserved; re-running this just fills in anything still missing.
+    /// </summary>
+    private static async Task GrantDefaultRolePermissionsAsync(AppDbContext db)
+    {
+        var defaults = new Dictionary<string, string[]>
+        {
+            [RoleNames.Developer] =
+            [
+                PermissionCodes.ApplicationsView,
+                PermissionCodes.EnvironmentsView,
+                PermissionCodes.DeploymentsView,
+                PermissionCodes.DeploymentsDeployDev,
+                PermissionCodes.DeploymentsPromoteQa,
+            ],
+            [RoleNames.Qa] =
+            [
+                PermissionCodes.ApplicationsView,
+                PermissionCodes.EnvironmentsView,
+                PermissionCodes.DeploymentsView,
+                PermissionCodes.DeploymentsApproveQa,
+                PermissionCodes.DeploymentsDeployQa,
+            ],
+            [RoleNames.Uat] =
+            [
+                PermissionCodes.ApplicationsView,
+                PermissionCodes.EnvironmentsView,
+                PermissionCodes.DeploymentsView,
+                PermissionCodes.DeploymentsApproveUat,
+                PermissionCodes.DeploymentsDeployUat,
+            ],
+            [RoleNames.DevOps] =
+            [
+                PermissionCodes.ApplicationsView,
+                PermissionCodes.RepositoriesView,
+                PermissionCodes.TargetServersView,
+                PermissionCodes.EnvironmentsView,
+                PermissionCodes.DeploymentsView,
+                PermissionCodes.DeploymentsDeployDev,
+                PermissionCodes.DeploymentsPromoteQa,
+                PermissionCodes.DeploymentsApproveQa,
+                PermissionCodes.DeploymentsDeployQa,
+                PermissionCodes.DeploymentsPromoteUat,
+                PermissionCodes.DeploymentsApproveUat,
+                PermissionCodes.DeploymentsDeployUat,
+                PermissionCodes.DeploymentsPromoteProduction,
+                PermissionCodes.DeploymentsDeployProduction,
+                PermissionCodes.DeploymentsRollback,
+            ],
+            [RoleNames.Cto] =
+            [
+                PermissionCodes.ApplicationsView,
+                PermissionCodes.EnvironmentsView,
+                PermissionCodes.DeploymentsView,
+                PermissionCodes.DeploymentsApproveProduction,
+            ],
+        };
+
+        foreach (var (roleName, codes) in defaults)
+        {
+            var role = await db.Roles.FirstOrDefaultAsync(r => r.Name == roleName);
+            if (role is null)
+                continue;
+
+            foreach (var code in codes)
+            {
+                var permission = await db.Permissions.FirstOrDefaultAsync(p => p.Code == code);
+                if (permission is null)
+                    continue;
+
+                var hasGrant = await db.RolePermissions.AnyAsync(rp => rp.RoleId == role.Id && rp.PermissionId == permission.Id);
+                if (!hasGrant)
+                    db.RolePermissions.Add(new RolePermission { RoleId = role.Id, PermissionId = permission.Id });
+            }
+        }
+
+        await db.SaveChangesAsync();
     }
 
     private static string GenerateRandomPassword()

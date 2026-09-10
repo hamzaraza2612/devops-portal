@@ -19,6 +19,19 @@ public static class PermissionCodes
     public const string TargetServersManage = "targetservers.manage";
     public const string EnvironmentsView = "environments.view";
 
+    public const string DeploymentsView = "deployments.view";
+    public const string DeploymentsDeployDev = "deployments.deploy.dev";
+    public const string DeploymentsPromoteQa = "deployments.promote.qa";
+    public const string DeploymentsApproveQa = "deployments.approve.qa";
+    public const string DeploymentsDeployQa = "deployments.deploy.qa";
+    public const string DeploymentsPromoteUat = "deployments.promote.uat";
+    public const string DeploymentsApproveUat = "deployments.approve.uat";
+    public const string DeploymentsDeployUat = "deployments.deploy.uat";
+    public const string DeploymentsPromoteProduction = "deployments.promote.production";
+    public const string DeploymentsApproveProduction = "deployments.approve.production";
+    public const string DeploymentsDeployProduction = "deployments.deploy.production";
+    public const string DeploymentsRollback = "deployments.rollback";
+
     public static readonly IReadOnlyList<(string Code, string Description)> All = new (string, string)[]
     {
         (UsersView, "View users"),
@@ -33,5 +46,17 @@ public static class PermissionCodes
         (TargetServersView, "View target servers and their allowed deployment roots"),
         (TargetServersManage, "Create and configure target servers and allowed deployment roots"),
         (EnvironmentsView, "View pipeline environment definitions"),
+        (DeploymentsView, "View deployments, promotion requests, and deployment logs"),
+        (DeploymentsDeployDev, "Deploy an application to DEV"),
+        (DeploymentsPromoteQa, "Request promotion of a successful DEV deployment to QA"),
+        (DeploymentsApproveQa, "Approve a pending QA promotion request"),
+        (DeploymentsDeployQa, "Deploy an approved promotion to QA"),
+        (DeploymentsPromoteUat, "Request promotion of a successful QA deployment to UAT"),
+        (DeploymentsApproveUat, "Approve a pending UAT promotion request"),
+        (DeploymentsDeployUat, "Deploy an approved promotion to UAT"),
+        (DeploymentsPromoteProduction, "Request promotion of a successful UAT deployment to Production"),
+        (DeploymentsApproveProduction, "Grant CTO approval for a Production promotion request"),
+        (DeploymentsDeployProduction, "Deploy an approved, CTO-approved promotion to Production"),
+        (DeploymentsRollback, "Roll an environment back to a previous successful deployment"),
     };
 }

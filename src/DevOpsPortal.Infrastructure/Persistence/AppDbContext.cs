@@ -18,6 +18,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<TargetServer> TargetServers => Set<TargetServer>();
     public DbSet<AllowedDeploymentRoot> AllowedDeploymentRoots => Set<AllowedDeploymentRoot>();
     public DbSet<ApplicationEnvironment> ApplicationEnvironments => Set<ApplicationEnvironment>();
+    public DbSet<BuildConfiguration> BuildConfigurations => Set<BuildConfiguration>();
+    public DbSet<Deployment> Deployments => Set<Deployment>();
+    public DbSet<DeploymentLogEntry> DeploymentLogEntries => Set<DeploymentLogEntry>();
+    public DbSet<PromotionRequest> PromotionRequests => Set<PromotionRequest>();
+    public DbSet<ProductionApproval> ProductionApprovals => Set<ProductionApproval>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -69,6 +74,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             b.HasIndex(r => r.Name).IsUnique();
             b.Property(r => r.Name).HasMaxLength(200).IsRequired();
             b.Property(r => r.Url).HasMaxLength(1000).IsRequired();
+            b.Property(r => r.AccessTokenEnvVarName).HasMaxLength(100);
         });
 
         modelBuilder.Entity<ManagedApplication>(b =>
@@ -108,6 +114,68 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .HasForeignKey(ae => ae.EnvironmentDefinitionId).OnDelete(DeleteBehavior.Restrict);
             b.HasOne(ae => ae.TargetServer).WithMany()
                 .HasForeignKey(ae => ae.TargetServerId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<BuildConfiguration>(b =>
+        {
+            b.HasIndex(bc => bc.ApplicationId).IsUnique();
+            b.HasOne(bc => bc.Application).WithMany()
+                .HasForeignKey(bc => bc.ApplicationId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<Deployment>(b =>
+        {
+            b.Property(d => d.CommitSha).HasMaxLength(64).IsRequired();
+            b.HasIndex(d => new { d.ApplicationId, d.EnvironmentDefinitionId, d.Status });
+            b.HasIndex(d => new { d.ApplicationId, d.EnvironmentDefinitionId, d.CommitSha });
+            // DB-level concurrency safety net (Postgres partial unique index): at most one
+            // active (Pending/Queued/Running = 0/1/2) deployment per (Application, Environment),
+            // regardless of any application-level check-then-insert race. Application code also
+            // checks this up front for a clean ConflictException in the common case.
+            b.HasIndex(d => new { d.ApplicationId, d.EnvironmentDefinitionId })
+                .HasFilter("\"Status\" IN (0,1,2)")
+                .IsUnique();
+            b.HasOne(d => d.Application).WithMany()
+                .HasForeignKey(d => d.ApplicationId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne(d => d.EnvironmentDefinition).WithMany()
+                .HasForeignKey(d => d.EnvironmentDefinitionId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne(d => d.ApplicationEnvironment).WithMany()
+                .HasForeignKey(d => d.ApplicationEnvironmentId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne(d => d.RollbackOfDeployment).WithMany()
+                .HasForeignKey(d => d.RollbackOfDeploymentId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne(d => d.PromotionRequest).WithMany()
+                .HasForeignKey(d => d.PromotionRequestId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<DeploymentLogEntry>(b =>
+        {
+            b.HasIndex(l => new { l.DeploymentId, l.Sequence }).IsUnique();
+            b.Property(l => l.Message).IsRequired();
+            b.HasOne(l => l.Deployment).WithMany(d => d.LogEntries)
+                .HasForeignKey(l => l.DeploymentId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<PromotionRequest>(b =>
+        {
+            b.Property(p => p.CommitSha).HasMaxLength(64).IsRequired();
+            b.HasIndex(p => new { p.ApplicationId, p.ToEnvironmentDefinitionId, p.Status });
+            b.HasOne(p => p.Application).WithMany()
+                .HasForeignKey(p => p.ApplicationId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne(p => p.FromEnvironmentDefinition).WithMany()
+                .HasForeignKey(p => p.FromEnvironmentDefinitionId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne(p => p.ToEnvironmentDefinition).WithMany()
+                .HasForeignKey(p => p.ToEnvironmentDefinitionId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne(p => p.SourceDeployment).WithMany()
+                .HasForeignKey(p => p.SourceDeploymentId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ProductionApproval>(b =>
+        {
+            b.HasIndex(a => a.PromotionRequestId).IsUnique();
+            b.HasIndex(a => a.ApprovalToken).IsUnique();
+            b.Property(a => a.ApprovalToken).HasMaxLength(100).IsRequired();
+            b.HasOne(a => a.PromotionRequest).WithOne(p => p.ProductionApproval)
+                .HasForeignKey<ProductionApproval>(a => a.PromotionRequestId).OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

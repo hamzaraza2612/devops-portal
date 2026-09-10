@@ -122,6 +122,9 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<bool>("UseDownWithVolumesOnDeploy")
+                        .HasColumnType("boolean");
+
                     b.HasKey("Id");
 
                     b.HasIndex("EnvironmentDefinitionId");
@@ -177,6 +180,166 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.HasIndex("UserId");
 
                     b.ToTable("AuditLogs");
+                });
+
+            modelBuilder.Entity("DevOpsPortal.Domain.Entities.BuildConfiguration", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ApplicationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DockerfilePath")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ImageRegistry")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ImageRepository")
+                        .HasColumnType("text");
+
+                    b.Property<int>("ImageTagStrategy")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ProjectOrSolutionPath")
+                        .HasColumnType("text");
+
+                    b.Property<string>("PublishConfiguration")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ApplicationId")
+                        .IsUnique();
+
+                    b.ToTable("BuildConfigurations");
+                });
+
+            modelBuilder.Entity("DevOpsPortal.Domain.Entities.Deployment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ApplicationEnvironmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ApplicationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Branch")
+                        .HasColumnType("text");
+
+                    b.Property<string>("CommitAuthor")
+                        .HasColumnType("text");
+
+                    b.Property<string>("CommitMessage")
+                        .HasColumnType("text");
+
+                    b.Property<string>("CommitSha")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("EnvironmentDefinitionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("FailureReason")
+                        .HasColumnType("text");
+
+                    b.Property<string>("HealthCheckDetail")
+                        .HasColumnType("text");
+
+                    b.Property<bool?>("HealthCheckPassed")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("ImageReference")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsRollback")
+                        .HasColumnType("boolean");
+
+                    b.Property<Guid?>("PromotionRequestId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("RequestedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("RequestedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("RollbackOfDeploymentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("StartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("VersionLabel")
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ApplicationEnvironmentId");
+
+                    b.HasIndex("EnvironmentDefinitionId");
+
+                    b.HasIndex("PromotionRequestId");
+
+                    b.HasIndex("RollbackOfDeploymentId");
+
+                    b.HasIndex("ApplicationId", "EnvironmentDefinitionId")
+                        .IsUnique()
+                        .HasFilter("\"Status\" IN (0,1,2)");
+
+                    b.HasIndex("ApplicationId", "EnvironmentDefinitionId", "CommitSha");
+
+                    b.HasIndex("ApplicationId", "EnvironmentDefinitionId", "Status");
+
+                    b.ToTable("Deployments");
+                });
+
+            modelBuilder.Entity("DevOpsPortal.Domain.Entities.DeploymentLogEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("DeploymentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Level")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("Timestamp")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeploymentId", "Sequence")
+                        .IsUnique();
+
+                    b.ToTable("DeploymentLogEntries");
                 });
 
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.EnvironmentDefinition", b =>
@@ -277,11 +440,115 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.ToTable("Permissions");
                 });
 
+            modelBuilder.Entity("DevOpsPortal.Domain.Entities.ProductionApproval", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ApprovalToken")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTimeOffset?>("DecidedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("DecidedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("DecisionNotes")
+                        .HasColumnType("text");
+
+                    b.Property<string>("EmailRecipients")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("EmailSentAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("PromotionRequestId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("RequestedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ApprovalToken")
+                        .IsUnique();
+
+                    b.HasIndex("PromotionRequestId")
+                        .IsUnique();
+
+                    b.ToTable("ProductionApprovals");
+                });
+
+            modelBuilder.Entity("DevOpsPortal.Domain.Entities.PromotionRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ApplicationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CommitSha")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset?>("DecidedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("DecidedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("DecisionNotes")
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("FromEnvironmentDefinitionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("RequestedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("RequestedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("SourceDeploymentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("ToEnvironmentDefinitionId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FromEnvironmentDefinitionId");
+
+                    b.HasIndex("SourceDeploymentId");
+
+                    b.HasIndex("ToEnvironmentDefinitionId");
+
+                    b.HasIndex("ApplicationId", "ToEnvironmentDefinitionId", "Status");
+
+                    b.ToTable("PromotionRequests");
+                });
+
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.Repository", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
+
+                    b.Property<string>("AccessTokenEnvVarName")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -483,6 +750,69 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Navigation("TargetServer");
                 });
 
+            modelBuilder.Entity("DevOpsPortal.Domain.Entities.BuildConfiguration", b =>
+                {
+                    b.HasOne("DevOpsPortal.Domain.Entities.ManagedApplication", "Application")
+                        .WithMany()
+                        .HasForeignKey("ApplicationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Application");
+                });
+
+            modelBuilder.Entity("DevOpsPortal.Domain.Entities.Deployment", b =>
+                {
+                    b.HasOne("DevOpsPortal.Domain.Entities.ApplicationEnvironment", "ApplicationEnvironment")
+                        .WithMany()
+                        .HasForeignKey("ApplicationEnvironmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DevOpsPortal.Domain.Entities.ManagedApplication", "Application")
+                        .WithMany()
+                        .HasForeignKey("ApplicationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DevOpsPortal.Domain.Entities.EnvironmentDefinition", "EnvironmentDefinition")
+                        .WithMany()
+                        .HasForeignKey("EnvironmentDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DevOpsPortal.Domain.Entities.PromotionRequest", "PromotionRequest")
+                        .WithMany()
+                        .HasForeignKey("PromotionRequestId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DevOpsPortal.Domain.Entities.Deployment", "RollbackOfDeployment")
+                        .WithMany()
+                        .HasForeignKey("RollbackOfDeploymentId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Application");
+
+                    b.Navigation("ApplicationEnvironment");
+
+                    b.Navigation("EnvironmentDefinition");
+
+                    b.Navigation("PromotionRequest");
+
+                    b.Navigation("RollbackOfDeployment");
+                });
+
+            modelBuilder.Entity("DevOpsPortal.Domain.Entities.DeploymentLogEntry", b =>
+                {
+                    b.HasOne("DevOpsPortal.Domain.Entities.Deployment", "Deployment")
+                        .WithMany("LogEntries")
+                        .HasForeignKey("DeploymentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Deployment");
+                });
+
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.ManagedApplication", b =>
                 {
                     b.HasOne("DevOpsPortal.Domain.Entities.Repository", "Repository")
@@ -491,6 +821,52 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("Repository");
+                });
+
+            modelBuilder.Entity("DevOpsPortal.Domain.Entities.ProductionApproval", b =>
+                {
+                    b.HasOne("DevOpsPortal.Domain.Entities.PromotionRequest", "PromotionRequest")
+                        .WithOne("ProductionApproval")
+                        .HasForeignKey("DevOpsPortal.Domain.Entities.ProductionApproval", "PromotionRequestId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("PromotionRequest");
+                });
+
+            modelBuilder.Entity("DevOpsPortal.Domain.Entities.PromotionRequest", b =>
+                {
+                    b.HasOne("DevOpsPortal.Domain.Entities.ManagedApplication", "Application")
+                        .WithMany()
+                        .HasForeignKey("ApplicationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DevOpsPortal.Domain.Entities.EnvironmentDefinition", "FromEnvironmentDefinition")
+                        .WithMany()
+                        .HasForeignKey("FromEnvironmentDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DevOpsPortal.Domain.Entities.Deployment", "SourceDeployment")
+                        .WithMany()
+                        .HasForeignKey("SourceDeploymentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DevOpsPortal.Domain.Entities.EnvironmentDefinition", "ToEnvironmentDefinition")
+                        .WithMany()
+                        .HasForeignKey("ToEnvironmentDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Application");
+
+                    b.Navigation("FromEnvironmentDefinition");
+
+                    b.Navigation("SourceDeployment");
+
+                    b.Navigation("ToEnvironmentDefinition");
                 });
 
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.RolePermission", b =>
@@ -531,6 +907,11 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("DevOpsPortal.Domain.Entities.Deployment", b =>
+                {
+                    b.Navigation("LogEntries");
+                });
+
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.ManagedApplication", b =>
                 {
                     b.Navigation("Environments");
@@ -539,6 +920,11 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.Permission", b =>
                 {
                     b.Navigation("RolePermissions");
+                });
+
+            modelBuilder.Entity("DevOpsPortal.Domain.Entities.PromotionRequest", b =>
+                {
+                    b.Navigation("ProductionApproval");
                 });
 
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.Role", b =>

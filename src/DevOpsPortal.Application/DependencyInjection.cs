@@ -17,6 +17,9 @@ public static class DependencyInjection
         services.AddScoped<ITargetServerService, TargetServerService>();
         services.AddScoped<IEnvironmentDefinitionService, EnvironmentDefinitionService>();
         services.AddScoped<IComposeFileAnalyzer, ComposeFileAnalyzer>();
+        services.AddScoped<IDeploymentExecutor, DeploymentExecutor>();
+        services.AddScoped<IDeploymentService, DeploymentService>();
+        services.AddScoped<IBuildConfigurationService, BuildConfigurationService>();
         return services;
     }
 }

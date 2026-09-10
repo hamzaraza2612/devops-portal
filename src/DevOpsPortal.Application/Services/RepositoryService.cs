@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using DevOpsPortal.Application.Common;
 using DevOpsPortal.Application.Dtos.Repositories;
 using DevOpsPortal.Application.Exceptions;
@@ -6,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DevOpsPortal.Application.Services;
 
-public class RepositoryService(IAppDbContext db, IAuditService auditService) : IRepositoryService
+public partial class RepositoryService(IAppDbContext db, IAuditService auditService) : IRepositoryService
 {
     public async Task<IReadOnlyList<RepositoryDto>> GetAllAsync(CancellationToken cancellationToken = default) =>
         await db.Repositories.OrderBy(r => r.Name)
@@ -24,6 +25,7 @@ public class RepositoryService(IAppDbContext db, IAuditService auditService) : I
     {
         var name = request.Name.Trim();
         ValidateUrl(request.Url);
+        ValidateAccessTokenEnvVarName(request.AccessTokenEnvVarName);
 
         if (await db.Repositories.AnyAsync(r => r.Name.ToLower() == name.ToLower(), cancellationToken))
             throw new ConflictException($"Repository name '{name}' is already in use.");
@@ -34,6 +36,7 @@ public class RepositoryService(IAppDbContext db, IAuditService auditService) : I
             Url = request.Url.Trim(),
             Provider = request.Provider,
             Description = request.Description?.Trim(),
+            AccessTokenEnvVarName = NormalizeEnvVarName(request.AccessTokenEnvVarName),
             IsActive = true,
         };
         db.Repositories.Add(repo);
@@ -52,6 +55,7 @@ public class RepositoryService(IAppDbContext db, IAuditService auditService) : I
 
         var name = request.Name.Trim();
         ValidateUrl(request.Url);
+        ValidateAccessTokenEnvVarName(request.AccessTokenEnvVarName);
 
         if (await db.Repositories.AnyAsync(r => r.Id != id && r.Name.ToLower() == name.ToLower(), cancellationToken))
             throw new ConflictException($"Repository name '{name}' is already in use.");
@@ -60,6 +64,7 @@ public class RepositoryService(IAppDbContext db, IAuditService auditService) : I
         repo.Url = request.Url.Trim();
         repo.Provider = request.Provider;
         repo.Description = request.Description?.Trim();
+        repo.AccessTokenEnvVarName = NormalizeEnvVarName(request.AccessTokenEnvVarName);
         repo.IsActive = request.IsActive;
         await db.SaveChangesAsync(cancellationToken);
 
@@ -82,6 +87,23 @@ public class RepositoryService(IAppDbContext db, IAuditService auditService) : I
             throw new ValidationException("Repository URL must not contain embedded credentials.");
     }
 
+    /// <summary>This field must only ever be the *name* of an environment variable,
+    /// never a value that looks like an actual token — a coarse guard against a
+    /// caller pasting a real secret in by mistake.</summary>
+    private static void ValidateAccessTokenEnvVarName(string? envVarName)
+    {
+        if (string.IsNullOrWhiteSpace(envVarName))
+            return;
+        if (!EnvVarNamePattern().IsMatch(envVarName.Trim()))
+            throw new ValidationException("AccessTokenEnvVarName must look like an environment variable name (e.g. 'GITLAB_TOKEN_MYAPP'), not a secret value.");
+    }
+
+    private static string? NormalizeEnvVarName(string? envVarName) =>
+        string.IsNullOrWhiteSpace(envVarName) ? null : envVarName.Trim();
+
     private static RepositoryDto ToDto(Repository r) =>
-        new(r.Id, r.Name, r.Url, r.Provider, r.Description, r.IsActive, r.CreatedAt);
+        new(r.Id, r.Name, r.Url, r.Provider, r.Description, r.AccessTokenEnvVarName, r.IsActive, r.CreatedAt);
+
+    [GeneratedRegex("^[A-Z][A-Z0-9_]{2,99}$")]
+    private static partial Regex EnvVarNamePattern();
 }
