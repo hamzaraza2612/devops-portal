@@ -72,6 +72,13 @@ public class ApplicationEnvironment
     public int HealthCheckIntervalSeconds { get; set; } = 30;
     public int HealthCheckTimeoutSeconds { get; set; } = 5;
 
+    /// <summary>Optional browser-facing URL for this app in this environment (e.g.
+    /// "https://dev.example.com/app") — purely informational, shown in the portal UI
+    /// so a developer can open the running app without knowing the underlying host.
+    /// Not used by the deployment engine itself. Never contains credentials (same
+    /// validation as Repository.Url).</summary>
+    public string? ApplicationUrl { get; set; }
+
     public bool IsActive { get; set; } = true;
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? UpdatedAt { get; set; }

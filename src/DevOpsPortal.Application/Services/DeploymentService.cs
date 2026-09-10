@@ -103,9 +103,14 @@ public partial class DeploymentService(
     }
 
     public async Task<IReadOnlyList<PromotionRequestDto>> ListPendingPromotionsAsync(
-        Guid? applicationId, Guid? toEnvironmentDefinitionId, CancellationToken cancellationToken = default)
+        Guid? applicationId, Guid? toEnvironmentDefinitionId, bool includeApprovedAwaitingDeploy = false, CancellationToken cancellationToken = default)
     {
-        var query = db.PromotionRequests.Where(p => p.Status == ApprovalStatus.PendingApproval);
+        var query = includeApprovedAwaitingDeploy
+            ? db.PromotionRequests.Where(p =>
+                p.Status == ApprovalStatus.PendingApproval ||
+                (p.Status == ApprovalStatus.Approved && !db.Deployments.Any(d => d.PromotionRequestId == p.Id)))
+            : db.PromotionRequests.Where(p => p.Status == ApprovalStatus.PendingApproval);
+
         if (applicationId is not null) query = query.Where(p => p.ApplicationId == applicationId);
         if (toEnvironmentDefinitionId is not null) query = query.Where(p => p.ToEnvironmentDefinitionId == toEnvironmentDefinitionId);
 

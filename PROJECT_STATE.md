@@ -694,13 +694,326 @@ from this manual pass was left running or committed.
   `BuildConfiguration`) are deliberately shaped so each of these can be
   added later without rewriting the deployment engine itself.
 
+## Phase 4 — Deployment Portal UI & Operational Dashboard
+
+Done. Adds the production-ready web UI on top of the Phase 3 deployment
+engine — a React SPA (`frontend/`) that exposes the full DEV→QA→UAT→
+PRODUCTION workflow, plus one small, additive backend change the UI
+genuinely needed. No Phase 1/2/3 backend behavior was changed; the two
+backend edits this phase are purely additive (new optional field, new
+optional query parameter with a default that preserves prior behavior).
+
+### UI architecture
+
+```
+frontend/
+  src/
+    api/            client.ts (fetch wrapper: bearer token, error
+                     normalization, session-expiry event) + endpoints.ts
+                     (one typed function per backend route)
+    auth/            AuthContext (login/logout/session restore via
+                     sessionStorage token) + permissions.ts (mirrors
+                     PermissionCodes.cs — the single source of truth for
+                     every permission string used anywhere in the UI)
+    types/api.ts     Every backend DTO and enum, hand-mirrored field-for-
+                     field (including exact numeric enum values, since
+                     the API serializes enums as ints, camelCase props)
+    components/      Layout/nav, ActionButton (API call + busy/error/
+                     confirm state), Can (permission-gated render),
+                     PromotionCard, StatusBadge, RouteGuards, ErrorBoundary
+    pages/           One file per route (see below)
+    utils/           format.ts (dates/duration), status.ts (badge
+                     colors/labels), deploymentIndex.ts (client-side
+                     "latest deployment per app+environment" index built
+                     from one unfiltered /api/deployments fetch, avoiding
+                     an N-per-application status call on list pages)
+  Dockerfile         node:22-alpine build stage -> nginx:1.27-alpine
+                     runtime, serving the static build
+  nginx.conf         Serves the SPA (client-side routing fallback to
+                     index.html) and reverse-proxies /api/* to the `api`
+                     container on the internal Docker network — the
+                     browser only ever talks to one origin, so no CORS
+                     configuration was needed anywhere.
+```
+
+Stack: Vite + React 19 + TypeScript (strict — `erasableSyntaxOnly` means
+every backend enum is a `const` object + derived union type, not a real
+`enum`, since real TS enums aren't erasable), React Router 7, Tailwind
+CSS v4 (compiled at build time via `@tailwindcss/vite`, not the CDN
+runtime — this is a real deployed app, not a preview artifact), Vitest +
+React Testing Library for tests.
+
+**Backend authority, always.** Every permission check in the UI (the
+`can()` helper, the `<Can permission=...>` component, `hasEnvironmentAccess`
+for per-environment visibility) only decides what to *offer* — hiding a
+button never substitutes for the corresponding server-side check, which
+still runs on every request exactly as built in Phase 1–3. This is stated
+directly in `auth/AuthContext.tsx`'s docstring so it can't be missed by a
+future change.
+
+### Dashboard
+
+Real data only, no mocks: total applications, per-environment "currently
+deployed" application counts (derived as: for each app+environment pair,
+is the *most recent* deployment there `Succeeded`), running/succeeded/
+failed deployment counts, pending-approval count, and the 8 most recent
+deployments — all computed client-side from three parallel calls
+(`/api/applications`, `/api/deployments`, `/api/promotions`) rather than
+a dedicated aggregate endpoint (none was added; the existing list
+endpoints already carry everything needed).
+
+### Application pages
+
+- **List** (`/applications`): search/filter by name, slug, or repository;
+  a status badge per environment tier built from the same "latest
+  deployment per app+environment" index the dashboard uses. Branch and
+  latest-available-commit are deliberately *not* shown here (see Known
+  limitations) to avoid a live GitLab call per row.
+- **Details** (`/applications/:id`): application info, one card per
+  environment (DEV/QA/UAT/PRODUCTION) showing branch, deployed commit,
+  target server, the configured application URL (permission-gated, opens
+  in a new tab), and every relevant action for that environment inline:
+  Deploy to DEV (with an on-demand "look up latest available commit"
+  GitLab lookup — never called eagerly), request/approve/reject/deploy
+  for QA/UAT/PRODUCTION, and rollback (dropdown of prior successful
+  deployments). Deployment history table below.
+
+### Deployment actions & pending requests
+
+The full Phase 3 state machine is exposed exactly as designed: DEV has
+one action (deploy); QA/UAT/PRODUCTION each go through request → approve/
+reject → deploy as three separate UI actions hitting three separate API
+calls — clicking Approve never deploys anything, matching the backend
+invariant. Production promotions additionally surface `RequiresCtoApproval`/
+`CtoApprovalStatus` from `PromotionRequestDto`, and the Deploy button is
+disabled (with an explanatory tooltip) until both the promotion and the
+CTO approval are granted.
+
+`/pending` groups by target environment in tabs (QA/UAT/PRODUCTION), and
+each card shows exactly what the spec's example format requires:
+application, commit, requester, request time, current status, and a
+plain-language "next action" line — never a bare undifferentiated list.
+A tab is hidden entirely for a user with no permission relevant to that
+environment (see RBAC behavior below).
+
+**Backend addition needed for this**: `IDeploymentService.ListPendingPromotionsAsync`
+gained an optional `includeApprovedAwaitingDeploy` parameter (default
+`false`, preserving the exact Phase 3 behavior for any existing caller).
+Without it, a promotion disappears from every list the moment it's
+approved (its `Status` leaves `PendingApproval`) — but no `Deployment` row
+exists yet, so there would be no way for the UI to ever surface the
+"click Deploy" step again. With the flag, the query also returns
+`Status == Approved` promotions that have no linked `Deployment` row yet.
+This was live-verified end-to-end: approve a QA promotion → it correctly
+disappears from the *default* pending-approval query → the broadened
+query still finds it and offers Deploy → clicking Deploy creates the
+`Deployment` row and it disappears for good. `PromotionsController`'s
+`GET /api/promotions` now accepts `includeApprovedAwaitingDeploy` as an
+optional query-string boolean; all 154 backend tests (including the 32
+`DeploymentServiceTests` covering this exact area) still pass unmodified.
+
+### Deployment history, details, and logs
+
+`/deployments` filters by application, environment, status, and date
+range (all client-side over one `/api/deployments` fetch). `/deployments/:id`
+shows every field `DeploymentDto` carries — commit, branch, version/image,
+timestamps, duration, health-check result, failure reason, rollback
+linkage — plus a logs panel backed by `GET /api/deployments/:id/logs`
+(already sanitized server-side by Phase 3's `LogSanitizer`, so the UI does
+no additional redaction — it only formats). Logs support manual refresh
+and an auto-refresh toggle (4s interval) that's on by default while the
+deployment is active and turns itself off once it completes; the
+deployment record itself also polls while active so the status badge and
+health/failure panel update without a manual page reload. Centralized log
+aggregation was explicitly out of scope (per the spec) and was not built.
+
+### Application URLs
+
+New: `ApplicationEnvironment.ApplicationUrl` (nullable string, migration
+`AddApplicationEnvironmentUrl`), validated with the same rule Phase 2 uses
+for `Repository.Url` (absolute http/https, no embedded userinfo
+credentials). Returned in `ApplicationEnvironmentDto`/accepted in
+`UpsertApplicationEnvironmentRequest`. The UI renders it as a plain
+`<a target="_blank" rel="noopener noreferrer">` — never a hardcoded string
+anywhere in frontend code — and only when `hasEnvironmentAccess` says the
+current user has some relevant permission for that specific environment
+(see RBAC behavior). No new endpoint was needed; it rides along with the
+existing environment-config read the details page already made.
+
+### Environment view
+
+`/environments`: one column per pipeline tier, each listing every active
+application currently deployed there (status badge, commit, relative
+time) plus a "Needs attention" highlight when that environment has a
+`Failed` deployment or a pending promotion request, so it's immediately
+obvious which environment needs action without reading every row.
+
+### RBAC behavior
+
+- Every list/detail page renders exactly what its underlying endpoint
+  returns for the caller — there is no client-side application allow-list
+  beyond what `applications.view` (a single, global permission, same as
+  Phase 1–3) already governs; this system has no per-application ACL
+  concept to enforce more finely than that.
+- Per-environment gating (`hasEnvironmentAccess`, used for the pending-
+  request tabs, the environment-view columns, and application-URL
+  visibility) grants access to a tier if the user holds any of that
+  tier's promote/approve/deploy permissions, **or** the blanket
+  `deployments.view` read permission — matching the precedent Phase 3
+  already established (deployment history/logs across *all* environments
+  are already visible to any `deployments.view` holder; introducing a
+  stricter boundary just for URLs/tabs would be a new, inconsistent
+  restriction rather than an enforcement of an existing one). The
+  function itself correctly discriminates a narrower permission set (unit-
+  tested with synthetic permission arrays); with the *currently seeded*
+  default roles, every one of them includes `deployments.view`, so in
+  practice today every authenticated user sees every tab read-only — the
+  actual enforcement boundary, live-verified, is on the *actions*
+  (Approve/Reject/Deploy buttons), which are correctly gated per exact
+  environment permission and rejected server-side with 403 if bypassed.
+- Live-verified with real users against a running instance (not just
+  unit tests): a DEVELOPER-role user can deploy to DEV but sees no
+  Approve/Reject controls anywhere; a QA-role user sees and can use
+  Approve/Reject on the QA tab. Both were confirmed via full browser
+  sessions (Playwright + Chromium) against the real API, not mocked.
+- Session handling: a 401 from any API call dispatches a
+  `session-expired` event; `AuthContext` listens globally and clears the
+  session, which routes the user back to `/login` via `RequireAuth` —
+  works for a request made anywhere in the app, not just ones made
+  through a specific hook.
+
+### Error handling
+
+Centralized in `api/client.ts`: every non-2xx response is turned into an
+`ApiError` carrying the backend's own human-readable message (never a
+stack trace — the backend's `ExceptionHandlingMiddleware` already
+guarantees that); a network failure (fetch throwing) becomes a generic
+"could not reach the server" `ApiError` instead of an unhandled rejection;
+a 401 triggers the session-expired flow above. Pages render errors via a
+shared `ErrorBanner` with a dismiss/retry affordance, and a top-level
+`ErrorBoundary` catches any unexpected render-time exception so a bug
+never shows a blank white page. "Deployment not found", "missing
+configuration" (e.g. an environment not yet configured for an app), and
+failed action attempts (shown inline on the specific button, via
+`ActionButton`'s built-in error state) are all covered by this same
+mechanism — there is no separate ad hoc error path anywhere in the app.
+
+### Responsive layout
+
+Tailwind responsive utilities throughout (`sm:`/`md:`/`xl:` grid-column
+breakpoints on the dashboard stat row, applications table, environment
+board; the top nav collapses behind a hamburger toggle below `md:`).
+Desktop/laptop DevOps usage was the priority per the spec; no animation
+or decorative work was done beyond what Tailwind's defaults provide for
+free (hover states, transitions on interactive elements).
+
+### Testing
+
+Backend: all 154 existing tests still pass unmodified (confirmed after
+every backend change this phase, including the new
+`includeApprovedAwaitingDeploy` parameter and the `ApplicationUrl` field/
+migration); one existing test file (`ApplicationEnvironmentServiceTests`)
+updated only for the new positional DTO parameter, no assertions changed.
+
+Frontend: 35 Vitest + React Testing Library tests across 8 files,
+covering the explicit Phase 4 checklist:
+- `auth/permissions.test.ts` — `hasEnvironmentAccess` correctly scopes a
+  Developer to DEV+QA, a QA-role permission set to QA only, a UAT-role
+  set to UAT only, and denies every tier to an unrelated permission set
+  (the "unauthorized users cannot access restricted environments" case,
+  proven with a synthetic permission array since every currently-seeded
+  default role happens to include the blanket `deployments.view`).
+- `pages/PendingRequestsPage.test.tsx` — a QA-only permission set sees
+  only the QA tab and its request; a UAT-only set sees only UAT; a set
+  with no relevant permission sees neither tab.
+- `components/PromotionCard.test.tsx` — the required-format fields render
+  correctly; approval/CTO-approval states are displayed and correctly
+  gate the Deploy button; Approve/Reject only render for a holder of the
+  matching environment's approve permission.
+- `components/ActionButton.test.tsx` and `pages/ApplicationDetailsPage.test.tsx`
+  — clicking an action button invokes the correct typed API function with
+  the correct arguments (deploy-to-DEV verified end-to-end from typed
+  commit-SHA input to the exact API call payload); a destructive action
+  requires a second confirm click before calling anything; a failed call
+  shows the backend's message inline instead of throwing.
+- `pages/DeploymentDetailsPage.test.tsx` — logs load and render from the
+  API; a 500 and a 404 both render a readable message instead of
+  crashing.
+- `api/client.test.ts` — the full error-handling contract: backend error
+  message surfaced, network failure wrapped as `ApiError`, 401 dispatches
+  the session-expired event, 204 handled as success-with-no-body, token
+  storage round-trips.
+- `components/Can.test.tsx` — permission-gated rendering in isolation.
+- `pages/ApplicationDetailsPage.test.tsx` — the configured application URL
+  renders as a real `target="_blank" rel="noopener"` link with the exact
+  configured `href` (never a hardcoded frontend string) and is absent
+  entirely for a user without environment access.
+
+**Live/manual verification** (real Postgres 16, real `dotnet run` API,
+real `vite dev` frontend proxying to it, Playwright + Chromium — not a
+description of intended behavior, an actual browser session against the
+real stack): logged in as seeded admin; created a sample application with
+DEV/QA environment URLs configured; deployed to DEV, force-marked
+Succeeded (no Docker daemon in this sandbox — see Phase 3's own noted
+limitation); requested a QA promotion; approved it as admin; confirmed
+**zero** deployment rows existed immediately after approval; clicked
+Deploy from the same page and confirmed the deployment was created and
+picked up by the background worker; viewed deployment history, deployment
+details, and the sanitized log viewer for a real (Docker-unreachable,
+correctly `Failed`, never falsely `Succeeded`) deployment; created a
+DEVELOPER-role and a QA-role user and confirmed live, in the browser, that
+each sees exactly the actions their role's permissions allow — no console
+errors on any page throughout. All temporary databases, target-server
+fixture directories, and dev-only npm packages installed for this manual
+pass (Playwright, `--no-save`) were removed afterward; nothing from it was
+left running or committed.
+
+### Known limitations / explicit Phase 5+ candidates
+
+- **No admin UI for Users/Roles/Repositories/Target Servers.** Those
+  remain API-only, exactly as they were after Phase 1/2 — the Phase 4
+  spec's 16 sections don't ask for management screens for them, so none
+  were built, consistent with staying in scope.
+- **Branch and latest-available-commit are not shown on the applications
+  list page**, only on each application's details page. Showing them on
+  every list row would mean a live GitLab call per application on every
+  list-page load; the on-demand ("click to look up") pattern used on the
+  details page's Deploy-to-DEV form was judged the right tradeoff instead.
+- **Per-environment tab/URL visibility currently has no practical effect**
+  beyond what `deployments.view` (already blanket, already established in
+  Phase 3) grants, because every seeded default role includes it — see
+  RBAC behavior above. The `hasEnvironmentAccess` function is correct and
+  tested for a narrower permission set; it just isn't exercised by any
+  *default* role today. Revisit if a future phase introduces a role that
+  deliberately withholds `deployments.view`.
+- **JWT stored in `sessionStorage`**, not an httpOnly cookie — cleared on
+  tab close (narrower exposure window than `localStorage`) but still
+  readable by any script on the page if an XSS existed elsewhere. An
+  httpOnly-cookie-based session (requiring backend changes to issue/read
+  the cookie) is the natural hardening step, not built here to avoid
+  touching Phase 1's working JWT-bearer auth code.
+- **No centralized log aggregation, no monitoring dashboards/CPU-RAM
+  graphs, no notification center/Slack/Teams integration** — all
+  explicitly out of scope per the governing spec, not built.
+- **In-process background job engine, single-host Docker execution,
+  application-level (not DB-atomic) promotion-decision race handling** —
+  all inherited, unchanged, Phase 3 limitations; see that section above.
+  Phase 4 added no new concurrency-sensitive backend logic beyond the
+  purely additive query broadening described above.
+- **Frontend build is type-checked together with its test files**
+  (`tsc -b` covers everything under `src/`, including `*.test.tsx`) —
+  intentional (catches dead code in tests too) but means a broken test
+  file blocks `npm run build`, not just `npm test`. Worth splitting into a
+  separate test-only tsconfig if that coupling ever becomes annoying.
+
 ## Next phase
 
-Not yet assigned — Phase 3 (Deployment Engine & Environment Promotion
-Workflow) is complete; awaiting explicit approval before starting further
-work. Strongest candidate per the "Known limitations" above: a real
-remote-execution story (credential vault + either SSH or a scoped
-per-target-server agent) so deployments can actually reach servers other
-than the one running the portal API process — the current executor is
-correct and safe, but only for same-host Docker access. Do not assume
-which without asking.
+Not yet assigned — Phase 4 (Deployment Portal UI & Operational Dashboard)
+is complete; awaiting explicit approval before starting further work.
+Strongest candidates per the "Known limitations" above: (1) the real
+remote-execution story flagged since Phase 3 (credential vault + SSH or a
+scoped per-target-server agent), since the UI now makes it very visible
+that deployments only work when the portal runs on the target host, or
+(2) hardening session storage to an httpOnly cookie now that a real
+frontend exists to notice the difference. Do not assume which without
+asking.
