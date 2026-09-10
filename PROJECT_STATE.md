@@ -54,10 +54,23 @@ server, and honestly reports every target server unreachable until a real
 secure remote-execution mechanism is built (not yet — abstraction only).
 See dedicated section below.
 
+**Phase 6 — Build Pipeline & Jenkins Integration.** Done. Adds a
+provider-abstracted build pipeline (`IBuildProvider`, implemented for real
+by `JenkinsBuildProvider` over the Jenkins REST API) so applications can go
+Source → Jenkins build → Docker image → Registry → immutable `Release`,
+while every existing Legacy (prebuilt publish directory) application keeps
+working completely unchanged. Requesting a build never deploys anything.
+Unlike Phase 5's remote-Docker gap, Jenkins connectivity is genuinely
+operational here (plain HTTP from the portal, no socket/SSH problem) —
+see dedicated section below for exactly what is and isn't wired up.
+
 ## Current database state
 
 PostgreSQL via EF Core migrations (`src/DevOpsPortal.Infrastructure/Persistence/Migrations`):
-`InitialCreate` (Phase 1), `AddLegacyDeploymentConfiguration` (Phase 2).
+`InitialCreate` (Phase 1), `AddLegacyDeploymentConfiguration` (Phase 2), ...,
+`Phase6_BuildPipelineJenkins` (Phase 6 — see dedicated section below for its
+`BuildServers`/`BuildRequests`/`Releases` tables and the additive columns on
+`BuildConfigurations`/`Deployments`).
 
 Phase 1 tables: `Users`, `Roles`, `Permissions`, `UserRoles` (join),
 `RolePermissions` (join), `AuditLogs`.
@@ -1366,19 +1379,340 @@ manual pass was left running or committed.
 - **Container operations are LegacyFilesystem-mode only**, unchanged,
   matching Phase 3's `DeploymentExecutor` scope.
 
+## Phase 6 — Build Pipeline & Jenkins Integration
+
+Done. Adds a provider-abstracted build pipeline so an application can move
+from source code to a deployable, traceable artifact — `IBuildProvider`,
+implemented for real by `JenkinsBuildProvider` over the Jenkins REST API —
+while every existing Legacy (prebuilt publish directory) application keeps
+deploying exactly as Phase 3 left it. **No database schema change to any
+existing deployment behavior**: `BuildServers`/`BuildRequests`/`Releases`
+are new tables, and the new columns on `BuildConfiguration`/`Deployment`
+are all nullable and additive.
+
+### Architecture
+
+```
+BuildService (Application)
+        │  permission checks, validation, audit, DTO shaping,
+        │  refresh-on-read status resolution (no background poller —
+        │  same choice Phase 5 made for live container status)
+        ▼
+IBuildProvider (Application/Abstractions, impl: JenkinsBuildProvider)
+        │  provider-agnostic contract: TriggerBuildAsync / GetBuildStatusAsync
+        │  / GetBuildLogAsync — the deployment engine and BuildService never
+        │  reference Jenkins directly; a future GitLab CI/GitHub Actions/
+        │  TeamCity provider is another IBuildProvider registration, no
+        │  caller change (master requirements §1)
+        ▼
+JenkinsBuildProvider (Infrastructure/Build) — REAL, operational HTTP client
+        │  against the Jenkins REST API. Never throws for expected failures
+        │  (network, auth, 404) — returns a Fail result, same idiom as
+        │  IGitProviderClient/GitLabProviderClient (Phase 3).
+        ▼
+   Jenkins (buildWithParameters / build, queue/item/{id}, job/{name}/{n})
+```
+
+**Why this is unlike Phase 5's remote-execution gap**: Phase 5 could not
+honestly implement remote Docker access because reaching an arbitrary
+`TargetServer`'s Docker engine needs a secure connectivity mechanism (SSH
+key/agent, credential vault, host-key trust) that doesn't exist yet. Jenkins
+is different — it's a single, portal-configured HTTP(S) endpoint reachable
+the same way GitLab already is (Phase 3's `IGitProviderClient`), so
+`JenkinsBuildProvider` is a real, working implementation the moment a
+`BuildServer` row points at a reachable Jenkins instance. There is no
+placeholder/"NotConfigured" provider for builds — if none is registered for
+a `BuildServer`'s `ProviderType`, that specific, honest failure is reported
+per-request (see Security decisions below), not architecture-wide.
+
+### Jenkins's real two-phase async lifecycle, modeled honestly
+
+Triggering a Jenkins job (`POST .../buildWithParameters` or `.../build`)
+returns **201 Created with a `Location` header pointing at a queue item**
+(`.../queue/item/{id}/`) — never a build number. The build number is only
+knowable once that queue item resolves to an `executable`
+(`GET .../queue/item/{id}/api/json`). `IBuildProvider.TriggerBuildAsync`
+therefore returns a queue-item reference, not a build number, and
+`GetBuildStatusAsync` accepts either a known build number (cheap, precise —
+`GET .../job/{name}/{n}/api/json`) or a queue-item id to resolve, following
+up automatically with the build's own status the moment it resolves so a
+caller sees `Running`/`Succeeded`/`Failed` on the same poll rather than
+waiting for a second one.
+
+### Refresh-on-read status, not a background poller
+
+`BuildService.GetAsync` calls `IBuildProvider.GetBuildStatusAsync` and
+persists the result only when a build is still `Queued`/`Running` —
+matching Phase 5's "live status" design choice rather than adding new
+background-worker infrastructure. `ListAsync` deliberately does **not**
+refresh every row (would mean one external HTTP call per build in the
+list); only `GetAsync` (by id) refreshes. A GitHub/CI webhook that pushes
+status instead of this pull model is a natural future improvement, not
+built here.
+
+### Release: the immutable artifact record
+
+A `Release` row is created exactly once, the moment a `BuildRequest`
+resolves to `BuildStatus.Succeeded` with a known build number — one Release
+per successful BuildRequest (`Release.BuildRequestId` is a unique FK), never
+mutated afterward. A **failed** build produces no Release — the failure is
+fully captured on the `BuildRequest` itself (`Status`/`ErrorMessage`), so
+there's nothing "immutable" to record beyond that. Only the Modern
+(Jenkins → Docker image) path in this phase ever produces a Release; Legacy
+deployments have none and don't need one.
+
+`Release.ImageReference` is always traceable and never `latest`:
+`{registry}/{repository}:{tag}`, where `tag` is chosen from
+`BuildConfiguration.ImageTagStrategy` — `CommitSha` uses the build's commit
+(falling back to the build number if no commit was supplied for that
+request — still a real, unique, non-"latest" identifier, not a hard
+failure), `BuildNumber` uses the resolved provider build number, and
+`SemVer` uses the caller-supplied `RequestBuildRequest.SemVer` (required at
+request time for that strategy — there is no way to derive a semantic
+version automatically, so this is validated eagerly rather than failing
+silently after a build already ran).
+
+### Deployment ↔ Release: schema-ready, not execution-wired
+
+Per master requirements §6 ("Deployment should reference an immutable
+release"), `Deployment` gained a nullable `ReleaseId` FK to `Release` this
+phase — purely additive, `Restrict` on delete. **What this phase does not
+do**: wire `IDeploymentService`/`DeploymentExecutor` to accept a Release and
+deploy its image. That's deliberately out of scope here, for the same
+reason Phase 3 left `BuildConfiguration` "config only" and Phase 5 left
+`IRemoteExecutionProvider` abstraction-only: `DeploymentExecutor`'s
+`DeploymentMode.ContainerImage` branch already, explicitly, throws
+"Container-image deployment execution is not implemented yet" (Phase 3) —
+actually wiring deploy-from-release would mean implementing that branch for
+real, which is a deployment-engine change, not a build-pipeline one, and
+risks exactly the "change the existing Phase 3 workflow unnecessarily"
+outcome the instructions for this phase (and Phase 5's correction before
+it) explicitly warn against. So today: every `Deployment.ReleaseId` is
+`null` for every deployment created by any code path, `Release` rows exist
+and are fully queryable/auditable, and a future phase can wire
+`CreateDevDeploymentRequest`/`DeploymentService` to accept a `ReleaseId`
+and populate `ImageReference`/`CommitSha`/`VersionLabel` from it without any
+schema change.
+
+### Legacy support — both models genuinely coexist
+
+- **Legacy** (`BuildConfiguration.BuildServerId == null`): completely
+  unchanged from Phase 3. `POST .../builds` rejects a build request for
+  such an application with a clear `ValidationException` ("no
+  build-from-source configuration... use the Legacy deployment path") —
+  it does not silently no-op or fabricate a build. Every Legacy
+  application's existing `DeployToDev`/promotion/rollback flow is
+  byte-for-byte unchanged; `DeploymentExecutor`/`IComposeCommandExecutor`
+  were not touched this phase.
+- **Modern** (`BuildConfiguration.BuildServerId` + `JobName` set): the new
+  `POST .../builds` → `GET /api/builds/{id}` → `Release` flow described
+  above. Deploying the resulting image is not wired yet (see previous
+  section) — this phase delivers Source → Build → Image → Registry →
+  Release; Release → running Deployment is the next phase's work, same as
+  Phase 3 left Mode B's execution for a later phase.
+
+### Database changes
+
+New tables (`Phase6_BuildPipelineJenkins` migration):
+- **`BuildServers`** — `Name` (unique), `Description`, `ProviderType`,
+  `BaseUrl`, `Username`, `ApiTokenEnvVarName` (env var *name* only — see
+  Security below), `IsActive`, `CreatedAt`.
+- **`BuildRequests`** — `ApplicationId`/`BuildServerId` (FK, `Restrict`),
+  snapshotted `JobName`, `Branch`, `CommitSha`, `RequestedSemVer`, `Status`,
+  `ProviderQueueItemId`, `BuildNumber`, `BuildUrl`, `ErrorMessage`,
+  `RequestedByUserId`/`RequestedAt`, `StartedAt`/`CompletedAt`.
+- **`Releases`** — `ApplicationId` (FK, `Restrict`), `BuildRequestId`
+  (unique FK, `Cascade` — a Release cannot outlive the BuildRequest that
+  produced it), `CommitSha`, `Branch`, `BuildNumber`, `ImageReference`,
+  `BuildStatus`, `CreatedAt`.
+
+Additive columns (nullable, zero impact on any existing row):
+- `BuildConfigurations.BuildServerId` (FK, `Restrict`), `JobName`,
+  `SdkVersion`, `PublishArguments`.
+- `Deployments.ReleaseId` (FK, `Restrict` — see "schema-ready, not
+  execution-wired" above).
+
+Confirmed via `dotnet ef migrations has-pending-model-changes` (none after
+the migration) and a live `dotnet ef database update` against a fresh
+Postgres 16 instance (applies cleanly on top of every Phase 1–5 migration).
+
+### Security decisions
+
+- **Jenkins credentials are never stored in source code or the database.**
+  `BuildServer.ApiTokenEnvVarName` is only the *name* of a server-side
+  environment variable (validated as a plausible env-var name, e.g.
+  `JENKINS_TOKEN_MAIN`); the actual token is read via
+  `Environment.GetEnvironmentVariable(...)` at call time inside
+  `JenkinsBuildProvider`, used only in the `Authorization: Basic` header,
+  and never logged or returned by any API response — the exact pattern
+  `Repository.AccessTokenEnvVarName` established in Phase 3.
+- **No arbitrary Jenkins jobs from users.** `BuildTriggerRequest.JobName`
+  always comes from the application's own `BuildConfiguration.JobName` —
+  `RequestBuildRequest` (the API body) has no job-name field at all, only
+  `Branch`/`CommitSha`/`SemVer`.
+- **Server-side authorization enforced inside `BuildService`** (same
+  `EnsurePermissionAsync` pattern as `DeploymentService`/
+  `ContainerOperationsService`, not just a controller attribute) —
+  `builds.request` to trigger, `builds.view` to read status/list/logs;
+  `buildservers.view`/`buildservers.manage` gate the separate
+  `BuildServersController`. Live-verified: a request with no auth token is
+  rejected with HTTP 401 before reaching any service.
+- **No secrets in build logs.** `IBuildService.GetLogAsync` runs
+  `LogSanitizer.Sanitize()` on every line of console text proxied from
+  Jenkins before returning it — live-verified against a build log
+  containing a leaked `API_TOKEN=...` line, which came back as
+  `API_TOKEN=***REDACTED***`.
+- **Every build request is audited**, success or failure, via one
+  `auditService.LogAsync("build.request", ...)` call naming the
+  application, job, build server, branch/commit, and (on failure) the
+  sanitized error — live-verified: both a successful trigger and an
+  unreachable-server failure appear in `GET /api/audit`.
+- **Build logs are proxied, never persisted.** Jenkins remains the durable
+  log store; the portal only ever returns what Jenkins returns for that
+  request, matching the "don't duplicate what's already durably stored
+  elsewhere" principle used for container status in Phase 5.
+
+### API surface
+
+- `POST /api/applications/{id}/builds` (`builds.request`, enforced inside
+  the service) — body `{ branch?, commitSha?, semVer? }`.
+- `GET /api/applications/{id}/builds` (`builds.view`) — list for an app.
+- `GET /api/builds?applicationId={id?}` (`builds.view`) — flat list,
+  optionally filtered.
+- `GET /api/builds/{id}` (`builds.view`) — refresh-on-read status.
+- `GET /api/builds/{id}/logs` (`builds.view`) — sanitized console log
+  proxy.
+- `GET`/`POST`/`PUT /api/build-servers[/{id}]` (`buildservers.view`/
+  `buildservers.manage`) — CRUD for configured build servers.
+- `GET`/`PUT /api/applications/{id}/build-configuration` (unchanged
+  routes, extended body: `buildServerId`, `jobName`, `sdkVersion`,
+  `publishArguments`).
+
+### Permission model (additions)
+
+| Role | New `builds.*`/`buildservers.*` permissions |
+|---|---|
+| DEVELOPER | `builds.view`, `builds.request` |
+| QA | `builds.view` |
+| UAT | `builds.view` |
+| DEVOPS | `buildservers.view`, `buildservers.manage`, `builds.view`, `builds.request` |
+| CTO | `builds.view` |
+| ADMIN | all (superset, as in every prior phase) |
+
+### Testing
+
+**Automated**: 249 tests total, all passing (`dotnet test`, zero filter,
+zero failures) — net +40 over Phase 5's 209:
+- `JenkinsBuildProviderTests` (16) — trigger with/without parameters
+  (endpoint choice, query-string encoding), queue-item Location-header
+  parsing, non-success status handling, missing-Location handling,
+  build-number-based status (`Running`/`Succeeded`/`Failed` result
+  mapping), queue-item-based status (still-queued, cancelled, resolves-
+  and-follows-up), console log fetch + completeness detection, and
+  never-throws-on-unreachable-host for every method — using a fake
+  `HttpMessageHandler`, no real Jenkins required.
+- `BuildServiceTests` (16) — authorization (missing `builds.request`,
+  view-only user denied a request, missing `builds.view`), no
+  build-configuration / unknown application / SemVer-without-SemVer
+  validation, successful trigger persists `Queued` and never creates a
+  `Deployment`, status refresh resolving to `Succeeded` creates a `Release`
+  with the correct traceable `ImageReference` (including the commit-
+  missing → build-number-tag fallback), failed trigger persists `Failed`
+  with a sanitized error and a `Failure`-result audit entry, status refresh
+  resolving to a build-level `Failed` creates no `Release`, an unregistered
+  provider type produces an honest `Failed` `BuildRequest` rather than
+  throwing, and log fetch both for an unresolved build number (unavailable)
+  and sanitizing a leaked secret from provider log text.
+- `BuildServerServiceTests` (6) — credential-reference-only round-trip,
+  duplicate-name conflict, invalid `BaseUrl` (non-URL, non-http(s) scheme),
+  malformed `ApiTokenEnvVarName`, not-found on update, and in-place update.
+- `BuildConfigurationServiceTests` (+3 over Phase 3's existing 6) — unknown
+  `BuildServerId` rejected, `BuildServerId` without `JobName` rejected, and
+  a full modern-path upsert round-trip including the joined
+  `BuildServerName`.
+
+**Live/manual verification** (real Postgres 16, real `dotnet run` API, a
+minimal fake Jenkins REST server — no real Jenkins install available in
+this sandbox, same constraint Phase 3 had for a real GitLab instance):
+- Created a `BuildServer` pointing at `http://127.0.0.1:1` (nothing
+  listening) → `POST .../builds` returned HTTP 200 with
+  `status: Failed, errorMessage: "Could not reach build server
+  'unreachable-jenkins'."` — never a 500, never a fabricated success.
+- Re-pointed the same `BuildServer` at a fake Jenkins implementing the real
+  three endpoints (`POST .../build` → 201 + `Location: .../queue/item/1/`,
+  `GET .../queue/item/1/api/json` → resolves to build `#5`,
+  `GET .../job/.../5/api/json` → `result: SUCCESS`,
+  `GET .../job/.../5/consoleText` → log text containing a fake leaked
+  token): `POST .../builds` returned `status: Queued,
+  providerQueueItemId: "1"`; the next `GET /api/builds/{id}` resolved it to
+  `status: Succeeded, buildNumber: 5, releaseId: <guid>, imageReference:
+  "registry.example.com/group/sample-app:abc123def456"`.
+- `GET /api/builds/{id}/logs` returned the console text with
+  `API_TOKEN=***REDACTED***` in place of the fake leaked secret.
+- `GET /api/audit?action=build.request` showed both the failed and
+  successful requests, with `result: Failure`/`Success` respectively and
+  the sanitized detail message.
+- `GET /api/deployments?applicationId=...` returned `[]` throughout —
+  confirmed a successful build never created a Deployment.
+- A request with no `Authorization` header was rejected with HTTP 401
+  before reaching `BuildService`.
+- Regression: `dotnet ef migrations has-pending-model-changes` → none;
+  Phase 1–5 login, target-server listing, and application listing
+  re-confirmed working unchanged in the same session.
+
+Live-verification database and the fake Jenkins process were removed
+afterward; nothing from this manual pass was left running or committed.
+
+### Known limitations / explicit next-phase candidates
+
+- **Deploy-from-release is schema-ready but not execution-wired** — the
+  single biggest deliberate gap this phase leaves open. `Deployment.ReleaseId`
+  exists and `Release` rows are created correctly, but nothing in
+  `IDeploymentService`/`DeploymentExecutor` yet accepts a `ReleaseId` or
+  deploys a `Release`'s image — that requires implementing
+  `DeploymentExecutor`'s `DeploymentMode.ContainerImage` branch for real
+  (today it explicitly throws "not implemented yet", unchanged since Phase
+  3), which is deployment-engine work, not build-pipeline work, and was
+  deliberately left alone per the instruction not to change Phase 3's
+  workflow unnecessarily.
+- **No frontend for this phase** — no Phase 4 UI page for requesting a
+  build, viewing build status/logs, or browsing releases yet.
+- **Refresh-on-read only, no webhook/push status** — `GET /api/builds/{id}`
+  is the only thing that refreshes a build's status; nothing calls Jenkins
+  proactively, so a build that is never polled by a caller after being
+  triggered stays `Queued`/`Running` in the database indefinitely (harmless
+  — just stale — but worth a webhook receiver in a future phase).
+  `ListAsync` never refreshes, by design (see "Refresh-on-read" above).
+- **Only Jenkins is implemented.** `IBuildProvider` is provider-agnostic by
+  design (master requirements §1), but Jenkins is the only registered
+  implementation — a second provider (GitHub Actions, GitLab CI, TeamCity)
+  is a new `IBuildProvider` + DI registration, no change to `BuildService`
+  or any caller.
+- **SemVer tagging requires a caller-supplied version every time** — there
+  is no automatic semantic-version derivation (e.g. from Git tags); this is
+  an explicit, validated requirement at request time for that strategy, not
+  a silent gap.
+- **Jenkins folder-style job names are supported in `JenkinsBuildProvider`
+  (`folder/job` → `.../job/folder/job/job`) but untested against a real
+  folder-based Jenkins install** — same "unverified against a real
+  installation" caveat Phase 5 documented for `docker compose ps`'s
+  version-dependent output shape.
+- **No Jenkins CSRF crumb caching** — `JenkinsBuildProvider` fetches a
+  fresh crumb on every trigger call (tolerating a disabled/absent crumb
+  issuer) rather than caching it; fine at this request volume, worth
+  revisiting if Jenkins is triggered at high frequency.
+
 ## Next phase
 
-Not yet assigned — Phase 5 (Docker Container Monitoring & Operational
-Controls), including its remote-execution architecture correction, is
+Not yet assigned — Phase 6 (Build Pipeline & Jenkins Integration) is
 complete; awaiting explicit approval before starting further work.
-Strongest candidate per this phase's own "Known limitations": a real
-secure remote-execution mechanism (SSH-based or per-target-server agent,
-with proper credential storage) implementing `IRemoteExecutionProvider` —
-until that exists, container monitoring/control remains abstraction-only
-and Phase 3's deployment executor remains local-Docker-only. Other
-candidates, unchanged from before: the Phase 4 UI work this phase's API
-was shaped for (a container-status page, restart/stop/start controls,
-live-refresh polling — now also needing to honestly render "not yet
-reachable" as the default state), or hardening session storage to an
-httpOnly cookie (flagged since Phase 4). Do not assume which without
-asking.
+Strongest candidate per this phase's own "Known limitations": wiring
+`IDeploymentService`/`DeploymentExecutor` to actually deploy from a
+`Release` (implementing `DeploymentMode.ContainerImage` execution for
+real) — until that exists, a successful Jenkins build produces a fully
+traceable `Release` that nothing can yet deploy through the portal. Other
+candidates, unchanged from before: a real secure remote-execution
+mechanism for Phase 5's `IRemoteExecutionProvider`, the Phase 4 UI work
+for both container status and this phase's build/release views, or
+hardening session storage to an httpOnly cookie (flagged since Phase 4).
+Do not assume which without asking.

@@ -18,7 +18,8 @@ public class ApplicationsController(
     IApplicationEnvironmentService environmentService,
     IDeploymentService deploymentService,
     IBuildConfigurationService buildConfigurationService,
-    IContainerOperationsService containerOperationsService) : ControllerBase
+    IContainerOperationsService containerOperationsService,
+    IBuildService buildService) : ControllerBase
 {
     [HttpGet]
     [RequirePermission(PermissionCodes.ApplicationsView)]
@@ -121,6 +122,17 @@ public class ApplicationsController(
     [HttpPost("{id:guid}/environments/{environmentDefinitionId:guid}/containers/stop")]
     public async Task<IActionResult> StopContainers(Guid id, Guid environmentDefinitionId, CancellationToken cancellationToken) =>
         Ok(await containerOperationsService.StopAsync(id, environmentDefinitionId, cancellationToken));
+
+    /// <summary>Requests a build from this application's configured build server/job
+    /// (never a caller-supplied job). Never deploys anything by itself — permission
+    /// (builds.request) is enforced inside the service, same pattern as containers.</summary>
+    [HttpPost("{id:guid}/builds")]
+    public async Task<IActionResult> RequestBuild(Guid id, [FromBody] RequestBuildRequest request, CancellationToken cancellationToken) =>
+        Ok(await buildService.RequestBuildAsync(id, request, cancellationToken));
+
+    [HttpGet("{id:guid}/builds")]
+    public async Task<IActionResult> GetBuilds(Guid id, CancellationToken cancellationToken) =>
+        Ok(await buildService.ListAsync(id, cancellationToken));
 
     /// <summary>docker compose down -v / up -d — destroys volumes. Requires
     /// containers.recreate, an explicit Confirm:true body, and that this

@@ -36,6 +36,11 @@ public static class PermissionCodes
     public const string ContainersControl = "containers.control";
     public const string ContainersRecreate = "containers.recreate";
 
+    public const string BuildServersView = "buildservers.view";
+    public const string BuildServersManage = "buildservers.manage";
+    public const string BuildsView = "builds.view";
+    public const string BuildsRequest = "builds.request";
+
     public static readonly IReadOnlyList<(string Code, string Description)> All = new (string, string)[]
     {
         (UsersView, "View users"),
@@ -65,5 +70,9 @@ public static class PermissionCodes
         (ContainersView, "View live container status and health for configured application environments"),
         (ContainersControl, "Restart, start, or stop the containers of a configured application environment"),
         (ContainersRecreate, "Recreate a configured application environment's containers with docker compose down -v / up -d (destroys volumes)"),
+        (BuildServersView, "View configured build servers (e.g. Jenkins instances)"),
+        (BuildServersManage, "Create and configure build servers"),
+        (BuildsView, "View build requests, their status, logs, and resulting releases"),
+        (BuildsRequest, "Request a build of an application from a configured build server"),
     };
 }

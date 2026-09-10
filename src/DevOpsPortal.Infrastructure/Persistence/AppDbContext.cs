@@ -23,6 +23,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<DeploymentLogEntry> DeploymentLogEntries => Set<DeploymentLogEntry>();
     public DbSet<PromotionRequest> PromotionRequests => Set<PromotionRequest>();
     public DbSet<ProductionApproval> ProductionApprovals => Set<ProductionApproval>();
+    public DbSet<BuildServer> BuildServers => Set<BuildServer>();
+    public DbSet<BuildRequest> BuildRequests => Set<BuildRequest>();
+    public DbSet<Release> Releases => Set<Release>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -121,6 +124,37 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             b.HasIndex(bc => bc.ApplicationId).IsUnique();
             b.HasOne(bc => bc.Application).WithMany()
                 .HasForeignKey(bc => bc.ApplicationId).OnDelete(DeleteBehavior.Cascade);
+            b.HasOne(bc => bc.BuildServer).WithMany()
+                .HasForeignKey(bc => bc.BuildServerId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<BuildServer>(b =>
+        {
+            b.HasIndex(s => s.Name).IsUnique();
+            b.Property(s => s.Name).HasMaxLength(200).IsRequired();
+            b.Property(s => s.BaseUrl).HasMaxLength(500).IsRequired();
+            b.Property(s => s.ApiTokenEnvVarName).HasMaxLength(100);
+        });
+
+        modelBuilder.Entity<BuildRequest>(b =>
+        {
+            b.HasIndex(br => new { br.ApplicationId, br.RequestedAt });
+            b.Property(br => br.JobName).HasMaxLength(500).IsRequired();
+            b.HasOne(br => br.Application).WithMany()
+                .HasForeignKey(br => br.ApplicationId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne(br => br.BuildServer).WithMany()
+                .HasForeignKey(br => br.BuildServerId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<Release>(b =>
+        {
+            b.HasIndex(r => r.BuildRequestId).IsUnique();
+            b.Property(r => r.CommitSha).HasMaxLength(64).IsRequired();
+            b.Property(r => r.ImageReference).HasMaxLength(1000).IsRequired();
+            b.HasOne(r => r.Application).WithMany()
+                .HasForeignKey(r => r.ApplicationId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne(r => r.BuildRequest).WithOne(br => br.Release)
+                .HasForeignKey<Release>(r => r.BuildRequestId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<Deployment>(b =>
@@ -145,6 +179,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .HasForeignKey(d => d.RollbackOfDeploymentId).OnDelete(DeleteBehavior.Restrict);
             b.HasOne(d => d.PromotionRequest).WithMany()
                 .HasForeignKey(d => d.PromotionRequestId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne(d => d.Release).WithMany()
+                .HasForeignKey(d => d.ReleaseId).OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<DeploymentLogEntry>(b =>

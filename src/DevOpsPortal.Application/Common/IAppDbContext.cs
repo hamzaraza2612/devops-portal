@@ -26,6 +26,9 @@ public interface IAppDbContext
     DbSet<DeploymentLogEntry> DeploymentLogEntries { get; }
     DbSet<PromotionRequest> PromotionRequests { get; }
     DbSet<ProductionApproval> ProductionApprovals { get; }
+    DbSet<BuildServer> BuildServers { get; }
+    DbSet<BuildRequest> BuildRequests { get; }
+    DbSet<Release> Releases { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

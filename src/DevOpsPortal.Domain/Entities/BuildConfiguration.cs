@@ -34,6 +34,25 @@ public class BuildConfiguration
 
     public ImageTagStrategy ImageTagStrategy { get; set; } = ImageTagStrategy.CommitSha;
 
+    /// <summary>Which configured build server (Jenkins instance, etc.) builds this
+    /// application. Null means Legacy-only — no build-from-source is configured
+    /// and POST .../builds will reject requests for this application.</summary>
+    public Guid? BuildServerId { get; set; }
+    public BuildServer? BuildServer { get; set; }
+
+    /// <summary>The specific job on BuildServer that builds this application. Every
+    /// build request uses exactly this configured value — never a caller-supplied
+    /// job name (master requirements §8: "no arbitrary Jenkins jobs supplied by users").</summary>
+    public string? JobName { get; set; }
+
+    /// <summary>e.g. ".NET 8.0.404" — not every application targets the same SDK
+    /// version, so this is per-application configuration, not a portal-wide default.</summary>
+    public string? SdkVersion { get; set; }
+
+    /// <summary>Extra `dotnet publish` arguments/flags, stored only and passed to the
+    /// build provider as a job parameter — never executed locally by the portal.</summary>
+    public string? PublishArguments { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? UpdatedAt { get; set; }
 }
