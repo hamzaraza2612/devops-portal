@@ -29,6 +29,7 @@ public interface IAppDbContext
     DbSet<BuildServer> BuildServers { get; }
     DbSet<BuildRequest> BuildRequests { get; }
     DbSet<Release> Releases { get; }
+    DbSet<SecretReference> SecretReferences { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

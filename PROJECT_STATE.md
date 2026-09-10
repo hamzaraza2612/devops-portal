@@ -64,13 +64,26 @@ Unlike Phase 5's remote-Docker gap, Jenkins connectivity is genuinely
 operational here (plain HTTP from the portal, no socket/SSH problem) —
 see dedicated section below for exactly what is and isn't wired up.
 
+**Phase 7 — Secrets & Secure Configuration Management.** Done. Adds
+`SecretReference` (metadata only) + `ISecretProvider` (real first
+implementation: AES-256-GCM encryption at rest, `EncryptedSecretProvider`)
+so database/API/registry/GitLab/Jenkins/SMTP/server credentials are never
+stored in Git or plaintext in the database. Secrets are environment-aware
+(a DEV-scoped secret is structurally unreachable when resolving QA/UAT/
+Production) and resolved only at deployment execution time, injected into
+`docker compose` as real process environment variables — never as
+arguments, never persisted, never returned by any API response. See
+dedicated section below.
+
 ## Current database state
 
 PostgreSQL via EF Core migrations (`src/DevOpsPortal.Infrastructure/Persistence/Migrations`):
 `InitialCreate` (Phase 1), `AddLegacyDeploymentConfiguration` (Phase 2), ...,
 `Phase6_BuildPipelineJenkins` (Phase 6 — see dedicated section below for its
 `BuildServers`/`BuildRequests`/`Releases` tables and the additive columns on
-`BuildConfigurations`/`Deployments`).
+`BuildConfigurations`/`Deployments`), `Phase7_SecretsManagement` (Phase 7 —
+`SecretReferences` metadata table + `SecretValues` ciphertext-only table;
+see dedicated section below).
 
 Phase 1 tables: `Users`, `Roles`, `Permissions`, `UserRoles` (join),
 `RolePermissions` (join), `AuditLogs`.
@@ -1702,17 +1715,338 @@ afterward; nothing from this manual pass was left running or committed.
   issuer) rather than caching it; fine at this request volume, worth
   revisiting if Jenkins is triggered at high frequency.
 
+## Phase 7 — Secrets & Secure Configuration Management
+
+Done. Implements secure management of deployment credentials/configuration
+without storing actual secrets in Git — per the master requirements'
+7-section scope: secret references, a provider abstraction, authorized-only
+management with values never exposed, execution-time-only resolution,
+environment isolation, and a value-free audit trail.
+
+### Architecture
+
+```
+SecretReferenceService (Application)
+        │  permission checks, validation, audit, DTO shaping (metadata
+        │  only — never a value); the only Application-layer code that
+        │  talks to ISecretProvider
+        ▼
+ISecretProvider (Application/Abstractions, impl: EncryptedSecretProvider)
+        │  provider-agnostic value store: StoreAsync/RetrieveAsync/DeleteAsync
+        │  keyed by an opaque StoreKey — SecretReferenceService (and every
+        │  other caller) never needs to know how or where a value is kept
+        ▼
+EncryptedSecretProvider (Infrastructure/Secrets) — REAL, operational
+        │  AES-256-GCM encryption at rest, in a dedicated SecretValueRecord
+        │  table only this class can reach (see "Ciphertext isolation" below)
+        ▼
+   Postgres (SecretValues: StoreKey, Ciphertext, Nonce, Tag — no plaintext,
+   ever, anywhere in the database)
+```
+
+`SecretReference` (Domain) rows carry only metadata — `Name`, `Category`,
+`Scope`, `ApplicationId`/`EnvironmentDefinitionId`, `ProviderKey` (which
+backend), `StoreKey` (opaque, provider-internal, never exposed via the API
+either). The actual value lives exclusively behind `ISecretProvider`.
+
+### Provider abstraction, with a real first implementation
+
+Unlike Phase 5's remote-Docker gap, encryption-at-rest needs no external
+infrastructure to do for real — `EncryptedSecretProvider` is the master
+requirements' "securely protected server-side secret store appropriate for
+the product deployment," genuinely operational today, not a placeholder.
+`ISecretProvider` is still deliberately provider-agnostic (`ProviderKey` on
+every `SecretReference` names which backend holds it) so a future
+HashiCorp Vault, cloud secret manager (AWS Secrets Manager/Azure Key
+Vault/GCP Secret Manager), or Kubernetes Secrets implementation is a new
+class + one DI registration — no change to `SecretReferenceService`,
+`DeploymentExecutor`, or any controller.
+
+### Ciphertext isolation — an architectural guarantee, not just a convention
+
+`SecretValueRecord` (the ciphertext table) is **not** on `IAppDbContext` —
+only the concrete `AppDbContext` carries that `DbSet`. `EncryptedSecretProvider`
+is constructed with the concrete `AppDbContext`, not the interface every
+other Application-layer service uses; `SecretReferenceService` and every
+other service are constructed with `IAppDbContext` and have literally no
+compiled code path to the ciphertext table, regardless of what they're
+injected with or how they're called. Encryption is AES-256-GCM with a
+fresh random 96-bit nonce per write (verified: encrypting the same
+plaintext twice produces different ciphertext/nonce pairs) and a 128-bit
+authentication tag — tampered or wrong-key ciphertext fails to decrypt
+rather than silently returning garbage.
+
+### Never store the key in source control
+
+`Secrets:EncryptionKey` (env `SECRET_ENCRYPTION_KEY`, mapped in
+`docker-compose.yml` as `Secrets__EncryptionKey`) must be ≥32 bytes,
+validated at API startup exactly like `Jwt:SigningKey` — the process
+refuses to start otherwise. `appsettings.json` ships with an empty string,
+same as every other secret-shaped setting in this codebase (`Jwt:SigningKey`,
+`Smtp:Password`). **Known limitation**: there is no key-rotation tooling —
+changing this key after secrets exist makes every existing
+`SecretValueRecord` permanently undecryptable (flagged in `.env.example`
+and below).
+
+### Environment isolation — structural, not conventional
+
+`SecretScope` (`Global` / `Application` / `ApplicationEnvironment`) is
+enforced both at creation (`SecretReferenceService.CreateAsync` rejects an
+inconsistent Scope/ApplicationId/EnvironmentDefinitionId combination) and
+at resolution. `ResolveForDeploymentAsync(applicationId,
+environmentDefinitionId, ...)` only ever queries rows matching that exact
+`(ApplicationId, EnvironmentDefinitionId)` pair at `ApplicationEnvironment`
+scope, that `ApplicationId` at `Application` scope, or `Global` — a
+DEV-scoped secret is never among the candidates when resolving QA, not
+because of a runtime check that could have a bug, but because the query
+itself cannot select it. Live-verified: a `db-password` secret scoped to
+DEV only, resolved for DEV, returns its value; resolved for QA on the same
+application, is simply absent — not empty-string, not a fallback, absent.
+On a name collision across scopes, the most specific one wins per
+environment (`ApplicationEnvironment` > `Application` > `Global`) — unit-
+tested with a DEV-specific override existing alongside an app-wide default:
+DEV resolves the override, QA falls back to the app-wide value, and the
+DEV-only value is asserted absent from QA's resolved set.
+
+### Resolved only at deployment execution time
+
+`DeploymentExecutor.ExecuteLegacyFilesystemAsync` calls
+`SecretReferenceService.ResolveForDeploymentAsync` immediately before
+running `docker compose down`/`up`, passing the resolved
+name→value dictionary through a new, purely additive
+`ComposeCommandRequest.EnvironmentVariables` field. `ComposeCommandExecutor`
+sets these as real `ProcessStartInfo.Environment` entries — never as
+command-line arguments — so a compose file's `${VAR}` interpolation can see
+them without the value ever appearing in `ps` output. Nothing is persisted:
+the resolved dictionary exists only for the duration of one
+`ExecuteAsync` call.
+
+### Secrets never appear in logs, audit, exceptions, or API responses
+
+- **Deployment logs**: a new `RedactSecretValues` step in `DeploymentExecutor`
+  replaces every literal occurrence of a resolved secret's actual value in
+  captured `stdout`/`stderr` with `***REDACTED***` *before* `LogSanitizer.Sanitize`'s
+  existing pattern-based redaction runs — belt-and-braces, since
+  `LogSanitizer` only catches `KEY=VALUE`-or-Bearer-token-shaped text and a
+  leaked value could appear in any shape. Live/unit-verified: a fake compose
+  stderr containing `"connecting with password hunter2 to db host"` (no
+  `KEY=VALUE` shape at all) comes back redacted.
+- **Audit**: `secret.created`/`secret.updated`/`secret.deleted`/
+  `secret.referenced` are all audited (master requirements §6's exact list)
+  with a details string built only from `Name`/`Category`/`Scope`/
+  `ApplicationId`/`EnvironmentDefinitionId` — never the value. `secret.referenced`
+  fires once per secret actually resolved during a deployment, attributed
+  (via explicit `actorUserId`/`actorUsername` parameters, not
+  `ICurrentUserService`) to the human who originally requested the
+  deployment, since `DeploymentExecutor` runs in the background worker with
+  no HTTP-request-scoped current user.
+- **Exceptions**: `ResolveForDeploymentAsync` throws
+  `DeploymentExecutionException($"Failed to resolve secret '{name}'...")`
+  on any provider failure — the secret's *name*, never a value or the
+  provider's raw error detail, which could conceivably describe the
+  ciphertext.
+- **API responses**: `SecretReferenceDto` has no `Value` property and no
+  `StoreKey` property — structurally, not by convention (a dedicated test
+  asserts this via reflection over the DTO's properties). There is no
+  endpoint, anywhere in this codebase, that returns a secret's plaintext
+  value — `ResolveForDeploymentAsync` is the only method that ever returns
+  one, and it is only ever called by `DeploymentExecutor`, never wired to
+  any controller.
+
+### Legacy support / no breaking changes
+
+`ComposeCommandRequest.EnvironmentVariables` is a trailing optional
+parameter defaulting to `null` — every existing call site (Phase 3's other
+compose invocations, Phase 5's `IRemoteExecutionProvider` path, which reuses
+the same record) compiles and behaves exactly as before. An application
+with no configured secrets resolves an empty dictionary and deploys exactly
+as it did before this phase — Phase 3's deployment workflow is otherwise
+untouched, per the same "don't change it unnecessarily" principle every
+phase since Phase 5's correction has followed.
+
+### Database changes
+
+New tables (`Phase7_SecretsManagement` migration):
+- **`SecretReferences`** — `Name`, `Category`, `Scope`,
+  `ApplicationId`/`EnvironmentDefinitionId` (nullable FKs — `Application`
+  cascades since these are configuration, matching `BuildConfiguration`/
+  `ApplicationEnvironment`; `EnvironmentDefinition` restricts, matching
+  every other FK to that shared reference table), `Description`,
+  `ProviderKey`, `StoreKey`, `IsActive`, `CreatedByUserId`, `CreatedAt`,
+  `UpdatedAt`. No DB-level unique index on
+  `(Name, Scope, ApplicationId, EnvironmentDefinitionId)` — SQL's NULL ≠
+  NULL comparison semantics don't give correct uniqueness across the
+  nullable columns, so `SecretReferenceService.CreateAsync` enforces it
+  explicitly instead (an `AnyAsync` check, same pattern as `TargetServer.Name`).
+- **`SecretValues`** — `StoreKey` (PK), `Ciphertext`/`Nonce`/`Tag`
+  (`bytea`), `CreatedAt`, `UpdatedAt`. Not on `IAppDbContext` — see
+  "Ciphertext isolation" above.
+
+Confirmed via `dotnet ef migrations has-pending-model-changes` (none) and a
+live `dotnet ef database update` against a fresh Postgres 16 instance
+(applies cleanly on top of every Phase 1–6 migration).
+
+### API surface
+
+- `GET /api/secrets?applicationId=&environmentDefinitionId=&category=`
+  (`secrets.view`) — metadata list.
+- `GET /api/secrets/{id}` (`secrets.view`).
+- `POST /api/secrets` (`secrets.manage`) — body includes the plaintext
+  `Value`; the response never echoes it.
+- `PUT /api/secrets/{id}` (`secrets.manage`) — `Value` optional: omit to
+  change only `Description`/`IsActive`; supply to rotate in place (same
+  reference, same scope, new ciphertext). `Name`/`Category`/`Scope`/
+  `ApplicationId`/`EnvironmentDefinitionId` are immutable after creation —
+  changing a secret's scope after the fact is exactly the kind of
+  silent-widening-of-access environment isolation exists to prevent.
+- `DELETE /api/secrets/{id}` (`secrets.manage`).
+- No endpoint anywhere returns a secret value — there is no
+  `GET .../value`, by design.
+
+Permission checks are enforced inside `SecretReferenceService`, not a
+static `[RequirePermission]` attribute — same pattern as containers/builds
+— so authorization is exercised the same way whether or not a request
+reaches the controller, and is directly unit-testable.
+
+### Permission model
+
+| Role | `secrets.*` permissions granted |
+|---|---|
+| DEVELOPER | none |
+| QA | none |
+| UAT | none |
+| DEVOPS | `secrets.view`, `secrets.manage` |
+| CTO | none |
+| ADMIN | both (superset, as in every prior phase) |
+
+**Deliberate choice**: only DEVOPS (plus ADMIN's superset) gets any
+`secrets.*` permission — master requirements §3 explicitly authorizes
+"DevOps users" to manage secret references and explicitly excludes
+developers/QA/UAT from seeing values; rather than invent a middle ground
+(metadata-visible-but-not-manageable for other roles) not asked for by the
+spec, the safest reading was taken: no role outside DEVOPS/ADMIN can see
+even secret *metadata* (which application/environment has which category
+of secret configured) today. Loosening this to grant `secrets.view` more
+broadly is a one-line change in `DataSeeder` whenever that's explicitly
+wanted.
+
+### Testing
+
+**Automated**: 289 tests total, all passing (`dotnet test`, zero filter,
+zero failures) — net +37 over Phase 6's 252:
+- `EncryptedSecretProviderTests` (9) — round-trip store/retrieve, the
+  plaintext never appears anywhere in the persisted `Ciphertext` bytes
+  (checked via Latin1 byte-for-byte scan, not just a UTF-8 string check),
+  in-place rotation reuses the same `StoreKey`, unknown-key and wrong-
+  encryption-key lookups both fail cleanly rather than throwing, delete is
+  idempotent, and encrypting the same plaintext twice produces different
+  nonce/ciphertext pairs (nonce reuse would be a real AES-GCM
+  vulnerability).
+- `SecretReferenceServiceTests` (25) — authorization (missing
+  `secrets.manage`, view-only user blocked from create/update/delete),
+  API response safety (`SecretReferenceDto` has no `Value`/`StoreKey`
+  property via reflection; a created DTO's JSON serialization never
+  contains the plaintext supplied to create it), scope/Id consistency
+  validation (all six invalid combinations), duplicate-name-in-scope
+  conflict vs. same-name-different-scope allowed, rotation changing the
+  resolved value vs. metadata-only update leaving it unchanged, delete
+  removing both metadata and value, and the full environment-isolation
+  matrix: a DEV-scoped secret never resolves for QA, an Application-scoped
+  secret resolves for every environment of that app, a Global secret
+  resolves everywhere, most-specific-scope-wins on a name collision
+  without leaking the more specific value to a less specific lookup, an
+  inactive secret is never resolved, one application's secret never
+  resolves for another application, every create/update/delete/reference
+  audit entry is checked to not contain the plaintext value (with
+  `secret.referenced` additionally checked for correct actor attribution),
+  and a provider retrieval failure surfaces as `DeploymentExecutionException`
+  naming the secret, never the value.
+- `DeploymentExecutorTests` (+3 over Phase 6-era's existing 6) — resolved
+  secrets are passed as `ComposeCommandRequest.EnvironmentVariables` (never
+  as arguments) and never appear in a persisted log line while their
+  *names* do; a leaked value in compose output with no `KEY=VALUE` shape
+  is still redacted; a secret-resolution failure marks the deployment
+  Failed and compose is never invoked at all.
+
+**Live/manual verification** (real Postgres 16, real `dotnet run` API):
+- Created a Global-scoped SMTP secret and an `ApplicationEnvironment`-scoped
+  DEV `db-password` secret via the real API — both responses confirmed to
+  have no value/store-key field.
+- Created a `DEVELOPER`-role user (no `secrets.*` grant by default) and
+  confirmed `GET /api/secrets` → 403 `"Missing required permission
+  'secrets.view'"` and `POST /api/secrets` → 403 `"Missing required
+  permission 'secrets.manage'"`.
+- Rotated the DEV secret's value via `PUT /api/secrets/{id}`, then pulled
+  `GET /api/audit` and grepped the entire response for both the original
+  and rotated plaintext values and the SMTP secret's value — zero matches;
+  `secret.created`/`secret.updated` entries present with descriptive,
+  value-free details.
+- Unauthenticated `GET /api/secrets` → 401.
+- Regression: `dotnet ef migrations has-pending-model-changes` → none;
+  applications/target-servers/build-servers listings re-confirmed working
+  unchanged in the same session.
+- No real Docker daemon is available in this sandbox (same constraint
+  noted in Phase 3/5's testing sections), so the actual `docker compose`
+  process-environment-variable injection was verified via
+  `DeploymentExecutorTests`' fake `IComposeCommandExecutor` (which records
+  every `ComposeCommandRequest` it receives) rather than a live compose run.
+
+Live-verification database was removed afterward; nothing from this manual
+pass was left running or committed.
+
+### Known limitations / explicit next-phase candidates
+
+- **No key-rotation tooling for `Secrets:EncryptionKey` itself.** Rotating
+  the master encryption key requires decrypting every `SecretValueRecord`
+  with the old key and re-encrypting with the new one; no such migration
+  tool exists yet. Changing the configured key without one makes every
+  existing secret permanently undecryptable — `RetrieveAsync` would return
+  `Fail` for all of them, not silently corrupt data, but that's still an
+  outage waiting to happen if not documented, which is why it's called out
+  here and in `.env.example`.
+- **No frontend for this phase** — no Phase 4 UI page for managing secret
+  references yet (master requirements §3's "Authorized DevOps users can
+  manage secret references" is implemented as a real, permission-gated
+  API; the UI to drive it is not built, consistent with Phases 5 and 6's
+  own backend-only precedent).
+- **Deploy-from-release (Phase 6's own top known limitation) still doesn't
+  consume secrets** — `DeploymentExecutor`'s `ContainerImage` branch is
+  still unimplemented, so secret resolution this phase only wires into the
+  Legacy (`docker compose down`/`up`) path. Whichever future phase
+  implements Modern-path deployment execution should resolve secrets the
+  same way.
+- **No orphaned-ciphertext cleanup on Application deletion.**
+  `SecretReference.ApplicationId` cascades on delete, but `SecretValueRecord`
+  has no FK relationship to `SecretReference` at all (by design — see
+  "Ciphertext isolation"), so a deleted application's secret values would
+  become unreferenced rows rather than being cleaned up automatically.
+  Low real-world impact: no `DELETE /api/applications/{id}` endpoint exists
+  anywhere in this codebase today, so applications are never actually
+  deleted (only deactivated) — flagged here so it isn't forgotten if hard
+  delete is ever added.
+- **`ISecretProvider` has exactly one implementation.** Provider-agnostic
+  by design (master requirements §2), but Vault/cloud-secret-manager/
+  Kubernetes-Secrets support is a future phase's new class + DI
+  registration, not started here.
+- **Secret categories (Database/Api/Registry/GitLab/Jenkins/Smtp/Server/
+  Other) are informational only**, not structurally bound to `Repository`/
+  `BuildServer`/`TargetServer` rows — e.g. a `GitLab`-category secret isn't
+  wired to a specific `Repository.AccessTokenEnvVarName`-style consumption
+  path yet. `Repository`/`BuildServer` still use their own pre-existing
+  env-var-name-reference fields, untouched by this phase; unifying them
+  onto `SecretReference` is a natural future consolidation, not assumed
+  here.
+
 ## Next phase
 
-Not yet assigned — Phase 6 (Build Pipeline & Jenkins Integration) is
+Not yet assigned — Phase 7 (Secrets & Secure Configuration Management) is
 complete; awaiting explicit approval before starting further work.
-Strongest candidate per this phase's own "Known limitations": wiring
-`IDeploymentService`/`DeploymentExecutor` to actually deploy from a
-`Release` (implementing `DeploymentMode.ContainerImage` execution for
-real) — until that exists, a successful Jenkins build produces a fully
-traceable `Release` that nothing can yet deploy through the portal. Other
-candidates, unchanged from before: a real secure remote-execution
-mechanism for Phase 5's `IRemoteExecutionProvider`, the Phase 4 UI work
-for both container status and this phase's build/release views, or
-hardening session storage to an httpOnly cookie (flagged since Phase 4).
-Do not assume which without asking.
+Strongest candidates per this phase's own "Known limitations": a Phase 4
+UI page for managing secret references (mirroring the backend-only
+precedent Phases 5–7 have all left open), or wiring actual `Repository`/
+`BuildServer` credential consumption through `SecretReference` instead of
+their standalone env-var-name fields. Other candidates, unchanged from
+before: wiring `IDeploymentService`/`DeploymentExecutor` to deploy from a
+`Release` (Phase 6), a real secure remote-execution mechanism for Phase 5's
+`IRemoteExecutionProvider`, or hardening session storage to an httpOnly
+cookie (flagged since Phase 4). Do not assume which without asking.

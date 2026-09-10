@@ -1,4 +1,6 @@
 using DevOpsPortal.Application.Abstractions;
+using DevOpsPortal.Application.Dtos.Secrets;
+using DevOpsPortal.Application.Exceptions;
 using DevOpsPortal.Application.Services;
 using DevOpsPortal.Domain.Constants;
 using DevOpsPortal.Domain.Entities;
@@ -14,7 +16,7 @@ namespace DevOpsPortal.Tests.Deployments;
 public class DeploymentExecutorTests
 {
     private static async Task<(DeploymentExecutor Sut, AppDbContext Db, Deployment Deployment)> CreateSutAsync(
-        IComposeCommandExecutor composeExecutor, IHealthCheckProbe healthProbe)
+        IComposeCommandExecutor composeExecutor, IHealthCheckProbe healthProbe, ISecretReferenceService? secretReferenceService = null)
     {
         var db = TestDb.CreateInMemory();
         await TestDb.SeedEnvironmentDefinitionsAsync(db);
@@ -57,7 +59,8 @@ public class DeploymentExecutorTests
         await db.SaveChangesAsync();
 
         var audit = new AuditService(db, new FakeCurrentUserService());
-        var sut = new DeploymentExecutor(db, composeExecutor, healthProbe, audit, NullLogger<DeploymentExecutor>.Instance);
+        var sut = new DeploymentExecutor(
+            db, composeExecutor, healthProbe, audit, secretReferenceService ?? new FakeSecretReferenceService(), NullLogger<DeploymentExecutor>.Instance);
         return (sut, db, deployment);
     }
 
@@ -126,6 +129,53 @@ public class DeploymentExecutorTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_PassesResolvedSecretsAsProcessEnvironmentVariables_NeverAsArguments()
+    {
+        var composeExecutor = new FakeComposeCommandExecutor(true, true);
+        var secretService = new FakeSecretReferenceService(new Dictionary<string, string> { ["DB_PASSWORD"] = "hunter2" });
+        var (sut, db, deployment) = await CreateSutAsync(composeExecutor, new FakeHealthCheckProbe(true), secretService);
+
+        await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
+
+        var updated = await db.Deployments.FindAsync(deployment.Id);
+        Assert.Equal(DeploymentStatus.Succeeded, updated!.Status);
+        Assert.Contains(composeExecutor.Requests, r => r.EnvironmentVariables != null && r.EnvironmentVariables["DB_PASSWORD"] == "hunter2");
+
+        var logs = await db.DeploymentLogEntries.Where(l => l.DeploymentId == deployment.Id).ToListAsync();
+        Assert.DoesNotContain(logs, l => l.Message.Contains("hunter2"));
+        Assert.Contains(logs, l => l.Message.Contains("DB_PASSWORD") && !l.Message.Contains("hunter2"));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RedactsResolvedSecretValueFromComposeOutput_EvenWithoutKeyValueShape()
+    {
+        var composeExecutor = new FakeComposeCommandExecutor(true, true, upStdErr: "connecting with password hunter2 to db host");
+        var secretService = new FakeSecretReferenceService(new Dictionary<string, string> { ["DB_PASSWORD"] = "hunter2" });
+        var (sut, db, deployment) = await CreateSutAsync(composeExecutor, new FakeHealthCheckProbe(true), secretService);
+
+        await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
+
+        var logs = await db.DeploymentLogEntries.Where(l => l.DeploymentId == deployment.Id).ToListAsync();
+        Assert.DoesNotContain(logs, l => l.Message.Contains("hunter2"));
+        Assert.Contains(logs, l => l.Message.Contains("REDACTED"));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenSecretResolutionFails_MarksFailed_NeverCallsCompose()
+    {
+        var composeExecutor = new FakeComposeCommandExecutor(true, true);
+        var secretService = new FakeSecretReferenceService(resolveError: "Failed to resolve secret 'db-password' for this deployment.");
+        var (sut, db, deployment) = await CreateSutAsync(composeExecutor, new FakeHealthCheckProbe(true), secretService);
+
+        await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
+
+        var updated = await db.Deployments.FindAsync(deployment.Id);
+        Assert.Equal(DeploymentStatus.Failed, updated!.Status);
+        Assert.Contains("db-password", updated.FailureReason);
+        Assert.Empty(composeExecutor.Requests);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_AlreadyRunningDeployment_IsSkipped()
     {
         var (sut, db, deployment) = await CreateSutAsync(new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(true));
@@ -140,8 +190,11 @@ public class DeploymentExecutorTests
 
     private sealed class FakeComposeCommandExecutor(bool downSucceeds, bool upSucceeds, string? upStdErr = null) : IComposeCommandExecutor
     {
+        public List<ComposeCommandRequest> Requests { get; } = [];
+
         public Task<ComposeCommandResult> RunAsync(ComposeCommandRequest request, CancellationToken cancellationToken = default)
         {
+            Requests.Add(request);
             var success = request.Operation == ComposeOperation.Up ? upSucceeds : downSucceeds;
             var stderr = request.Operation == ComposeOperation.Up ? upStdErr ?? string.Empty : string.Empty;
             return Task.FromResult(new ComposeCommandResult(success, success ? 0 : 1, "stdout", success ? stderr : "compose failed" + stderr));
@@ -153,5 +206,33 @@ public class DeploymentExecutorTests
         public Task<HealthCheckResult> ProbeAsync(
             HealthCheckType type, string? endpoint, int timeoutSeconds, CancellationToken cancellationToken = default) =>
             Task.FromResult(new HealthCheckResult(passed, passed ? "ok" : "health check failed reason"));
+    }
+
+    private sealed class FakeSecretReferenceService(
+        IReadOnlyDictionary<string, string>? secrets = null, string? resolveError = null) : ISecretReferenceService
+    {
+        public Task<IReadOnlyList<SecretReferenceDto>> ListAsync(
+            Guid? applicationId, Guid? environmentDefinitionId, SecretCategory? category, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<SecretReferenceDto> GetAsync(Guid id, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<SecretReferenceDto> CreateAsync(CreateSecretReferenceRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<SecretReferenceDto> UpdateAsync(Guid id, UpdateSecretReferenceRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task DeleteAsync(Guid id, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<IReadOnlyDictionary<string, string>> ResolveForDeploymentAsync(
+            Guid applicationId, Guid environmentDefinitionId, Guid actorUserId, string? actorUsername, CancellationToken cancellationToken = default)
+        {
+            if (resolveError is not null)
+                throw new DeploymentExecutionException(resolveError);
+
+            return Task.FromResult(secrets ?? new Dictionary<string, string>());
+        }
     }
 }

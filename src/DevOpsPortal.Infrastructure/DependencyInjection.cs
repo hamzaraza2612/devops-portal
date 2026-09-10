@@ -5,6 +5,7 @@ using DevOpsPortal.Infrastructure.Build;
 using DevOpsPortal.Infrastructure.Deployments;
 using DevOpsPortal.Infrastructure.Email;
 using DevOpsPortal.Infrastructure.Git;
+using DevOpsPortal.Infrastructure.Secrets;
 using DevOpsPortal.Infrastructure.Persistence;
 using DevOpsPortal.Infrastructure.Remote;
 using DevOpsPortal.Infrastructure.Security;
@@ -62,6 +63,11 @@ public static class DependencyInjection
         // IEnumerable<IBuildProvider> lookup-by-ProviderType pattern can add another
         // provider later without any caller change (master requirements §1).
         services.AddHttpClient<IBuildProvider, JenkinsBuildProvider>(client => client.Timeout = TimeSpan.FromSeconds(30));
+
+        services.Configure<SecretEncryptionSettings>(configuration.GetSection(SecretEncryptionSettings.SectionName));
+        // Scoped, not Singleton: EncryptedSecretProvider depends on the concrete
+        // AppDbContext, which AddDbContext<AppDbContext> above registers Scoped.
+        services.AddScoped<ISecretProvider, EncryptedSecretProvider>();
 
         return services;
     }

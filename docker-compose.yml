@@ -30,6 +30,7 @@ services:
       Jwt__Audience: ${JWT_AUDIENCE:-devops-portal}
       Jwt__SigningKey: ${JWT_SIGNING_KEY:?JWT_SIGNING_KEY is required (min 32 chars)}
       Jwt__ExpiryMinutes: ${JWT_EXPIRY_MINUTES:-480}
+      Secrets__EncryptionKey: ${SECRET_ENCRYPTION_KEY:?SECRET_ENCRYPTION_KEY is required (min 32 chars)}
       Seed__AdminUsername: ${ADMIN_USERNAME:-admin}
       Seed__AdminEmail: ${ADMIN_EMAIL:-admin@example.local}
       Seed__AdminPassword: ${ADMIN_INITIAL_PASSWORD:-}

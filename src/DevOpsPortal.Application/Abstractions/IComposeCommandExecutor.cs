@@ -27,7 +27,15 @@ public enum ComposeOperation
     Ps,
 }
 
-public record ComposeCommandRequest(string WorkingDirectory, string ComposeFilePath, string? ProjectName, ComposeOperation Operation);
+/// <summary>EnvironmentVariables (name -> plaintext value, e.g. resolved secrets)
+/// are passed as real process environment variables, never as command-line
+/// arguments or written to any file — so a compose file can reference them via
+/// `${VAR}` interpolation without the value ever appearing in `ps` output, a
+/// log, or an exception. Optional and additive: omitting it (the default)
+/// behaves exactly as before this field existed.</summary>
+public record ComposeCommandRequest(
+    string WorkingDirectory, string ComposeFilePath, string? ProjectName, ComposeOperation Operation,
+    IReadOnlyDictionary<string, string>? EnvironmentVariables = null);
 
 public record ComposeCommandResult(bool Success, int ExitCode, string StandardOutput, string StandardError);
 

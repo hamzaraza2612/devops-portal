@@ -20,6 +20,7 @@ public class DeploymentExecutor(
     IComposeCommandExecutor composeExecutor,
     IHealthCheckProbe healthCheckProbe,
     IAuditService auditService,
+    ISecretReferenceService secretReferenceService,
     ILogger<DeploymentExecutor> logger) : IDeploymentExecutor
 {
     public async Task ExecuteAsync(Guid deploymentId, CancellationToken cancellationToken)
@@ -59,7 +60,7 @@ public class DeploymentExecutor(
 
             if (deployment.Application.DeploymentMode == DeploymentMode.LegacyFilesystem)
             {
-                await ExecuteLegacyFilesystemAsync(appEnv, log, cancellationToken);
+                await ExecuteLegacyFilesystemAsync(deployment, appEnv, log, cancellationToken);
             }
             else
             {
@@ -106,7 +107,7 @@ public class DeploymentExecutor(
         }
     }
 
-    private async Task ExecuteLegacyFilesystemAsync(ApplicationEnvironment appEnv, DeploymentLogWriter log, CancellationToken cancellationToken)
+    private async Task ExecuteLegacyFilesystemAsync(Deployment deployment, ApplicationEnvironment appEnv, DeploymentLogWriter log, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(appEnv.DeploymentRootPath))
             throw new DeploymentExecutionException("DeploymentRootPath is not configured.");
@@ -117,28 +118,57 @@ public class DeploymentExecutor(
         if (!DeploymentPathValidator.IsUnderAllowedRoot(appEnv.DeploymentRootPath, activeRoots))
             throw new DeploymentExecutionException("DeploymentRootPath is no longer under an allowed deployment root for its target server.");
 
+        // Resolved only here, at execution time (master requirements §4) — never
+        // persisted, never logged by value, and structurally environment-aware
+        // (see SecretReferenceService.ResolveForDeploymentAsync): a secret scoped
+        // to a different environment is simply not among the candidates below.
+        var secretUsername = await db.Users.Where(u => u.Id == deployment.RequestedByUserId).Select(u => u.Username).FirstOrDefaultAsync(cancellationToken);
+        var secrets = await secretReferenceService.ResolveForDeploymentAsync(
+            deployment.ApplicationId, deployment.EnvironmentDefinitionId, deployment.RequestedByUserId, secretUsername, cancellationToken);
+        if (secrets.Count > 0)
+        {
+            await log.WriteAsync(DeploymentLogLevel.Info,
+                $"Resolved {secrets.Count} secret(s) for this deployment: {string.Join(", ", secrets.Keys)}.", cancellationToken);
+        }
+
         var downOperation = appEnv.UseDownWithVolumesOnDeploy ? ComposeOperation.DownWithVolumes : ComposeOperation.Down;
         await log.WriteAsync(DeploymentLogLevel.Info,
             $"Restarting compose stack at '{appEnv.DeploymentRootPath}' ({appEnv.ComposeFilePath}), " +
             $"down={(downOperation == ComposeOperation.DownWithVolumes ? "down -v" : "down")}.", cancellationToken);
 
         var downResult = await composeExecutor.RunAsync(
-            new ComposeCommandRequest(appEnv.DeploymentRootPath, appEnv.ComposeFilePath, appEnv.ComposeProjectName, downOperation), cancellationToken);
+            new ComposeCommandRequest(appEnv.DeploymentRootPath, appEnv.ComposeFilePath, appEnv.ComposeProjectName, downOperation, secrets), cancellationToken);
         await log.WriteAsync(
             downResult.Success ? DeploymentLogLevel.Info : DeploymentLogLevel.Warning,
-            $"compose down: exit {downResult.ExitCode}\n{Truncate(downResult.StandardOutput)}\n{Truncate(downResult.StandardError)}",
+            $"compose down: exit {downResult.ExitCode}\n{Truncate(RedactSecretValues(downResult.StandardOutput, secrets))}\n{Truncate(RedactSecretValues(downResult.StandardError, secrets))}",
             cancellationToken);
         // A failing "down" (e.g. the stack wasn't running yet) is not fatal — proceed to "up".
 
         var upResult = await composeExecutor.RunAsync(
-            new ComposeCommandRequest(appEnv.DeploymentRootPath, appEnv.ComposeFilePath, appEnv.ComposeProjectName, ComposeOperation.Up), cancellationToken);
+            new ComposeCommandRequest(appEnv.DeploymentRootPath, appEnv.ComposeFilePath, appEnv.ComposeProjectName, ComposeOperation.Up, secrets), cancellationToken);
         await log.WriteAsync(
             upResult.Success ? DeploymentLogLevel.Info : DeploymentLogLevel.Error,
-            $"compose up -d: exit {upResult.ExitCode}\n{Truncate(upResult.StandardOutput)}\n{Truncate(upResult.StandardError)}",
+            $"compose up -d: exit {upResult.ExitCode}\n{Truncate(RedactSecretValues(upResult.StandardOutput, secrets))}\n{Truncate(RedactSecretValues(upResult.StandardError, secrets))}",
             cancellationToken);
 
         if (!upResult.Success)
             throw new DeploymentExecutionException($"docker compose up failed (exit code {upResult.ExitCode}).");
+    }
+
+    /// <summary>Belt-and-braces on top of LogSanitizer's pattern-based redaction
+    /// (which only catches KEY=VALUE-shaped or Bearer-token-shaped text): this
+    /// replaces every literal occurrence of a resolved secret's actual value,
+    /// so a value that leaked into compose output in some other shape still
+    /// never reaches DeploymentLogEntry (master requirements §4: "must not
+    /// appear in deployment logs").</summary>
+    private static string RedactSecretValues(string text, IReadOnlyDictionary<string, string> secrets)
+    {
+        foreach (var value in secrets.Values)
+        {
+            if (!string.IsNullOrEmpty(value))
+                text = text.Replace(value, "***REDACTED***");
+        }
+        return text;
     }
 
     private static string Truncate(string s) => s.Length > 4000 ? s[..4000] + "... (truncated)" : s;

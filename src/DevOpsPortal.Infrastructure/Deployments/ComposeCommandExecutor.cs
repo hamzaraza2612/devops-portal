@@ -49,6 +49,15 @@ public class ComposeCommandExecutor(ILogger<ComposeCommandExecutor> logger) : IC
         foreach (var arg in OperationArgs(request.Operation))
             startInfo.ArgumentList.Add(arg);
 
+        // Resolved secrets (if any) go in as real process environment variables —
+        // never as arguments — so a compose file's ${VAR} interpolation can see
+        // them without the value ever appearing in `ps` output or our own logs.
+        if (request.EnvironmentVariables is not null)
+        {
+            foreach (var (key, value) in request.EnvironmentVariables)
+                startInfo.Environment[key] = value;
+        }
+
         using var process = new Process { StartInfo = startInfo };
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
