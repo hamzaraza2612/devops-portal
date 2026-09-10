@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: devopsportal-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-devopsportal}
+      POSTGRES_USER: ${POSTGRES_USER:-devopsportal}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - devopsportal-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-devopsportal} -d ${POSTGRES_DB:-devopsportal}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - devopsportal
+
+  api:
+    build:
+      context: .
+      dockerfile: src/DevOpsPortal.Api/Dockerfile
+    container_name: devopsportal-api
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      ConnectionStrings__Default: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-devopsportal};Username=${POSTGRES_USER:-devopsportal};Password=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+      Jwt__Issuer: ${JWT_ISSUER:-devops-portal}
+      Jwt__Audience: ${JWT_AUDIENCE:-devops-portal}
+      Jwt__SigningKey: ${JWT_SIGNING_KEY:?JWT_SIGNING_KEY is required (min 32 chars)}
+      Jwt__ExpiryMinutes: ${JWT_EXPIRY_MINUTES:-480}
+      Seed__AdminUsername: ${ADMIN_USERNAME:-admin}
+      Seed__AdminEmail: ${ADMIN_EMAIL:-admin@example.local}
+      Seed__AdminPassword: ${ADMIN_INITIAL_PASSWORD:-}
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && head -n1 <&3 | grep -q 200' || exit 1",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - devopsportal
+
+networks:
+  devopsportal:
+    driver: bridge
+
+volumes:
+  devopsportal-postgres-data:
+    driver: local

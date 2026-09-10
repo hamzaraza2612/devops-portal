@@ -1,0 +1,23 @@
+using Microsoft.EntityFrameworkCore;
+
+namespace DevOpsPortal.Application.Common;
+
+public static class AppDbContextExtensions
+{
+    public static async Task<(IReadOnlyList<string> Roles, IReadOnlyList<string> Permissions)> GetRolesAndPermissionsAsync(
+        this IAppDbContext db, Guid userId, CancellationToken cancellationToken = default)
+    {
+        var roles = await db.UserRoles
+            .Where(ur => ur.UserId == userId)
+            .Select(ur => ur.Role.Name)
+            .ToListAsync(cancellationToken);
+
+        var permissions = await db.UserRoles
+            .Where(ur => ur.UserId == userId)
+            .SelectMany(ur => ur.Role.RolePermissions.Select(rp => rp.Permission.Code))
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        return (roles, permissions);
+    }
+}
