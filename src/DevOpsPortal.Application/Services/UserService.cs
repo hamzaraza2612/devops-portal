@@ -165,7 +165,7 @@ public class UserService(
     private static IReadOnlyList<EnvironmentDefinitionDto> ToDtos(IEnumerable<EnvironmentDefinition> environments) =>
         environments
             .OrderBy(e => e.SortOrder)
-            .Select(e => new EnvironmentDefinitionDto(e.Id, e.Name, e.SortOrder, e.IsProductionLike, e.IsActive))
+            .Select(e => new EnvironmentDefinitionDto(e.Id, e.Name, e.SortOrder, e.IsProductionLike, e.IsActive, null, null))
             .ToList();
 
     private static void ValidatePassword(string password)

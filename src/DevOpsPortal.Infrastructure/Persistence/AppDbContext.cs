@@ -89,6 +89,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
         {
             b.HasIndex(e => e.Name).IsUnique();
             b.Property(e => e.Name).HasMaxLength(50).IsRequired();
+            b.HasOne(e => e.PrimaryTargetServer).WithMany()
+                .HasForeignKey(e => e.PrimaryTargetServerId).OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<TargetServer>(b =>

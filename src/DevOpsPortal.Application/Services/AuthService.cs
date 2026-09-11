@@ -44,7 +44,7 @@ public class AuthService(
             .Where(a => a.UserId == user.Id)
             .Select(a => a.EnvironmentDefinition)
             .OrderBy(e => e.SortOrder)
-            .Select(e => new EnvironmentDefinitionDto(e.Id, e.Name, e.SortOrder, e.IsProductionLike, e.IsActive))
+            .Select(e => new EnvironmentDefinitionDto(e.Id, e.Name, e.SortOrder, e.IsProductionLike, e.IsActive, null, null))
             .ToListAsync(cancellationToken);
 
         user.LastLoginAt = DateTimeOffset.UtcNow;

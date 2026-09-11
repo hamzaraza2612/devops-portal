@@ -27,7 +27,9 @@ import type {
   DeploymentLogEntryDto,
   DeploymentStatus,
   DeploymentStatusSummaryDto,
+  DiscoveredContainerLogsDto,
   EnvironmentDefinitionDto,
+  EnvironmentInfrastructureDto,
   GitCommitInfoDto,
   GitProviderResultDto,
   LoginRequest,
@@ -159,8 +161,25 @@ export const PromotionsApi = {
 
 export const EnvironmentsApi = {
   list: () => api.get<EnvironmentDefinitionDto[]>('/environments'),
-  /** Only IsProductionLike and IsActive are editable — see UpdateEnvironmentDefinitionRequest. */
+  /** Only IsProductionLike, IsActive, and PrimaryTargetServerId are editable — see UpdateEnvironmentDefinitionRequest. */
   update: (id: string, body: UpdateEnvironmentDefinitionRequest) => api.put<EnvironmentDefinitionDto>(`/environments/${id}`, body),
+
+  // --- Environment Infrastructure Dashboard: real server/Docker discovery,
+  // independent of any configured Application (master requirement: never
+  // require an ApplicationEnvironment row to exist before showing real
+  // containers). ---
+  infrastructure: (environmentDefinitionId: string) =>
+    api.get<EnvironmentInfrastructureDto>(`/environments/${environmentDefinitionId}/infrastructure`),
+  startContainer: (environmentDefinitionId: string, containerId: string) =>
+    api.post<ContainerActionResultDto>(`/environments/${environmentDefinitionId}/infrastructure/containers/${encodeURIComponent(containerId)}/start`),
+  stopContainer: (environmentDefinitionId: string, containerId: string) =>
+    api.post<ContainerActionResultDto>(`/environments/${environmentDefinitionId}/infrastructure/containers/${encodeURIComponent(containerId)}/stop`),
+  restartContainer: (environmentDefinitionId: string, containerId: string) =>
+    api.post<ContainerActionResultDto>(`/environments/${environmentDefinitionId}/infrastructure/containers/${encodeURIComponent(containerId)}/restart`),
+  containerLogs: (environmentDefinitionId: string, containerId: string, tailLines: number) =>
+    api.get<DiscoveredContainerLogsDto>(
+      `/environments/${environmentDefinitionId}/infrastructure/containers/${encodeURIComponent(containerId)}/logs?tailLines=${tailLines}`,
+    ),
 };
 
 export const UsersApi = {

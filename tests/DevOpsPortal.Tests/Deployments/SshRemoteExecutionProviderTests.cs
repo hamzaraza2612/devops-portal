@@ -184,6 +184,50 @@ public class SshRemoteExecutionProviderTests
         Assert.Contains("not configured", result.ErrorMessage);
     }
 
+    [Fact]
+    public async Task DiscoverContainersAsync_WhenNotConfigured_FailsWithoutAttemptingAnything()
+    {
+        var sut = new SshRemoteExecutionProvider(new FakeSecretProvider(), NullLoggerFactory.Create<SshRemoteExecutionProvider>());
+        var result = await sut.DiscoverContainersAsync(UnconfiguredServer());
+
+        Assert.False(result.Success);
+        Assert.Equal(string.Empty, result.InspectJson);
+        Assert.Contains("not configured", result.Error);
+    }
+
+    [Fact]
+    public async Task RunContainerActionAsync_WhenNotConfigured_FailsWithoutAttemptingAnything()
+    {
+        var sut = new SshRemoteExecutionProvider(new FakeSecretProvider(), NullLoggerFactory.Create<SshRemoteExecutionProvider>());
+        var result = await sut.RunContainerActionAsync(UnconfiguredServer(), "sample-web-1", RemoteContainerAction.Restart);
+
+        Assert.False(result.Success);
+        Assert.Contains("not configured", result.Error);
+    }
+
+    [Fact]
+    public async Task RunContainerActionAsync_RejectsAnUnsafeContainerIdWithoutAttemptingAnything()
+    {
+        var sut = new SshRemoteExecutionProvider(new FakeSecretProvider(), NullLoggerFactory.Create<SshRemoteExecutionProvider>());
+        var result = await sut.RunContainerActionAsync(ConfiguredServer(), "app; rm -rf /", RemoteContainerAction.Stop);
+
+        Assert.False(result.Success);
+        Assert.Equal("Invalid container identifier.", result.Error);
+    }
+
+    [Fact]
+    public async Task GetHostMetricsAsync_WhenNotConfigured_FailsWithoutAttemptingAnything()
+    {
+        var sut = new SshRemoteExecutionProvider(new FakeSecretProvider(), NullLoggerFactory.Create<SshRemoteExecutionProvider>());
+        var result = await sut.GetHostMetricsAsync(UnconfiguredServer());
+
+        Assert.False(result.Success);
+        Assert.Null(result.LoadAvgRaw);
+        Assert.Null(result.MemRaw);
+        Assert.Null(result.DiskRaw);
+        Assert.Contains("not configured", result.Error);
+    }
+
     private sealed class FakeSecretProvider : ISecretProvider
     {
         public string ProviderKey => "fake";

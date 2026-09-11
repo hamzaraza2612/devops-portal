@@ -47,6 +47,16 @@ public class NotConfiguredRemoteExecutionProvider(ILogger<NotConfiguredRemoteExe
     public Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
         Task.FromResult(new RemoteConnectionTestResult(false, null, null, false, null, false, null, null, null, null, UnconfiguredMessage(targetServer)));
 
+    public Task<RemoteContainerDiscoveryResult> DiscoverContainersAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new RemoteContainerDiscoveryResult(false, string.Empty, string.Empty, UnconfiguredMessage(targetServer)));
+
+    public Task<RemoteContainerActionResult> RunContainerActionAsync(
+        TargetServer targetServer, string containerId, RemoteContainerAction action, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new RemoteContainerActionResult(false, string.Empty, UnconfiguredMessage(targetServer)));
+
+    public Task<RemoteHostMetricsResult> GetHostMetricsAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new RemoteHostMetricsResult(false, null, null, null, UnconfiguredMessage(targetServer)));
+
     private static string UnconfiguredMessage(TargetServer targetServer) =>
         $"No remote execution mechanism is configured for target server '{targetServer.Name}'. " +
         "Remote Docker/Compose access is not yet implemented for this portal deployment — see PROJECT_STATE.md.";

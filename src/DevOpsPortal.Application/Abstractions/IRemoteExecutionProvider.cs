@@ -47,6 +47,52 @@ public record RemoteConnectionTestResult(
     string? DiskInfo,
     string? ErrorMessage);
 
+/// <summary>Result of whole-server container discovery — `docker ps -aq` piped
+/// into `docker inspect` (every container on the host, running or stopped,
+/// regardless of which compose project or application it belongs to) plus a
+/// separate `docker stats --no-stream --format '{{json .}}'` with no name
+/// filter (every currently-running container's live resource usage in one
+/// shot). Both commands are entirely fixed strings — no caller-supplied value
+/// is ever interpolated into either, so there is no injection surface here at
+/// all: discovery lists what exists, it never targets one caller-named thing.
+/// `InspectJson` is `"[]"` (a valid empty JSON array) when the host has zero
+/// containers — a real, distinct outcome from `Success = false`, which means
+/// the commands themselves could not be run (SSH/Docker unavailable).
+/// `StatsJson` is one JSON object per line (docker's own format for stats
+/// without `--no-stream` name filtering), empty when nothing is running.</summary>
+public record RemoteContainerDiscoveryResult(bool Success, string InspectJson, string StatsJson, string? Error);
+
+/// <summary>The fixed, safe set of direct (non-compose) container actions
+/// available for a container discovered outside any configured
+/// ApplicationEnvironment — a container with no known compose file, so
+/// `docker compose &lt;op&gt;` (which needs one) doesn't apply. Deliberately does
+/// NOT include "recreate with volumes": that is a compose-level operation
+/// (`down -v` + `up -d`) that requires knowing the compose project, and stays
+/// available only through the existing ComposeOperation path for containers
+/// that ARE mapped to a configured application.</summary>
+public enum RemoteContainerAction
+{
+    Start,
+    Stop,
+    Restart,
+}
+
+/// <summary>Result of a direct `docker start|stop|restart &lt;id&gt;` call.</summary>
+public record RemoteContainerActionResult(bool Success, string Message, string? Error);
+
+/// <summary>Machine-parseable host metrics for the Environment Infrastructure
+/// Dashboard's summary cards — deliberately a *separate* method from
+/// <see cref="RemoteConnectionTestResult"/>'s UptimeInfo/MemoryInfo/DiskInfo
+/// rather than a change to them: those stay the existing human-readable
+/// `uptime`/`free -h`/`df -h` text used by the admin "Test Connection" panel,
+/// unchanged. This uses `/proc/loadavg`, `free -b` (exact bytes), and
+/// `df -Pk` (exact 1024-byte blocks, POSIX-stable column layout) specifically
+/// because they're reliably machine-parseable without guessing at unit
+/// suffixes — see DockerDiscoveryParser for the parsing itself. Each raw field
+/// is null independently on that one command's failure, same honesty
+/// convention as everywhere else in this interface.</summary>
+public record RemoteHostMetricsResult(bool Success, string? LoadAvgRaw, string? MemRaw, string? DiskRaw, string? Error);
+
 /// <summary>
 /// The portal's ONLY boundary for reaching a specific TargetServer's Docker
 /// engine. This interface exists because master requirements for Phase 5
@@ -106,4 +152,24 @@ public interface IRemoteExecutionProvider
     /// verifies SSH connectivity, the authenticated user, and Docker/Compose
     /// availability — never fabricates a successful result.</summary>
     Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default);
+
+    /// <summary>Whole-server container discovery, independent of any configured
+    /// ApplicationEnvironment/compose project — the basis of the Environment
+    /// Infrastructure Dashboard's "show me every real container on this
+    /// server" requirement. See <see cref="RemoteContainerDiscoveryResult"/>.</summary>
+    Task<RemoteContainerDiscoveryResult> DiscoverContainersAsync(TargetServer targetServer, CancellationToken cancellationToken = default);
+
+    /// <summary>`docker start|stop|restart &lt;id&gt;` — the direct-container
+    /// counterpart to <see cref="RunComposeAsync"/> for containers with no known
+    /// compose file (discovered but not mapped to a configured application).
+    /// Same defense-in-depth contract as every other name-taking method here:
+    /// the caller (the Application-layer service) must only ever pass an
+    /// id/name it just re-confirmed exists via <see cref="DiscoverContainersAsync"/>
+    /// on this same target server, and this method independently validates it
+    /// looks like a plausible Docker identifier before quoting and sending it.</summary>
+    Task<RemoteContainerActionResult> RunContainerActionAsync(
+        TargetServer targetServer, string containerId, RemoteContainerAction action, CancellationToken cancellationToken = default);
+
+    /// <summary>See <see cref="RemoteHostMetricsResult"/>.</summary>
+    Task<RemoteHostMetricsResult> GetHostMetricsAsync(TargetServer targetServer, CancellationToken cancellationToken = default);
 }
