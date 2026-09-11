@@ -49,10 +49,42 @@ public class DockerComposeContainerRuntimeProvider(IRemoteExecutionProvider remo
         {
             var inspectResult = await remoteExecutionProvider.InspectContainerAsync(targetServer, container.Name, cancellationToken);
             var inspected = inspectResult.Success ? ParseInspectOutput(inspectResult.RawJson) : null;
-            results.Add(inspected ?? FallbackFromPs(container));
+
+            // A stats snapshot is independent of inspect succeeding — a container
+            // that just started (no stats yet) or a transient stats failure must
+            // never hide the state/health/restart-count data inspect already
+            // provided.
+            var statsResult = await remoteExecutionProvider.GetContainerStatsAsync(targetServer, container.Name, cancellationToken);
+            var stats = statsResult.Success ? ParseStatsOutput(statsResult.RawJson) : null;
+
+            results.Add((inspected ?? FallbackFromPs(container)) with { Stats = stats });
         }
 
         return new ContainerRuntimeStatusResult(true, null, results);
+    }
+
+    public async Task<ContainerLogsResult> GetLogsAsync(
+        TargetServer targetServer, string workingDirectory, string composeFilePath, string? projectName, string containerName, int tailLines,
+        CancellationToken cancellationToken = default)
+    {
+        if (!remoteExecutionProvider.IsConfigured(targetServer))
+            return new ContainerLogsResult(false, false, string.Empty, UnreachableReason(targetServer));
+
+        // Re-discover this project's actual containers and only fetch logs for a
+        // name that's really one of them — never trust a caller-supplied
+        // containerName blindly (see GetLogsAsync's own doc comment on
+        // IContainerRuntimeProvider for why).
+        var psResult = await remoteExecutionProvider.RunComposeAsync(
+            targetServer, new ComposeCommandRequest(workingDirectory, composeFilePath, projectName, ComposeOperation.Ps), cancellationToken);
+        if (!psResult.Success)
+            return new ContainerLogsResult(true, false, string.Empty, string.IsNullOrWhiteSpace(psResult.StandardError) ? "Could not list containers for this application environment." : psResult.StandardError);
+
+        var discovered = ParsePsOutput(psResult.StandardOutput);
+        if (!discovered.Any(c => c.Name == containerName))
+            return new ContainerLogsResult(true, false, string.Empty, $"'{containerName}' is not a container of this application environment.");
+
+        var logsResult = await remoteExecutionProvider.GetContainerLogsAsync(targetServer, containerName, tailLines, cancellationToken);
+        return new ContainerLogsResult(true, logsResult.Success, logsResult.Logs, logsResult.Error);
     }
 
     public async Task<ContainerRuntimeOperationResult> RunOperationAsync(
@@ -209,6 +241,58 @@ public class DockerComposeContainerRuntimeProvider(IRemoteExecutionProvider remo
         {
             return null;
         }
+    }
+
+    /// <summary>Parses one `docker stats --no-stream --format '{{json .}}'` line.
+    /// Docker's own stats JSON already pre-formats CPUPerc/MemPerc as
+    /// percentage strings ("0.42%") and MemUsage/NetIO/BlockIO as human-readable
+    /// "value / value" strings ("12MiB / 1.952GiB") — CPU/Mem percentages are
+    /// parsed to numbers here since that's a trivial, safe strip-the-%-and-parse;
+    /// MemUsage's two sides are split into MemoryUsage/MemoryLimit as separately
+    /// requested fields, kept as Docker's own strings rather than re-derived into
+    /// exact byte counts (see ContainerStatsInfo's doc comment).</summary>
+    private static ContainerStatsInfo? ParseStatsOutput(string rawOutput)
+    {
+        var trimmed = rawOutput.Trim();
+        if (trimmed.Length == 0)
+            return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(trimmed);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return null;
+
+            var (memUsage, memLimit) = SplitSlash(GetString(root, "MemUsage"));
+
+            return new ContainerStatsInfo(
+                CpuPercent: ParsePercent(GetString(root, "CPUPerc")),
+                MemoryUsage: memUsage,
+                MemoryLimit: memLimit,
+                MemoryPercent: ParsePercent(GetString(root, "MemPerc")),
+                NetworkIO: GetString(root, "NetIO"),
+                BlockIO: GetString(root, "BlockIO"),
+                PidCount: int.TryParse(GetString(root, "PIDs"), out var pids) ? pids : null);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static double? ParsePercent(string? value) =>
+        !string.IsNullOrWhiteSpace(value) && double.TryParse(value.TrimEnd('%'), System.Globalization.CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : null;
+
+    private static (string? Left, string? Right) SplitSlash(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return (null, null);
+
+        var parts = value.Split('/', 2, StringSplitOptions.TrimEntries);
+        return parts.Length == 2 ? (parts[0], parts[1]) : (value.Trim(), null);
     }
 
     private static string? GetString(JsonElement element, string propertyName) =>

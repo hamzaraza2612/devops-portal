@@ -28,6 +28,11 @@ public class SshRemoteExecutionProvider(ISecretProvider secretProvider, ILogger<
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(120);
 
+    /// <summary>Hard cap on `docker logs --tail`, independent of whatever the
+    /// caller asked for — prevents a large/misconfigured tailLines value from
+    /// pulling an excessive amount of text over the SSH connection.</summary>
+    private const int MaxLogTailLines = 5000;
+
     public bool IsConfigured(TargetServer targetServer) =>
         !string.IsNullOrWhiteSpace(targetServer.Hostname) &&
         !string.IsNullOrWhiteSpace(targetServer.SshUsername) &&
@@ -69,6 +74,47 @@ public class SshRemoteExecutionProvider(ISecretProvider secretProvider, ILogger<
         var commandText = $"docker inspect {PosixShellEscaper.Quote(containerName)}";
         var result = await RunRemoteCommandAsync(targetServer, commandText, cancellationToken);
         return new RemoteContainerInspectResult(result.Success, result.StandardOutput, result.Success ? null : result.StandardError);
+    }
+
+    public async Task<RemoteContainerLogsResult> GetContainerLogsAsync(
+        TargetServer targetServer, string containerName, int tailLines, CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured(targetServer))
+            return new RemoteContainerLogsResult(false, string.Empty, NotConfiguredMessage(targetServer));
+
+        // Defense-in-depth (master requirements §23), same contract as
+        // InspectContainerAsync — see IRemoteExecutionProvider.GetContainerLogsAsync.
+        if (!PosixShellEscaper.IsSafeDockerName(containerName))
+            return new RemoteContainerLogsResult(false, string.Empty, "Invalid container name.");
+
+        var clampedTail = Math.Clamp(tailLines, 1, MaxLogTailLines);
+        // 2>&1 merges the container's stderr into stdout — `docker logs` output is
+        // meant to be read as one interleaved stream, and this also means a
+        // command-level failure's error text is still captured in StandardOutput
+        // below rather than lost on a separate channel.
+        var commandText = $"docker logs --tail {clampedTail} {PosixShellEscaper.Quote(containerName)} 2>&1";
+        var result = await RunRemoteCommandAsync(targetServer, commandText, cancellationToken);
+
+        return result.Success
+            ? new RemoteContainerLogsResult(true, result.StandardOutput, null)
+            : new RemoteContainerLogsResult(false, string.Empty, string.IsNullOrWhiteSpace(result.StandardOutput) ? result.StandardError : result.StandardOutput);
+    }
+
+    public async Task<RemoteContainerStatsResult> GetContainerStatsAsync(
+        TargetServer targetServer, string containerName, CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured(targetServer))
+            return new RemoteContainerStatsResult(false, string.Empty, NotConfiguredMessage(targetServer));
+
+        if (!PosixShellEscaper.IsSafeDockerName(containerName))
+            return new RemoteContainerStatsResult(false, string.Empty, "Invalid container name.");
+
+        var commandText = $"docker stats --no-stream --format {PosixShellEscaper.Quote("{{json .}}")} {PosixShellEscaper.Quote(containerName)}";
+        var result = await RunRemoteCommandAsync(targetServer, commandText, cancellationToken);
+
+        return result.Success
+            ? new RemoteContainerStatsResult(true, result.StandardOutput, null)
+            : new RemoteContainerStatsResult(false, string.Empty, string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError);
     }
 
     public async Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default)

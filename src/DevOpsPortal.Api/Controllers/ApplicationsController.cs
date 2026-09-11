@@ -111,6 +111,16 @@ public class ApplicationsController(
     public async Task<IActionResult> GetContainerStatus(Guid id, Guid environmentDefinitionId, CancellationToken cancellationToken) =>
         Ok(await containerOperationsService.GetStatusAsync(id, environmentDefinitionId, cancellationToken));
 
+    /// <summary>Recent `docker logs --tail N` output for one container of this
+    /// application environment. containerName is re-validated server-side
+    /// against this environment's own live `compose ps` discovery (never
+    /// trusted as-is); permission (containers.view) and environment access are
+    /// enforced inside the service, same pattern as GetContainerStatus.</summary>
+    [HttpGet("{id:guid}/environments/{environmentDefinitionId:guid}/containers/logs")]
+    public async Task<IActionResult> GetContainerLogs(
+        Guid id, Guid environmentDefinitionId, [FromQuery] string containerName, [FromQuery] int tailLines, CancellationToken cancellationToken) =>
+        Ok(await containerOperationsService.GetLogsAsync(id, environmentDefinitionId, containerName, tailLines, cancellationToken));
+
     [HttpPost("{id:guid}/environments/{environmentDefinitionId:guid}/containers/restart")]
     public async Task<IActionResult> RestartContainers(Guid id, Guid environmentDefinitionId, CancellationToken cancellationToken) =>
         Ok(await containerOperationsService.RestartAsync(id, environmentDefinitionId, cancellationToken));

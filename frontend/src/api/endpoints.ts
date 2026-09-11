@@ -10,6 +10,7 @@ import type {
   ChangeOwnPasswordRequest,
   ContainerActionResultDto,
   ContainerEnvironmentStatusDto,
+  ContainerLogsDto,
   CreateAllowedDeploymentRootRequest,
   CreateApplicationRequest,
   CreateBuildServerRequest,
@@ -101,6 +102,11 @@ export const ApplicationsApi = {
   // --- Live container status/control (master requirements §8/§9/§10) ---
   containerStatus: (applicationId: string, environmentDefinitionId: string) =>
     api.get<ContainerEnvironmentStatusDto>(`/applications/${applicationId}/environments/${environmentDefinitionId}/containers`),
+  containerLogs: (applicationId: string, environmentDefinitionId: string, containerName: string, tailLines: number) =>
+    api.get<ContainerLogsDto>(
+      `/applications/${applicationId}/environments/${environmentDefinitionId}/containers/logs` +
+        `?containerName=${encodeURIComponent(containerName)}&tailLines=${tailLines}`,
+    ),
   restartContainers: (applicationId: string, environmentDefinitionId: string) =>
     api.post<ContainerActionResultDto>(`/applications/${applicationId}/environments/${environmentDefinitionId}/containers/restart`),
   startContainers: (applicationId: string, environmentDefinitionId: string) =>

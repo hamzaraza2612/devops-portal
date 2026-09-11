@@ -125,8 +125,9 @@ adds real SSH-based remote command execution (`SshRemoteExecutionProvider`,
 `Renci.SshNet`) so container monitoring/control and LegacyFilesystem
 deployment actually reach target servers instead of always reporting
 "unreachable"; adds a real GitLab API client with a testable connection;
-wires ContainerImage/Release deployment execution end-to-end. See
-dedicated section below.
+wires ContainerImage/Release deployment execution end-to-end; adds
+container CPU/memory stats and an on-demand log viewer (§6a, closed in a
+pre-merge acceptance-review pass). See dedicated section below.
 
 ## Current database state
 
@@ -3519,6 +3520,55 @@ badges, restart count, health, per-container actions gated by
 previously this surface either didn't exist or only ever showed
 "unreachable" placeholders.
 
+**§6a — CPU/memory stats and container logs (post-Phase-12 acceptance-review
+fix).** A code-level acceptance review against the original master
+requirements (before merging Phase 12) found exactly one real blocker:
+remote container **logs** and **CPU/memory statistics** didn't exist
+anywhere — `IRemoteExecutionProvider` had no `docker logs`/`docker stats`
+method, `ContainerOperationsService` had no logs method, and no endpoint
+existed. Fixed, reusing the existing abstractions rather than a parallel
+one:
+
+- `IRemoteExecutionProvider` gained `GetContainerLogsAsync` (`docker logs
+  --tail N <name>`, hard-capped at 5000 lines, same `IsSafeDockerName` +
+  `PosixShellEscaper.Quote` defense as every other dynamic value) and
+  `GetContainerStatsAsync` (`docker stats --no-stream --format
+  '{{json .}}' <name>`) — implemented in `SshRemoteExecutionProvider`
+  (real) and stubbed honestly in `NotConfiguredRemoteExecutionProvider`
+  (same "never fake success" pattern as every other method there).
+- **Stats are folded into the existing container status response**
+  (`ContainerInfoDto.Stats`, populated by `DockerComposeContainerRuntimeProvider.GetStatusAsync`
+  calling `GetContainerStatsAsync` alongside the existing
+  `InspectContainerAsync` call per discovered container) rather than a
+  separate polling endpoint — CPU%/Mem% are parsed to numbers; memory
+  usage/limit and network/block I/O are kept as Docker's own
+  human-readable formatted strings (e.g. `"128MiB"`, `"1.2kB / 3.4kB"`)
+  rather than re-derived into exact byte counts, matching what `docker
+  stats` itself reports. A stats failure never hides the inspect data —
+  the two are independent remote calls.
+- **Logs are a new on-demand endpoint**, `GET
+  /api/applications/{id}/environments/{envId}/containers/logs?containerName=&tailLines=`
+  (`ContainerOperationsService.GetLogsAsync`, same `ContainersView` +
+  `EnsureEnvironmentAccessAsync` gate as `GetStatusAsync`). Because this
+  endpoint takes a client-supplied `containerName` (unlike
+  `InspectContainerAsync`, which is only ever called internally with a
+  name `GetStatusAsync` just discovered), `containerName` is
+  **re-validated against this same application environment's own live
+  `compose ps` discovery** inside `DockerComposeContainerRuntimeProvider.GetLogsAsync`
+  before anything is fetched — closes what would otherwise be a new
+  cross-container-disclosure gap on a shared target server (an authorized
+  user for application A could otherwise guess/read logs for an unrelated
+  application B's container on the same host). `tailLines` outside
+  1–5000 is rejected (`ValidationException` → 400); `<= 0` falls back to
+  a default of 200.
+- **Frontend**: `ContainerMonitoringSection` now shows CPU%, memory
+  usage/limit/%, and PID count inline per container (or "stats
+  unavailable" when a snapshot wasn't returned), plus a "Logs" toggle
+  that opens `ContainerLogsPanel` — a tail-lines selector (100/200/500/
+  1000), manual refresh, monospace log output, and its own loading/error
+  states. No auto-polling was added (consistent with the rest of this
+  section, which only ever loads on mount/action/manual reload).
+
 ### §7 — Deploy from a Release (ContainerImage mode)
 
 `ManagedApplication.DeploymentMode == ContainerImage` applications can now
@@ -3549,7 +3599,7 @@ Single migration `Phase12_RemoveMultiTenancyAndRbac`: drops `Tenants`,
 
 ### Tests
 
-354/354 backend tests pass (`dotnet test` — full solution), 38/38 frontend
+373/373 backend tests pass (`dotnet test` — full solution), 43/43 frontend
 tests pass (`vitest run`). `dotnet build` on the full solution and
 `npm run build` both clean, zero warnings. Test changes were substantial
 (essentially every service test file touched authorization or a changed
@@ -3563,6 +3613,26 @@ separation-of-duty boundary (a user with Production deploy access but not
 for the SSH provider (`SshRemoteExecutionProviderTests`) cover
 `PosixShellEscaper`/`ComposeOperationArgs` escaping directly (via
 `InternalsVisibleTo`) and `IsConfigured` gating, without a live SSH server.
+
+**§6a's 19 new backend tests**: `SshRemoteExecutionProviderTests` —
+not-configured and unsafe-container-name rejection for both
+`GetContainerLogsAsync`/`GetContainerStatsAsync`, without a live SSH
+server (same pattern as the existing `InspectContainerAsync` tests).
+`DockerComposeContainerRuntimeProviderTests` — stats JSON parsing/folding
+into the status result (success and failure-leaves-inspect-data-intact
+cases), and `GetLogsAsync`'s not-configured/compose-ps-failure/
+container-not-discovered/success paths (the "not discovered" case is the
+cross-container-disclosure test — asserts `GetContainerLogsAsync` is
+never even called for a plausible-but-undiscovered name).
+`ContainerOperationsServiceTests` — `GetLogsAsync` authorized-access
+success, `ForbiddenException` for both no-permission and
+wrong-environment-access, `ValidationException` for a missing
+`containerName` and an over-maximum `tailLines`, the `tailLines <= 0`
+default-fallback, and the unreachable-target-server failure path. **5 new
+frontend tests** in `ApplicationDetailsPage.test.tsx` — CPU/memory/PID
+rendering, the "stats unavailable" fallback, opening the log viewer
+through its loading state to rendered output, and both of its error
+states (network failure vs. a server response reporting `success: false`).
 
 ### Security review (this phase)
 

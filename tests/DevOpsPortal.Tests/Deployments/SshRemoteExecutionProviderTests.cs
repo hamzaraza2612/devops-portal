@@ -122,6 +122,51 @@ public class SshRemoteExecutionProviderTests
         Assert.Equal("Invalid container name.", result.Error);
     }
 
+    [Fact]
+    public async Task GetContainerLogsAsync_WhenNotConfigured_FailsWithoutAttemptingAnything()
+    {
+        var sut = new SshRemoteExecutionProvider(new FakeSecretProvider(), NullLoggerFactory.Create<SshRemoteExecutionProvider>());
+        var result = await sut.GetContainerLogsAsync(UnconfiguredServer(), "sample-web-1", 200);
+
+        Assert.False(result.Success);
+        Assert.Equal(string.Empty, result.Logs);
+        Assert.Contains("not configured", result.Error);
+    }
+
+    [Theory]
+    [InlineData("app; rm -rf /")]
+    [InlineData("$(whoami)")]
+    [InlineData("../etc/passwd")]
+    public async Task GetContainerLogsAsync_RejectsAnUnsafeContainerNameWithoutAttemptingAnything(string unsafeName)
+    {
+        var sut = new SshRemoteExecutionProvider(new FakeSecretProvider(), NullLoggerFactory.Create<SshRemoteExecutionProvider>());
+        var result = await sut.GetContainerLogsAsync(ConfiguredServer(), unsafeName, 200);
+
+        Assert.False(result.Success);
+        Assert.Equal(string.Empty, result.Logs);
+        Assert.Equal("Invalid container name.", result.Error);
+    }
+
+    [Fact]
+    public async Task GetContainerStatsAsync_WhenNotConfigured_FailsWithoutAttemptingAnything()
+    {
+        var sut = new SshRemoteExecutionProvider(new FakeSecretProvider(), NullLoggerFactory.Create<SshRemoteExecutionProvider>());
+        var result = await sut.GetContainerStatsAsync(UnconfiguredServer(), "sample-web-1");
+
+        Assert.False(result.Success);
+        Assert.Contains("not configured", result.Error);
+    }
+
+    [Fact]
+    public async Task GetContainerStatsAsync_RejectsAnUnsafeContainerNameWithoutAttemptingAnything()
+    {
+        var sut = new SshRemoteExecutionProvider(new FakeSecretProvider(), NullLoggerFactory.Create<SshRemoteExecutionProvider>());
+        var result = await sut.GetContainerStatsAsync(ConfiguredServer(), "app; rm -rf /");
+
+        Assert.False(result.Success);
+        Assert.Equal("Invalid container name.", result.Error);
+    }
+
     private sealed class FakeSecretProvider : ISecretProvider
     {
         public string ProviderKey => "fake";

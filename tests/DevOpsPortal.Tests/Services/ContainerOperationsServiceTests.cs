@@ -184,6 +184,84 @@ public class ContainerOperationsServiceTests
         await Assert.ThrowsAsync<ForbiddenException>(() => f.Sut.GetStatusAsync(f.App.Id, f.DevEnv.Id));
     }
 
+    // -------------------------------------------------------------------- logs
+
+    [Fact]
+    public async Task GetLogsAsync_WithAuthorizedEnvironmentAccess_ReturnsLogs()
+    {
+        var provider = new FakeContainerRuntimeProvider(logsResult: new ContainerLogsResult(true, true, "line 1\nline 2\n", null));
+        var f = await CreateFixtureAsync(runtimeProvider: provider);
+        f.CurrentUser.UserId = f.ViewUserId;
+
+        var result = await f.Sut.GetLogsAsync(f.App.Id, f.DevEnv.Id, "sample-web-1", 100);
+
+        Assert.True(result.Success);
+        Assert.Equal("line 1\nline 2\n", result.Logs);
+        Assert.Equal("sample-web-1", provider.LastLogsContainerName);
+        Assert.Equal(100, provider.LastLogsTailLines);
+    }
+
+    [Fact]
+    public async Task GetLogsAsync_WithoutContainersViewPermission_ThrowsForbidden()
+    {
+        var f = await CreateFixtureAsync();
+        f.CurrentUser.UserId = f.NoPermissionUserId;
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => f.Sut.GetLogsAsync(f.App.Id, f.DevEnv.Id, "sample-web-1", 100));
+    }
+
+    [Fact]
+    public async Task GetLogsAsync_WithAccessToADifferentEnvironmentOnly_ThrowsForbidden()
+    {
+        var f = await CreateFixtureAsync();
+        f.CurrentUser.UserId = f.OtherEnvironmentUserId; // has QA access, not DEV
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => f.Sut.GetLogsAsync(f.App.Id, f.DevEnv.Id, "sample-web-1", 100));
+    }
+
+    [Fact]
+    public async Task GetLogsAsync_WithMissingContainerName_ThrowsValidation()
+    {
+        var f = await CreateFixtureAsync();
+        f.CurrentUser.UserId = f.ViewUserId;
+
+        await Assert.ThrowsAsync<ValidationException>(() => f.Sut.GetLogsAsync(f.App.Id, f.DevEnv.Id, "", 100));
+    }
+
+    [Fact]
+    public async Task GetLogsAsync_WithTailLinesAboveMaximum_ThrowsValidation()
+    {
+        var f = await CreateFixtureAsync();
+        f.CurrentUser.UserId = f.ViewUserId;
+
+        await Assert.ThrowsAsync<ValidationException>(() => f.Sut.GetLogsAsync(f.App.Id, f.DevEnv.Id, "sample-web-1", 1_000_000));
+    }
+
+    [Fact]
+    public async Task GetLogsAsync_WithZeroOrNegativeTailLines_FallsBackToADefault_RatherThanThrowing()
+    {
+        var provider = new FakeContainerRuntimeProvider(logsResult: new ContainerLogsResult(true, true, "ok", null));
+        var f = await CreateFixtureAsync(runtimeProvider: provider);
+        f.CurrentUser.UserId = f.ViewUserId;
+
+        var result = await f.Sut.GetLogsAsync(f.App.Id, f.DevEnv.Id, "sample-web-1", 0);
+
+        Assert.True(result.Success);
+        Assert.True(provider.LastLogsTailLines > 0);
+    }
+
+    [Fact]
+    public async Task GetLogsAsync_WhenTargetServerUnreachable_ReturnsFailure_WithoutThrowing()
+    {
+        var provider = new FakeContainerRuntimeProvider(logsResult: new ContainerLogsResult(false, false, string.Empty, "not configured"));
+        var f = await CreateFixtureAsync(runtimeProvider: provider);
+        f.CurrentUser.UserId = f.ViewUserId;
+
+        var result = await f.Sut.GetLogsAsync(f.App.Id, f.DevEnv.Id, "sample-web-1", 100);
+
+        Assert.False(result.Success);
+    }
+
     // ---------------------------------------------------------- restart/start/stop
 
     [Fact]
@@ -419,19 +497,25 @@ public class ContainerOperationsServiceTests
     {
         private readonly ContainerRuntimeStatusResult _statusResult;
         private readonly Func<ComposeOperation, ContainerRuntimeOperationResult> _operationResultFor;
+        private readonly ContainerLogsResult _logsResult;
 
         public List<(TargetServer Server, ComposeOperation Operation)> OperationsInvoked { get; } = [];
         public int OperationInvocationCount => OperationsInvoked.Count;
         public TargetServer? LastGetStatusTargetServer { get; private set; }
+        public int LogsInvocationCount { get; private set; }
+        public string? LastLogsContainerName { get; private set; }
+        public int? LastLogsTailLines { get; private set; }
 
         public FakeContainerRuntimeProvider(
             ContainerRuntimeStatusResult? statusResult = null,
             ContainerRuntimeOperationResult? operationResult = null,
-            Func<ComposeOperation, ContainerRuntimeOperationResult>? perOperationResult = null)
+            Func<ComposeOperation, ContainerRuntimeOperationResult>? perOperationResult = null,
+            ContainerLogsResult? logsResult = null)
         {
             _statusResult = statusResult ?? new ContainerRuntimeStatusResult(false, "No remote execution mechanism is configured for target server.", []);
             _operationResultFor = perOperationResult
                 ?? (_ => operationResult ?? new ContainerRuntimeOperationResult(false, false, "No remote execution mechanism is configured for target server."));
+            _logsResult = logsResult ?? new ContainerLogsResult(false, false, string.Empty, "No remote execution mechanism is configured for target server.");
         }
 
         public Task<ContainerRuntimeStatusResult> GetStatusAsync(
@@ -447,6 +531,16 @@ public class ContainerOperationsServiceTests
         {
             OperationsInvoked.Add((targetServer, operation));
             return Task.FromResult(_operationResultFor(operation));
+        }
+
+        public Task<ContainerLogsResult> GetLogsAsync(
+            TargetServer targetServer, string workingDirectory, string composeFilePath, string? projectName, string containerName, int tailLines,
+            CancellationToken cancellationToken = default)
+        {
+            LogsInvocationCount++;
+            LastLogsContainerName = containerName;
+            LastLogsTailLines = tailLines;
+            return Task.FromResult(_logsResult);
         }
     }
 }

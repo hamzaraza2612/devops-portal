@@ -92,6 +92,14 @@ public class IntegrationsHealthCheckTests
             TargetServer targetServer, string containerName, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task<RemoteContainerLogsResult> GetContainerLogsAsync(
+            TargetServer targetServer, string containerName, int tailLines, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RemoteContainerStatsResult> GetContainerStatsAsync(
+            TargetServer targetServer, string containerName, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }

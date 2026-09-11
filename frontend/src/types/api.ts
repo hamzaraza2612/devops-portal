@@ -565,6 +565,19 @@ export interface PagedResult<T> {
 
 // --- Containers (live status/control — master requirements §8/§9/§10) ---
 
+/** A `docker stats --no-stream` snapshot for one container. Memory usage/
+ * limit and network/block I/O are Docker's own human-readable formatted
+ * strings (e.g. "128MiB", "1.2kB / 3.4kB"), not exact byte counts. */
+export interface ContainerStatsDto {
+  cpuPercent: number | null;
+  memoryUsage: string | null;
+  memoryLimit: string | null;
+  memoryPercent: number | null;
+  networkIO: string | null;
+  blockIO: string | null;
+  pidCount: number | null;
+}
+
 export interface ContainerInfoDto {
   serviceName: string;
   containerName: string;
@@ -576,6 +589,14 @@ export interface ContainerInfoDto {
   uptime: string | null;
   restartCount: number;
   ports: string[];
+  stats: ContainerStatsDto | null;
+}
+
+/** Recent `docker logs --tail N` output for one container, fetched on demand. */
+export interface ContainerLogsDto {
+  containerName: string;
+  success: boolean;
+  logs: string;
 }
 
 export interface HealthCheckStatusDto {

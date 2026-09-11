@@ -45,6 +45,11 @@ first login is unaffected.
 - **Simplified authorization**: multi-tenancy and the Role/Permission
   catalog are gone; every permission check is unchanged in code, only
   what grants it changed (see `PROJECT_STATE.md`).
+- **Container CPU/memory stats and logs**: container monitoring now shows
+  live CPU%, memory usage/limit/%, and PID count per container, plus an
+  on-demand log viewer (`docker logs --tail N`, configurable tail lines,
+  manual refresh) — found missing during a pre-merge acceptance review
+  and closed in the same release rather than shipped as a known gap.
 
 **Migration notes**: one new migration
 (`Phase12_RemoveMultiTenancyAndRbac`) — applied automatically on first

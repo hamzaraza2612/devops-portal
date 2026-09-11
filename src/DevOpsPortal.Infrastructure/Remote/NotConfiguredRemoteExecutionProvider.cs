@@ -36,6 +36,14 @@ public class NotConfiguredRemoteExecutionProvider(ILogger<NotConfiguredRemoteExe
         TargetServer targetServer, string containerName, CancellationToken cancellationToken = default) =>
         Task.FromResult(new RemoteContainerInspectResult(false, string.Empty, UnconfiguredMessage(targetServer)));
 
+    public Task<RemoteContainerLogsResult> GetContainerLogsAsync(
+        TargetServer targetServer, string containerName, int tailLines, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new RemoteContainerLogsResult(false, string.Empty, UnconfiguredMessage(targetServer)));
+
+    public Task<RemoteContainerStatsResult> GetContainerStatsAsync(
+        TargetServer targetServer, string containerName, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new RemoteContainerStatsResult(false, string.Empty, UnconfiguredMessage(targetServer)));
+
     public Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
         Task.FromResult(new RemoteConnectionTestResult(false, null, null, false, null, false, null, UnconfiguredMessage(targetServer)));
 
