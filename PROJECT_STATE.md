@@ -2806,6 +2806,8 @@ fixtures updated for the new fields).
   touch (Applications itself still has no inline create form — unchanged
   from before this addendum, and out of the requested scope).
 
+<<<<<<< HEAD
+=======
 ## Phase 10 — Production Hardening, Security & Recovery
 
 A review pass across the whole platform (Phases 1–9 plus the addendum
@@ -3063,6 +3065,7 @@ in-process/per-instance (a future multi-instance API deployment would need
 a distributed limiter — out of scope until the portal is actually
 horizontally scaled, which nothing today requires).
 
+>>>>>>> main
 ## Production-critical gaps / next implementation
 
 Carried forward, unresolved, and deliberately **not** touched by Phase 9
