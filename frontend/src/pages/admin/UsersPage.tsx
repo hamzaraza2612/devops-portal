@@ -81,6 +81,8 @@ function UserCard({
   onChanged: () => void;
 }) {
   const [showEdit, setShowEdit] = useState(false);
+  const [showResetPassword, setShowResetPassword] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
 
   return (
     <Card className={user.isActive ? '' : 'opacity-60'}>
@@ -114,6 +116,13 @@ function UserCard({
           >
             {showEdit ? 'Cancel' : 'Edit access'}
           </button>
+          <button
+            type="button"
+            onClick={() => { setShowResetPassword((v) => !v); setNewPassword(''); }}
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            {showResetPassword ? 'Cancel' : 'Reset password'}
+          </button>
           <ActionButton
             label={user.isActive ? 'Deactivate' : 'Activate'}
             variant={user.isActive ? 'danger' : 'secondary'}
@@ -142,6 +151,31 @@ function UserCard({
             onChanged();
           }}
         />
+      )}
+
+      {showResetPassword && canManage && (
+        <div className="mt-3 flex flex-wrap items-end gap-2 border-t border-slate-100 pt-3">
+          <label className="block text-xs font-medium text-slate-600">
+            New password
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              className={inputClass}
+              placeholder="At least 8 characters"
+            />
+          </label>
+          <ActionButton
+            label="Set new password"
+            disabled={newPassword.length < 8}
+            disabledReason="At least 8 characters required."
+            onAction={() => UsersApi.resetPassword(user.id, { newPassword })}
+            onSuccess={() => {
+              setNewPassword('');
+              setShowResetPassword(false);
+            }}
+          />
+        </div>
       )}
     </Card>
   );

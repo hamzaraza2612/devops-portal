@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApplicationDetailsPage } from './ApplicationDetailsPage';
-import { ApplicationsApi, DeploymentsApi, EnvironmentsApi, PromotionsApi } from '../api/endpoints';
+import { ApplicationsApi, DeploymentsApi, EnvironmentsApi, PromotionsApi, TargetServersApi } from '../api/endpoints';
 import { AuthContext, type AuthContextValue } from '../auth/AuthContext';
 import { Permissions } from '../auth/permissions';
 import {
@@ -34,6 +34,7 @@ vi.mock('../api/endpoints', () => ({
   EnvironmentsApi: { list: vi.fn() },
   DeploymentsApi: { list: vi.fn() },
   PromotionsApi: { listPending: vi.fn() },
+  TargetServersApi: { list: vi.fn() },
 }));
 
 function authValue(permissions: string[]): AuthContextValue {
@@ -128,6 +129,7 @@ describe('ApplicationDetailsPage', () => {
     vi.mocked(ApplicationsApi.environments).mockResolvedValue([devEnvironment]);
     vi.mocked(DeploymentsApi.list).mockResolvedValue([]);
     vi.mocked(PromotionsApi.listPending).mockResolvedValue([]);
+    vi.mocked(TargetServersApi.list).mockResolvedValue([]);
     vi.mocked(ApplicationsApi.containerStatus).mockResolvedValue({
       applicationId: 'app-1',
       environmentDefinitionId: 'dev',

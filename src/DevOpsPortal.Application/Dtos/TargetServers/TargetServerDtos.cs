@@ -40,6 +40,9 @@ public record TargetServerConnectionTestResultDto(
     string? DockerVersion,
     bool ComposeAvailable,
     string? ComposeVersion,
+    string? UptimeInfo,
+    string? MemoryInfo,
+    string? DiskInfo,
     string? ErrorMessage,
     DateTimeOffset TestedAt);
 

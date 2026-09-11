@@ -16,6 +16,7 @@ import { LoginPage } from './pages/LoginPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { PendingRequestsPage } from './pages/PendingRequestsPage';
 import { BuildServersPage } from './pages/admin/BuildServersPage';
+import { EnvironmentAdminPage } from './pages/admin/EnvironmentsPage';
 import { RepositoriesPage } from './pages/admin/RepositoriesPage';
 import { TargetServersPage } from './pages/admin/TargetServersPage';
 import { UsersPage } from './pages/admin/UsersPage';
@@ -128,6 +129,14 @@ export default function App() {
                 element={
                   <RequirePermission permission={Permissions.BuildServersView}>
                     <BuildServersPage />
+                  </RequirePermission>
+                }
+              />
+              <Route
+                path="admin/environments"
+                element={
+                  <RequirePermission permission={Permissions.EnvironmentsView}>
+                    <EnvironmentAdminPage />
                   </RequirePermission>
                 }
               />

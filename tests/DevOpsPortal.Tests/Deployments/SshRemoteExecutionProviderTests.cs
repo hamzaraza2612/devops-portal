@@ -167,6 +167,23 @@ public class SshRemoteExecutionProviderTests
         Assert.Equal("Invalid container name.", result.Error);
     }
 
+    [Fact]
+    public async Task TestConnectionAsync_WhenNotConfigured_FailsWithoutAttemptingAnythingAndReportsNoHostMetrics()
+    {
+        // Phase 13 "Environment Server Dashboard": the host-metric fields
+        // (UptimeInfo/MemoryInfo/DiskInfo) must be just as honest as every
+        // other field here — null, never a fabricated placeholder, when the
+        // connection itself was never attempted.
+        var sut = new SshRemoteExecutionProvider(new FakeSecretProvider(), NullLoggerFactory.Create<SshRemoteExecutionProvider>());
+        var result = await sut.TestConnectionAsync(UnconfiguredServer());
+
+        Assert.False(result.SshConnected);
+        Assert.Null(result.UptimeInfo);
+        Assert.Null(result.MemoryInfo);
+        Assert.Null(result.DiskInfo);
+        Assert.Contains("not configured", result.ErrorMessage);
+    }
+
     private sealed class FakeSecretProvider : ISecretProvider
     {
         public string ProviderKey => "fake";

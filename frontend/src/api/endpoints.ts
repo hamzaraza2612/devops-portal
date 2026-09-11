@@ -12,6 +12,8 @@ import type {
   ContainerEnvironmentStatusDto,
   ContainerLogsDto,
   CreateAllowedDeploymentRootRequest,
+  UpdateAllowedDeploymentRootRequest,
+  UpdateEnvironmentDefinitionRequest,
   CreateApplicationRequest,
   CreateBuildServerRequest,
   CreateDevDeploymentRequest,
@@ -65,6 +67,8 @@ export const ApplicationsApi = {
   get: (id: string) => api.get<ApplicationDto>(`/applications/${id}`),
   create: (body: CreateApplicationRequest) => api.post<ApplicationDto>('/applications', body),
   update: (id: string, body: UpdateApplicationRequest) => api.put<ApplicationDto>(`/applications/${id}`, body),
+  /** Blocked (409) while the application has deployment history — deactivate it instead. */
+  delete: (id: string) => api.del<void>(`/applications/${id}`),
 
   environments: (applicationId: string) =>
     api.get<ApplicationEnvironmentDto[]>(`/applications/${applicationId}/environments`),
@@ -72,6 +76,9 @@ export const ApplicationsApi = {
     api.get<ApplicationEnvironmentDto>(`/applications/${applicationId}/environments/${environmentDefinitionId}`),
   upsertEnvironment: (applicationId: string, environmentDefinitionId: string, body: UpsertApplicationEnvironmentRequest) =>
     api.put<ApplicationEnvironmentDto>(`/applications/${applicationId}/environments/${environmentDefinitionId}`, body),
+  /** Blocked (409) while this row has deployment history — set IsActive: false via upsertEnvironment instead. */
+  deleteEnvironment: (applicationId: string, environmentDefinitionId: string) =>
+    api.del<void>(`/applications/${applicationId}/environments/${environmentDefinitionId}`),
 
   latestCommit: (applicationId: string, environmentDefinitionId: string) =>
     api.get<GitProviderResultDto<GitCommitInfoDto>>(
@@ -152,6 +159,8 @@ export const PromotionsApi = {
 
 export const EnvironmentsApi = {
   list: () => api.get<EnvironmentDefinitionDto[]>('/environments'),
+  /** Only IsProductionLike and IsActive are editable — see UpdateEnvironmentDefinitionRequest. */
+  update: (id: string, body: UpdateEnvironmentDefinitionRequest) => api.put<EnvironmentDefinitionDto>(`/environments/${id}`, body),
 };
 
 export const UsersApi = {
@@ -168,6 +177,8 @@ export const RepositoriesApi = {
   get: (id: string) => api.get<RepositoryDto>(`/repositories/${id}`),
   create: (body: CreateRepositoryRequest) => api.post<RepositoryDto>('/repositories', body),
   update: (id: string, body: UpdateRepositoryRequest) => api.put<RepositoryDto>(`/repositories/${id}`, body),
+  /** Safe at any time — any application referencing this repository just has its link cleared. */
+  delete: (id: string) => api.del<void>(`/repositories/${id}`),
   setAccessToken: (id: string, body: SetRepositoryAccessTokenRequest) =>
     api.put<RepositoryDto>(`/repositories/${id}/access-token`, body),
   /** Master requirements §3 "Test GitLab Connection" — actually reaches GitLab; never fabricated. */
@@ -179,8 +190,12 @@ export const TargetServersApi = {
   get: (id: string) => api.get<TargetServerDto>(`/target-servers/${id}`),
   create: (body: CreateTargetServerRequest) => api.post<TargetServerDto>('/target-servers', body),
   update: (id: string, body: UpdateTargetServerRequest) => api.put<TargetServerDto>(`/target-servers/${id}`, body),
+  /** Blocked (409) while any application environment is configured to use this server. */
+  delete: (id: string) => api.del<void>(`/target-servers/${id}`),
   addAllowedRoot: (targetServerId: string, body: CreateAllowedDeploymentRootRequest) =>
     api.post<AllowedDeploymentRootDto>(`/target-servers/${targetServerId}/allowed-roots`, body),
+  updateAllowedRoot: (targetServerId: string, rootId: string, body: UpdateAllowedDeploymentRootRequest) =>
+    api.put<AllowedDeploymentRootDto>(`/target-servers/${targetServerId}/allowed-roots/${rootId}`, body),
   setSshCredential: (id: string, body: SetSshCredentialRequest) => api.put<TargetServerDto>(`/target-servers/${id}/ssh-credential`, body),
   setSshPassphrase: (id: string, body: SetSshPassphraseRequest) => api.put<TargetServerDto>(`/target-servers/${id}/ssh-passphrase`, body),
   /** Master requirements §6 "Test Connection" — actually connects over SSH; never fabricated. */

@@ -35,6 +35,16 @@ public class RepositoriesController(IRepositoryService repositoryService) : Cont
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateRepositoryRequest request, CancellationToken cancellationToken) =>
         Ok(await repositoryService.UpdateAsync(id, request, cancellationToken));
 
+    /// <summary>Any application referencing this repository just has its link
+    /// cleared, never blocked (see RepositoryService.DeleteAsync doc comment).</summary>
+    [HttpDelete("{id:guid}")]
+    [RequirePermission(PermissionCodes.RepositoriesManage)]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
+    {
+        await repositoryService.DeleteAsync(id, cancellationToken);
+        return NoContent();
+    }
+
     [HttpPut("{id:guid}/access-token")]
     [RequirePermission(PermissionCodes.RepositoriesManage)]
     public async Task<IActionResult> SetAccessToken(Guid id, [FromBody] SetRepositoryAccessTokenRequest request, CancellationToken cancellationToken) =>

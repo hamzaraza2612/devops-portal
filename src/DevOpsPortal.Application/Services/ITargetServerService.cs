@@ -9,6 +9,10 @@ public interface ITargetServerService
     Task<TargetServerDto> CreateAsync(CreateTargetServerRequest request, CancellationToken cancellationToken = default);
     Task<TargetServerDto> UpdateAsync(Guid id, UpdateTargetServerRequest request, CancellationToken cancellationToken = default);
 
+    /// <summary>Blocked while any ApplicationEnvironment references this server —
+    /// use UpdateAsync with IsActive: false instead.</summary>
+    Task DeleteAsync(Guid id, CancellationToken cancellationToken = default);
+
     Task<AllowedDeploymentRootDto> AddAllowedRootAsync(
         Guid targetServerId, CreateAllowedDeploymentRootRequest request, CancellationToken cancellationToken = default);
 

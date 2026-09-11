@@ -84,6 +84,13 @@ export interface EnvironmentDefinitionDto {
   isActive: boolean;
 }
 
+/** Name and SortOrder are not editable — see IEnvironmentDefinitionService's
+ * doc comment on the backend for why. */
+export interface UpdateEnvironmentDefinitionRequest {
+  isProductionLike: boolean;
+  isActive: boolean;
+}
+
 // --- Auth / Users ---
 // Phase 12 replaced the Role/Permission catalog with a simplified
 // User.IsAdmin / User.CanApproveProduction / per-environment access model
@@ -376,6 +383,12 @@ export interface TargetServerConnectionTestResultDto {
   dockerVersion: string | null;
   composeAvailable: boolean;
   composeVersion: string | null;
+  /** Raw `uptime` output — includes load average. Null if the command failed even though SSH connected. */
+  uptimeInfo: string | null;
+  /** Raw `free -h` output. Null if the command failed even though SSH connected. */
+  memoryInfo: string | null;
+  /** Raw `df -h /` output. Null if the command failed even though SSH connected. */
+  diskInfo: string | null;
   errorMessage: string | null;
   testedAt: string;
 }
@@ -383,6 +396,12 @@ export interface TargetServerConnectionTestResultDto {
 export interface CreateAllowedDeploymentRootRequest {
   rootPath: string;
   description: string | null;
+}
+
+export interface UpdateAllowedDeploymentRootRequest {
+  rootPath: string;
+  description: string | null;
+  isActive: boolean;
 }
 
 // --- Deployments ---

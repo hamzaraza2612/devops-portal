@@ -45,7 +45,7 @@ public class NotConfiguredRemoteExecutionProvider(ILogger<NotConfiguredRemoteExe
         Task.FromResult(new RemoteContainerStatsResult(false, string.Empty, UnconfiguredMessage(targetServer)));
 
     public Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
-        Task.FromResult(new RemoteConnectionTestResult(false, null, null, false, null, false, null, UnconfiguredMessage(targetServer)));
+        Task.FromResult(new RemoteConnectionTestResult(false, null, null, false, null, false, null, null, null, null, UnconfiguredMessage(targetServer)));
 
     private static string UnconfiguredMessage(TargetServer targetServer) =>
         $"No remote execution mechanism is configured for target server '{targetServer.Name}'. " +

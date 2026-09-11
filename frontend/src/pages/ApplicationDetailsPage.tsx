@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ApplicationsApi, DeploymentsApi, EnvironmentsApi, PromotionsApi } from '../api/endpoints';
+import { ApplicationsApi, DeploymentsApi, EnvironmentsApi, PromotionsApi, TargetServersApi } from '../api/endpoints';
 import { ActionButton } from '../components/ActionButton';
 import { Can, Card, EmptyState, ErrorBanner, LoadingSpinner, PageHeader } from '../components/Common';
 import { ApprovalStatusBadge, ContainerStateBadge, DeploymentStatusBadge } from '../components/StatusBadge';
@@ -24,33 +24,37 @@ import {
   type DeploymentDto,
   type EnvironmentDefinitionDto,
   type PromotionRequestDto,
+  type TargetServerDto,
+  type UpsertApplicationEnvironmentRequest,
 } from '../types/api';
 import { appEnvKey, latestByAppEnvironment } from '../utils/deploymentIndex';
 import { formatDateTime, shortSha } from '../utils/format';
 import { GitCommitLookup } from '../components/GitCommitLookup';
 
 async function loadDetails(applicationId: string) {
-  const [application, environmentDefs, environments, deployments, pendingPromotions] = await Promise.all([
+  const [application, environmentDefs, environments, deployments, pendingPromotions, targetServers] = await Promise.all([
     ApplicationsApi.get(applicationId),
     EnvironmentsApi.list(),
     ApplicationsApi.environments(applicationId),
     DeploymentsApi.list({ applicationId }),
     PromotionsApi.listPending({ applicationId, includeApprovedAwaitingDeploy: true }),
+    TargetServersApi.list(),
   ]);
-  return { application, environmentDefs, environments, deployments, pendingPromotions };
+  return { application, environmentDefs, environments, deployments, pendingPromotions, targetServers };
 }
 
 export function ApplicationDetailsPage() {
   const { id } = useParams<{ id: string }>();
   const applicationId = id as string;
   const { data, isLoading, error, reload } = useAsyncData(() => loadDetails(applicationId), [applicationId]);
-  const { user } = useAuth();
+  const { user, can } = useAuth();
 
   if (isLoading) return <LoadingSpinner label="Loading application…" />;
   if (error) return <ErrorBanner message={error} onDismiss={reload} />;
   if (!data) return null;
 
-  const { application, environmentDefs, environments, deployments, pendingPromotions } = data;
+  const { application, environmentDefs, environments, deployments, pendingPromotions, targetServers } = data;
+  const canManageEnvironments = can(Permissions.ApplicationsManage);
   const latest = latestByAppEnvironment(deployments);
   const succeededByEnv = new Map<string, DeploymentDto>();
   for (const d of deployments) {
@@ -94,6 +98,8 @@ export function ApplicationDetailsPage() {
             pendingPromotion={pendingPromotions.find((p) => p.toEnvironmentName === tier)}
             deploymentsForEnv={deployments.filter((d) => d.environmentName === tier && d.status === DeploymentStatus.Succeeded)}
             canSeeUrl={hasEnvironmentAccess(user?.permissions ?? [], tier)}
+            canManage={canManageEnvironments}
+            targetServers={targetServers}
             onChanged={reload}
           />
         ))}
@@ -126,6 +132,8 @@ function EnvironmentCard({
   pendingPromotion,
   deploymentsForEnv,
   canSeeUrl,
+  canManage,
+  targetServers,
   onChanged,
 }: {
   tier: EnvironmentTier;
@@ -139,9 +147,12 @@ function EnvironmentCard({
   pendingPromotion?: PromotionRequestDto;
   deploymentsForEnv: DeploymentDto[];
   canSeeUrl: boolean;
+  canManage: boolean;
+  targetServers: TargetServerDto[];
   onChanged: () => void;
 }) {
   const { can } = useAuth();
+  const [showConfigForm, setShowConfigForm] = useState(false);
 
   return (
     <Card>
@@ -151,7 +162,20 @@ function EnvironmentCard({
       </div>
 
       {!environmentConfig ? (
-        <p className="mt-3 text-xs text-slate-400">Not configured for this application.</p>
+        <>
+          <p className="mt-3 text-xs text-slate-400">Not configured for this application.</p>
+          {canManage && environmentDef && (
+            <div className="mt-2">
+              <button
+                type="button"
+                onClick={() => setShowConfigForm((v) => !v)}
+                className="text-xs font-medium text-slate-500 hover:text-slate-700"
+              >
+                {showConfigForm ? 'Cancel' : 'Configure environment'}
+              </button>
+            </div>
+          )}
+        </>
       ) : (
         <>
           <dl className="mt-3 space-y-1 text-xs">
@@ -169,6 +193,27 @@ function EnvironmentCard({
             >
               Open application ↗
             </a>
+          )}
+
+          {canManage && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setShowConfigForm((v) => !v)}
+                className="text-xs font-medium text-slate-500 hover:text-slate-700"
+              >
+                {showConfigForm ? 'Cancel' : 'Edit configuration'}
+              </button>
+              {environmentDef && (
+                <ActionButton
+                  label="Remove configuration"
+                  variant="danger"
+                  confirmLabel="Confirm remove"
+                  onAction={() => ApplicationsApi.deleteEnvironment(applicationId, environmentDef.id)}
+                  onSuccess={onChanged}
+                />
+              )}
+            </div>
           )}
 
           <div className="mt-3 border-t border-slate-100 pt-3">
@@ -214,9 +259,192 @@ function EnvironmentCard({
           )}
         </>
       )}
+
+      {canManage && showConfigForm && environmentDef && (
+        <ApplicationEnvironmentConfigForm
+          applicationId={applicationId}
+          environmentDefinitionId={environmentDef.id}
+          environmentConfig={environmentConfig}
+          targetServers={targetServers}
+          onSubmitted={() => {
+            setShowConfigForm(false);
+            onChanged();
+          }}
+          onCancel={() => setShowConfigForm(false)}
+        />
+      )}
     </Card>
   );
 }
+
+const healthCheckTypeLabels: Record<HealthCheckType, string> = {
+  [HealthCheckType.None]: 'None',
+  [HealthCheckType.Http]: 'HTTP',
+  [HealthCheckType.TcpPort]: 'TCP port',
+};
+
+/** Create/edit the per-application, per-environment deployment configuration
+ * (target server, paths, compose/service/container names, health check,
+ * application URL). Reuses the existing UpsertApplicationEnvironmentRequest
+ * endpoint — no new backend behavior, just UI that was previously missing. */
+function ApplicationEnvironmentConfigForm({
+  applicationId,
+  environmentDefinitionId,
+  environmentConfig,
+  targetServers,
+  onSubmitted,
+  onCancel,
+}: {
+  applicationId: string;
+  environmentDefinitionId: string;
+  environmentConfig?: ApplicationEnvironmentDto;
+  targetServers: TargetServerDto[];
+  onSubmitted: () => void;
+  onCancel: () => void;
+}) {
+  const [targetServerId, setTargetServerId] = useState(environmentConfig?.targetServerId ?? '');
+  const [branchName, setBranchName] = useState(environmentConfig?.branchName ?? '');
+  const [deploymentRootPath, setDeploymentRootPath] = useState(environmentConfig?.deploymentRootPath ?? '');
+  const [publishSubPath, setPublishSubPath] = useState(environmentConfig?.publishSubPath ?? '');
+  const [backupSubPath, setBackupSubPath] = useState(environmentConfig?.backupSubPath ?? '');
+  const [backupRetentionCount, setBackupRetentionCount] = useState(
+    environmentConfig?.backupRetentionCount != null ? String(environmentConfig.backupRetentionCount) : '',
+  );
+  const [composeFilePath, setComposeFilePath] = useState(environmentConfig?.composeFilePath ?? '');
+  const [composeProjectName, setComposeProjectName] = useState(environmentConfig?.composeProjectName ?? '');
+  const [serviceName, setServiceName] = useState(environmentConfig?.serviceName ?? '');
+  const [containerName, setContainerName] = useState(environmentConfig?.containerName ?? '');
+  const [externalNetworkName, setExternalNetworkName] = useState(environmentConfig?.externalNetworkName ?? '');
+  const [useDownWithVolumesOnDeploy, setUseDownWithVolumesOnDeploy] = useState(environmentConfig?.useDownWithVolumesOnDeploy ?? false);
+  const [healthCheckType, setHealthCheckType] = useState<HealthCheckType>(environmentConfig?.healthCheckType ?? HealthCheckType.None);
+  const [healthCheckEndpoint, setHealthCheckEndpoint] = useState(environmentConfig?.healthCheckEndpoint ?? '');
+  const [healthCheckIntervalSeconds, setHealthCheckIntervalSeconds] = useState(String(environmentConfig?.healthCheckIntervalSeconds ?? 30));
+  const [healthCheckTimeoutSeconds, setHealthCheckTimeoutSeconds] = useState(String(environmentConfig?.healthCheckTimeoutSeconds ?? 10));
+  const [applicationUrl, setApplicationUrl] = useState(environmentConfig?.applicationUrl ?? '');
+
+  const canSubmit = targetServerId && composeFilePath.trim();
+
+  function buildRequest(): UpsertApplicationEnvironmentRequest {
+    return {
+      targetServerId,
+      branchName: branchName.trim() || null,
+      deploymentRootPath: deploymentRootPath.trim() || null,
+      publishSubPath: publishSubPath.trim(),
+      backupSubPath: backupSubPath.trim(),
+      backupRetentionCount: backupRetentionCount.trim() ? Number(backupRetentionCount) : null,
+      composeFilePath: composeFilePath.trim(),
+      composeProjectName: composeProjectName.trim() || null,
+      serviceName: serviceName.trim() || null,
+      containerName: containerName.trim() || null,
+      externalNetworkName: externalNetworkName.trim() || null,
+      useDownWithVolumesOnDeploy,
+      healthCheckType,
+      healthCheckEndpoint: healthCheckEndpoint.trim() || null,
+      healthCheckIntervalSeconds: Number(healthCheckIntervalSeconds) || 30,
+      healthCheckTimeoutSeconds: Number(healthCheckTimeoutSeconds) || 10,
+      applicationUrl: applicationUrl.trim() || null,
+      isActive: environmentConfig?.isActive ?? true,
+    };
+  }
+
+  return (
+    <div className="mt-3 border-t border-slate-100 pt-3">
+      <h4 className="text-xs font-semibold text-slate-900">{environmentConfig ? 'Edit configuration' : 'New configuration'}</h4>
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        <Field label="Target server">
+          <select value={targetServerId} onChange={(e) => setTargetServerId(e.target.value)} className={configInputClass}>
+            <option value="">Select…</option>
+            {targetServers.map((server) => (
+              <option key={server.id} value={server.id}>{server.name}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Branch">
+          <input value={branchName} onChange={(e) => setBranchName(e.target.value)} className={configInputClass} placeholder="Optional" />
+        </Field>
+        <Field label="Deployment root path">
+          <input value={deploymentRootPath} onChange={(e) => setDeploymentRootPath(e.target.value)} className={configInputClass} placeholder="/mnt/data/…" />
+        </Field>
+        <Field label="Compose file path">
+          <input value={composeFilePath} onChange={(e) => setComposeFilePath(e.target.value)} className={configInputClass} placeholder="docker-compose.yml" />
+        </Field>
+        <Field label="Publish subpath">
+          <input value={publishSubPath} onChange={(e) => setPublishSubPath(e.target.value)} className={configInputClass} />
+        </Field>
+        <Field label="Backup subpath">
+          <input value={backupSubPath} onChange={(e) => setBackupSubPath(e.target.value)} className={configInputClass} />
+        </Field>
+        <Field label="Backup retention count">
+          <input type="number" value={backupRetentionCount} onChange={(e) => setBackupRetentionCount(e.target.value)} className={configInputClass} placeholder="Optional" />
+        </Field>
+        <Field label="Compose project name">
+          <input value={composeProjectName} onChange={(e) => setComposeProjectName(e.target.value)} className={configInputClass} placeholder="Optional" />
+        </Field>
+        <Field label="Service name">
+          <input value={serviceName} onChange={(e) => setServiceName(e.target.value)} className={configInputClass} placeholder="Optional" />
+        </Field>
+        <Field label="Container name">
+          <input value={containerName} onChange={(e) => setContainerName(e.target.value)} className={configInputClass} placeholder="Optional" />
+        </Field>
+        <Field label="External network name">
+          <input value={externalNetworkName} onChange={(e) => setExternalNetworkName(e.target.value)} className={configInputClass} placeholder="Optional" />
+        </Field>
+        <Field label="Application URL">
+          <input value={applicationUrl} onChange={(e) => setApplicationUrl(e.target.value)} className={configInputClass} placeholder="Optional" />
+        </Field>
+        <Field label="Health check type">
+          <select value={healthCheckType} onChange={(e) => setHealthCheckType(Number(e.target.value) as HealthCheckType)} className={configInputClass}>
+            {Object.entries(healthCheckTypeLabels).map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+        </Field>
+        {healthCheckType !== HealthCheckType.None && (
+          <Field label="Health check endpoint">
+            <input value={healthCheckEndpoint} onChange={(e) => setHealthCheckEndpoint(e.target.value)} className={configInputClass} placeholder="/health or port" />
+          </Field>
+        )}
+        {healthCheckType !== HealthCheckType.None && (
+          <Field label="Interval (seconds)">
+            <input type="number" value={healthCheckIntervalSeconds} onChange={(e) => setHealthCheckIntervalSeconds(e.target.value)} className={configInputClass} />
+          </Field>
+        )}
+        {healthCheckType !== HealthCheckType.None && (
+          <Field label="Timeout (seconds)">
+            <input type="number" value={healthCheckTimeoutSeconds} onChange={(e) => setHealthCheckTimeoutSeconds(e.target.value)} className={configInputClass} />
+          </Field>
+        )}
+        <label className="mt-1 flex items-center gap-1.5 text-xs text-slate-600 sm:col-span-2">
+          <input type="checkbox" checked={useDownWithVolumesOnDeploy} onChange={(e) => setUseDownWithVolumesOnDeploy(e.target.checked)} />
+          Use "down -v" (destroy volumes) before each deploy
+        </label>
+      </div>
+      <div className="mt-3 flex gap-2">
+        <ActionButton
+          label={environmentConfig ? 'Save changes' : 'Create configuration'}
+          disabled={!canSubmit}
+          disabledReason="Target server and compose file path are required."
+          onAction={() => ApplicationsApi.upsertEnvironment(applicationId, environmentDefinitionId, buildRequest())}
+          onSuccess={onSubmitted}
+        />
+        <button type="button" onClick={onCancel} className="text-xs font-medium text-slate-500 hover:text-slate-700">
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, className = '', children }: { label: string; className?: string; children: React.ReactNode }) {
+  return (
+    <label className={`block text-xs font-medium text-slate-600 ${className}`}>
+      {label}
+      <div className="mt-0.5">{children}</div>
+    </label>
+  );
+}
+
+const configInputClass = 'w-full rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-slate-500 focus:outline-none';
 
 function DeployDevForm({
   applicationId,

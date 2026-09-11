@@ -80,6 +80,36 @@ public class TargetServerService(
         return ToDto(server);
     }
 
+    /// <summary>Blocked while any ApplicationEnvironment references this server
+    /// (DeleteBehavior.Restrict on ApplicationEnvironment.TargetServerId — see
+    /// AppDbContext) — point those application environments at a different
+    /// target server, or deactivate this one (IsActive: false via UpdateAsync),
+    /// before it can be removed.</summary>
+    public async Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var server = await db.TargetServers.FirstOrDefaultAsync(s => s.Id == id, cancellationToken)
+            ?? throw new NotFoundException("TargetServer", id);
+
+        var inUseCount = await db.ApplicationEnvironments.CountAsync(ae => ae.TargetServerId == id, cancellationToken);
+        if (inUseCount > 0)
+        {
+            throw new ConflictException(
+                $"'{server.Name}' is used by {inUseCount} application environment configuration(s) and cannot be deleted — " +
+                "reassign or remove those first, or set IsActive to false instead.");
+        }
+
+        if (server.SshCredentialStoreKey is { } credentialKey)
+            await secretProvider.DeleteAsync(credentialKey, cancellationToken);
+        if (server.SshPassphraseStoreKey is { } passphraseKey)
+            await secretProvider.DeleteAsync(passphraseKey, cancellationToken);
+
+        db.TargetServers.Remove(server);
+        await db.SaveChangesAsync(cancellationToken);
+
+        await auditService.LogAsync("targetserver.delete", AuditResult.Success, "TargetServer", id.ToString(),
+            details: $"Deleted target server '{server.Name}' (not in use by any application environment)", cancellationToken: cancellationToken);
+    }
+
     public async Task<AllowedDeploymentRootDto> AddAllowedRootAsync(
         Guid targetServerId, CreateAllowedDeploymentRootRequest request, CancellationToken cancellationToken = default)
     {
@@ -203,6 +233,7 @@ public class TargetServerService(
         return new TargetServerConnectionTestResultDto(
             result.SshConnected, result.AuthenticatedUser, result.OsInfo,
             result.DockerAvailable, result.DockerVersion, result.ComposeAvailable, result.ComposeVersion,
+            result.UptimeInfo, result.MemoryInfo, result.DiskInfo,
             result.ErrorMessage, testedAt);
     }
 

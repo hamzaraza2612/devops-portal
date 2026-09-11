@@ -92,6 +92,9 @@ function CredentialCard({
 }) {
   const [revealedValue, setRevealedValue] = useState<string | null>(null);
   const revealedRef = useRef<string | null>(null);
+  const [showEditForm, setShowEditForm] = useState(false);
+  const [showRotateForm, setShowRotateForm] = useState(false);
+  const [newValue, setNewValue] = useState('');
 
   return (
     <Card className={secret.isActive ? '' : 'opacity-60'}>
@@ -138,7 +141,21 @@ function CredentialCard({
       </div>
 
       {canManage && (
-        <div className="mt-2">
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => { setShowEditForm((v) => !v); setShowRotateForm(false); }}
+            className="text-xs font-medium text-slate-500 hover:text-slate-700"
+          >
+            {showEditForm ? 'Cancel edit' : 'Edit'}
+          </button>
+          <button
+            type="button"
+            onClick={() => { setShowRotateForm((v) => !v); setShowEditForm(false); setNewValue(''); }}
+            className="text-xs font-medium text-slate-500 hover:text-slate-700"
+          >
+            {showRotateForm ? 'Cancel rotate' : 'Rotate value'}
+          </button>
           <ActionButton
             label={secret.isActive ? 'Deactivate' : 'Activate'}
             variant={secret.isActive ? 'danger' : 'secondary'}
@@ -156,9 +173,109 @@ function CredentialCard({
             }
             onSuccess={onChanged}
           />
+          <ActionButton
+            label="Delete"
+            variant="danger"
+            confirmLabel="Confirm delete"
+            onAction={() => SecretsApi.delete(secret.id)}
+            onSuccess={onChanged}
+          />
+        </div>
+      )}
+
+      {canManage && showEditForm && (
+        <CredentialEditForm
+          secret={secret}
+          onCancel={() => setShowEditForm(false)}
+          onSaved={() => { setShowEditForm(false); onChanged(); }}
+        />
+      )}
+
+      {canManage && showRotateForm && (
+        <div className="mt-3 border-t border-slate-100 pt-3">
+          <Field label="New password / secret value">
+            <input type="password" value={newValue} onChange={(e) => setNewValue(e.target.value)} className={inputClass} />
+          </Field>
+          <div className="mt-2">
+            <ActionButton
+              label="Save new value"
+              disabled={!newValue.trim()}
+              disabledReason="Enter a new value first."
+              onAction={() =>
+                SecretsApi.update(secret.id, {
+                  description: secret.description,
+                  isActive: secret.isActive,
+                  value: newValue.trim(),
+                  username: secret.username,
+                  host: secret.host,
+                  port: secret.port,
+                  databaseName: secret.databaseName,
+                })
+              }
+              onSuccess={() => { setShowRotateForm(false); setNewValue(''); onChanged(); }}
+            />
+          </div>
         </div>
       )}
     </Card>
+  );
+}
+
+function CredentialEditForm({
+  secret,
+  onCancel,
+  onSaved,
+}: {
+  secret: SecretReferenceDto;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const [description, setDescription] = useState(secret.description ?? '');
+  const [username, setUsername] = useState(secret.username ?? '');
+  const [host, setHost] = useState(secret.host ?? '');
+  const [port, setPort] = useState(secret.port != null ? String(secret.port) : '');
+  const [databaseName, setDatabaseName] = useState(secret.databaseName ?? '');
+
+  return (
+    <div className="mt-3 border-t border-slate-100 pt-3">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Description" className="sm:col-span-2">
+          <input value={description} onChange={(e) => setDescription(e.target.value)} className={inputClass} placeholder="Optional" />
+        </Field>
+        <Field label="Username">
+          <input value={username} onChange={(e) => setUsername(e.target.value)} className={inputClass} placeholder="Optional" />
+        </Field>
+        <Field label="Host">
+          <input value={host} onChange={(e) => setHost(e.target.value)} className={inputClass} placeholder="Optional" />
+        </Field>
+        <Field label="Port">
+          <input type="number" value={port} onChange={(e) => setPort(e.target.value)} className={inputClass} placeholder="Optional" />
+        </Field>
+        <Field label="Database name">
+          <input value={databaseName} onChange={(e) => setDatabaseName(e.target.value)} className={inputClass} placeholder="Optional" />
+        </Field>
+      </div>
+      <div className="mt-2 flex gap-2">
+        <ActionButton
+          label="Save changes"
+          onAction={() =>
+            SecretsApi.update(secret.id, {
+              description: description.trim() || null,
+              isActive: secret.isActive,
+              value: null,
+              username: username.trim() || null,
+              host: host.trim() || null,
+              port: port.trim() ? Number(port) : null,
+              databaseName: databaseName.trim() || null,
+            })
+          }
+          onSuccess={onSaved}
+        />
+        <button type="button" onClick={onCancel} className="text-xs font-medium text-slate-500 hover:text-slate-700">
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }
 

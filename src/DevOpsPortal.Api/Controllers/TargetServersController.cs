@@ -35,6 +35,16 @@ public class TargetServersController(ITargetServerService targetServerService) :
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateTargetServerRequest request, CancellationToken cancellationToken) =>
         Ok(await targetServerService.UpdateAsync(id, request, cancellationToken));
 
+    /// <summary>Blocked (409) while any ApplicationEnvironment references this
+    /// server — set IsActive: false via PUT instead.</summary>
+    [HttpDelete("{id:guid}")]
+    [RequirePermission(PermissionCodes.TargetServersManage)]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
+    {
+        await targetServerService.DeleteAsync(id, cancellationToken);
+        return NoContent();
+    }
+
     [HttpPost("{id:guid}/allowed-roots")]
     [RequirePermission(PermissionCodes.TargetServersManage)]
     public async Task<IActionResult> AddAllowedRoot(Guid id, [FromBody] CreateAllowedDeploymentRootRequest request, CancellationToken cancellationToken)

@@ -83,6 +83,31 @@ public partial class ApplicationService(IAppDbContext db, IAuditService auditSer
         return await GetByIdAsync(app.Id, cancellationToken);
     }
 
+    /// <summary>Hard-deletes the application (and, via DeleteBehavior.Cascade on
+    /// ApplicationEnvironment/SecretReference, its per-environment config and
+    /// application-scoped secrets) — blocked while any Deployment exists for it
+    /// (DeleteBehavior.Restrict on Deployment.ApplicationId), since that would
+    /// orphan real deployment/audit history. Deactivating (IsActive: false via
+    /// UpdateAsync) is the correct action once the application has ever been
+    /// deployed; this is only reachable for an application that never was.</summary>
+    public async Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var app = await db.Applications.FirstOrDefaultAsync(a => a.Id == id, cancellationToken)
+            ?? throw new NotFoundException("Application", id);
+
+        if (await db.Deployments.AnyAsync(d => d.ApplicationId == id, cancellationToken))
+        {
+            throw new ConflictException(
+                $"'{app.Name}' has deployment history and cannot be deleted — set IsActive to false instead to preserve that history.");
+        }
+
+        db.Applications.Remove(app);
+        await db.SaveChangesAsync(cancellationToken);
+
+        await auditService.LogAsync("application.delete", AuditResult.Success, "Application", id.ToString(),
+            details: $"Deleted application '{app.Name}' (no deployment history existed)", cancellationToken: cancellationToken);
+    }
+
     private async Task EnsureRepositoryValidAsync(Guid? repositoryId, CancellationToken cancellationToken)
     {
         if (repositoryId is null)

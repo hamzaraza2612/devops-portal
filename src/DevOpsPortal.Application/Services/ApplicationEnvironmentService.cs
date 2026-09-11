@@ -104,6 +104,33 @@ public class ApplicationEnvironmentService(
         return ToDto(row);
     }
 
+    /// <summary>Removes the per-(application, environment) config row itself —
+    /// distinct from setting IsActive false, which just stops it being usable
+    /// while keeping the row (and its deployment history) intact. Blocked when
+    /// any Deployment references this row (DeleteBehavior.Restrict on
+    /// Deployment.ApplicationEnvironmentId — see AppDbContext) since a hard
+    /// delete there would orphan real deployment history; deactivating is the
+    /// correct action once any deployment has ever happened here.</summary>
+    public async Task DeleteAsync(Guid applicationId, Guid environmentDefinitionId, CancellationToken cancellationToken = default)
+    {
+        var row = await LoadAsync(applicationId, environmentDefinitionId, cancellationToken)
+            ?? throw new NotFoundException("ApplicationEnvironment", $"{applicationId}/{environmentDefinitionId}");
+
+        if (await db.Deployments.AnyAsync(d => d.ApplicationEnvironmentId == row.Id, cancellationToken))
+        {
+            throw new ConflictException(
+                $"'{row.EnvironmentDefinition.Name}' configuration for this application has deployment history and cannot be removed — " +
+                "set IsActive to false instead to preserve that history.");
+        }
+
+        db.ApplicationEnvironments.Remove(row);
+        await db.SaveChangesAsync(cancellationToken);
+
+        await auditService.LogAsync(
+            "application.environment.delete", AuditResult.Success, "ApplicationEnvironment", row.Id.ToString(),
+            details: $"Removed {row.EnvironmentDefinition.Name} configuration for application {applicationId}", cancellationToken: cancellationToken);
+    }
+
     private static void ValidateForMode(DeploymentMode mode, UpsertApplicationEnvironmentRequest request, TargetServer targetServer)
     {
         if (!DeploymentPathValidator.IsSafeRelativePath(request.ComposeFilePath))

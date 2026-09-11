@@ -81,6 +81,29 @@ public partial class RepositoryService(
         return ToDto(repo);
     }
 
+    /// <summary>Safe to hard-delete at any time — Repository.Id is referenced by
+    /// ManagedApplication.RepositoryId with DeleteBehavior.SetNull (see
+    /// AppDbContext), so any application using this repository just loses its
+    /// repository link (visible immediately on that application, never a
+    /// silent data-integrity problem) rather than being blocked or cascaded.</summary>
+    public async Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var repo = await db.Repositories.FirstOrDefaultAsync(r => r.Id == id, cancellationToken)
+            ?? throw new NotFoundException("Repository", id);
+
+        var linkedAppCount = await db.Applications.CountAsync(a => a.RepositoryId == id, cancellationToken);
+
+        if (repo.AccessTokenStoreKey is { } tokenKey)
+            await secretProvider.DeleteAsync(tokenKey, cancellationToken);
+
+        db.Repositories.Remove(repo);
+        await db.SaveChangesAsync(cancellationToken);
+
+        await auditService.LogAsync("repository.delete", AuditResult.Success, "Repository", id.ToString(),
+            details: $"Deleted repository '{repo.Name}'" + (linkedAppCount > 0 ? $" ({linkedAppCount} application(s) had their repository link cleared)" : string.Empty),
+            cancellationToken: cancellationToken);
+    }
+
     public async Task<RepositoryDto> SetAccessTokenAsync(Guid id, SetRepositoryAccessTokenRequest request, CancellationToken cancellationToken = default)
     {
         var repo = await db.Repositories.FirstOrDefaultAsync(r => r.Id == id, cancellationToken)

@@ -122,7 +122,7 @@ public class SshRemoteExecutionProvider(ISecretProvider secretProvider, ILogger<
         if (!IsConfigured(targetServer))
         {
             return new RemoteConnectionTestResult(
-                false, null, null, false, null, false, null,
+                false, null, null, false, null, false, null, null, null, null,
                 "SSH is not configured for this target server — Hostname, SshUsername, and a stored credential are all required.");
         }
 
@@ -139,6 +139,9 @@ public class SshRemoteExecutionProvider(ISecretProvider secretProvider, ILogger<
                 var osInfo = RunQuick(client, "uname -a");
                 var dockerVersion = RunQuick(client, "docker version --format '{{.Server.Version}}'");
                 var composeVersion = RunQuick(client, "docker compose version --short");
+                var uptime = RunQuick(client, "uptime");
+                var memory = RunQuick(client, "free -h");
+                var disk = RunQuick(client, "df -h / 2>/dev/null || df -h .");
 
                 var dockerAvailable = dockerVersion.Success;
                 var composeAvailable = composeVersion.Success;
@@ -149,12 +152,15 @@ public class SshRemoteExecutionProvider(ISecretProvider secretProvider, ILogger<
                     osInfo.Success ? osInfo.Output : null,
                     dockerAvailable, dockerAvailable ? dockerVersion.Output : null,
                     composeAvailable, composeAvailable ? composeVersion.Output : null,
+                    uptime.Success ? uptime.Output : null,
+                    memory.Success ? memory.Output : null,
+                    disk.Success ? disk.Output : null,
                     dockerAvailable ? null : "SSH connected, but Docker is not available (or not on PATH) for this user on the target server.");
             }
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "SSH connection test failed for target server '{TargetServerName}'", targetServer.Name);
-                return new RemoteConnectionTestResult(false, null, null, false, null, false, null, DescribeFailure(ex));
+                return new RemoteConnectionTestResult(false, null, null, false, null, false, null, null, null, null, DescribeFailure(ex));
             }
             finally
             {

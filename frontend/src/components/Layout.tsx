@@ -17,6 +17,7 @@ const adminNavItems = [
   { to: '/admin/repositories', label: 'Repositories / GitLab', permission: Permissions.RepositoriesView },
   { to: '/admin/target-servers', label: 'Servers', permission: Permissions.TargetServersView },
   { to: '/admin/build-servers', label: 'Build Servers', permission: Permissions.BuildServersView },
+  { to: '/admin/environments', label: 'Environments', permission: Permissions.EnvironmentsView },
 ];
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
