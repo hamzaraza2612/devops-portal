@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { ApplicationsApi, DeploymentsApi, EnvironmentsApi, PromotionsApi } from '../api/endpoints';
 import { ActionButton } from '../components/ActionButton';
 import { Can, Card, EmptyState, ErrorBanner, LoadingSpinner, PageHeader } from '../components/Common';
-import { ApprovalStatusBadge, DeploymentStatusBadge } from '../components/StatusBadge';
+import { ApprovalStatusBadge, ContainerStateBadge, DeploymentStatusBadge } from '../components/StatusBadge';
 import { useAsyncData } from '../hooks/useAsyncData';
 import {
   ApprovePermissionByEnvironment,
@@ -17,7 +17,9 @@ import {
 import { useAuth } from '../auth/AuthContext';
 import {
   ApprovalStatus,
+  DeploymentMode,
   DeploymentStatus,
+  HealthCheckType,
   type ApplicationEnvironmentDto,
   type DeploymentDto,
   type EnvironmentDefinitionDto,
@@ -83,6 +85,7 @@ export function ApplicationDetailsPage() {
             key={tier}
             tier={tier}
             applicationId={applicationId}
+            deploymentMode={application.deploymentMode}
             environmentDef={environmentDefs.find((e) => e.name === tier)}
             environmentConfig={environments.find((e) => e.environmentName === tier)}
             latestAttempt={latest.get(appEnvKey(applicationId, tier))}
@@ -114,6 +117,7 @@ function Row({ label, value }: { label: string; value: string }) {
 function EnvironmentCard({
   tier,
   applicationId,
+  deploymentMode,
   environmentDef,
   environmentConfig,
   latestAttempt,
@@ -126,6 +130,7 @@ function EnvironmentCard({
 }: {
   tier: EnvironmentTier;
   applicationId: string;
+  deploymentMode: DeploymentMode;
   environmentDef?: EnvironmentDefinitionDto;
   environmentConfig?: ApplicationEnvironmentDto;
   latestAttempt?: DeploymentDto;
@@ -169,7 +174,11 @@ function EnvironmentCard({
           <div className="mt-3 border-t border-slate-100 pt-3">
             {tier === 'DEV' && environmentDef && (
               <Can permission={Permissions.DeploymentsDeployDev}>
-                <DeployDevForm applicationId={applicationId} environmentDefinitionId={environmentDef.id} onDeployed={onChanged} />
+                {deploymentMode === DeploymentMode.ContainerImage ? (
+                  <DeployReleaseForm applicationId={applicationId} onDeployed={onChanged} />
+                ) : (
+                  <DeployDevForm applicationId={applicationId} environmentDefinitionId={environmentDef.id} onDeployed={onChanged} />
+                )}
               </Can>
             )}
 
@@ -184,8 +193,8 @@ function EnvironmentCard({
               />
             )}
 
-            {environmentDef && (
-              <Can permission={Permissions.DeploymentsRollback}>
+            {environmentDef && DeployPermissionByEnvironment[tier] && (
+              <Can permission={DeployPermissionByEnvironment[tier] as string}>
                 <RollbackControl
                   applicationId={applicationId}
                   environmentDefinitionId={environmentDef.id}
@@ -193,6 +202,10 @@ function EnvironmentCard({
                   onChanged={onChanged}
                 />
               </Can>
+            )}
+
+            {environmentDef && (
+              <ContainerMonitoringSection applicationId={applicationId} environmentDefinitionId={environmentDef.id} />
             )}
           </div>
 
@@ -229,9 +242,64 @@ function DeployDevForm({
         label="Deploy to DEV"
         disabled={!commitSha.trim()}
         disabledReason="Enter a commit SHA first."
-        onAction={() => ApplicationsApi.deployToDev(applicationId, { commitSha: commitSha.trim(), commitMessage: null, commitAuthor: null, branch: null })}
+        onAction={() =>
+          ApplicationsApi.deployToDev(applicationId, {
+            commitSha: commitSha.trim(),
+            commitMessage: null,
+            commitAuthor: null,
+            branch: null,
+            releaseId: null,
+          })
+        }
         onSuccess={() => {
           setCommitSha('');
+          onDeployed();
+        }}
+      />
+    </div>
+  );
+}
+
+/** ContainerImage-mode DEV deploy — picks an immutable Release rather than a
+ * raw commit; CommitSha/Branch/ImageReference are all derived server-side
+ * from the selected Release (master requirements §16/§17). */
+function DeployReleaseForm({ applicationId, onDeployed }: { applicationId: string; onDeployed: () => void }) {
+  const { data: releases, isLoading, error } = useAsyncData(() => ApplicationsApi.releases(applicationId), [applicationId]);
+  const [releaseId, setReleaseId] = useState('');
+
+  if (isLoading) return <p className="text-xs text-slate-400">Loading releases…</p>;
+  if (error) return <p className="text-xs text-rose-600">{error}</p>;
+  if (!releases || releases.length === 0) return <p className="text-xs text-slate-400">No releases yet — request a build first.</p>;
+
+  return (
+    <div className="space-y-2">
+      <select
+        value={releaseId}
+        onChange={(e) => setReleaseId(e.target.value)}
+        className="w-full rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-slate-500 focus:outline-none"
+      >
+        <option value="">Select a release to deploy…</option>
+        {releases.map((r) => (
+          <option key={r.id} value={r.id}>
+            build #{r.buildNumber} — {shortSha(r.commitSha)} — {r.imageReference}
+          </option>
+        ))}
+      </select>
+      <ActionButton
+        label="Deploy to DEV"
+        disabled={!releaseId}
+        disabledReason="Select a release first."
+        onAction={() =>
+          ApplicationsApi.deployToDev(applicationId, {
+            commitSha: null,
+            commitMessage: null,
+            commitAuthor: null,
+            branch: null,
+            releaseId,
+          })
+        }
+        onSuccess={() => {
+          setReleaseId('');
           onDeployed();
         }}
       />
@@ -380,6 +448,198 @@ function RollbackControl({
           onChanged();
         }}
       />
+    </div>
+  );
+}
+
+/** Real container status/health from the configured TargetServer, with
+ * controlled Start/Stop/Restart/Recreate actions (master requirements
+ * §8/§9/§10). Never shows anything for an environment with no compose config
+ * (IsConfigured=false) — that's a distinct state from "configured but the
+ * target server is currently unreachable" (IsReachable=false). */
+function ContainerMonitoringSection({
+  applicationId,
+  environmentDefinitionId,
+}: {
+  applicationId: string;
+  environmentDefinitionId: string;
+}) {
+  const { can } = useAuth();
+  const { data: status, isLoading, error, reload } = useAsyncData(
+    () => ApplicationsApi.containerStatus(applicationId, environmentDefinitionId),
+    [applicationId, environmentDefinitionId],
+  );
+  const [openLogsFor, setOpenLogsFor] = useState<string | null>(null);
+
+  if (!can(Permissions.ContainersView)) return null;
+  if (isLoading) return <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-400">Loading containers…</p>;
+  if (error) return <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-rose-600">{error}</p>;
+  if (!status || !status.isConfigured) return null;
+
+  return (
+    <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-slate-500">Containers</span>
+        {status.targetServerName && <span className="text-xs text-slate-400">{status.targetServerName}</span>}
+      </div>
+
+      {!status.isReachable ? (
+        <p className="text-xs text-rose-600">{status.unreachableReason ?? 'Target server is unreachable.'}</p>
+      ) : status.containers.length === 0 ? (
+        <p className="text-xs text-slate-400">No containers found.</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {status.containers.map((c) => (
+            <li key={c.containerName} className="rounded-md bg-slate-50 px-2 py-1.5 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="truncate font-medium text-slate-800">{c.containerName}</p>
+                  <p className="truncate text-slate-500">
+                    {c.image}
+                    {c.imageTag ? `:${c.imageTag}` : ''}
+                  </p>
+                </div>
+                <ContainerStateBadge state={c.state} />
+              </div>
+
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-slate-500">
+                <span>Restarts: {c.restartCount}</span>
+                {c.stats ? (
+                  <>
+                    {c.stats.cpuPercent !== null && <span>CPU: {c.stats.cpuPercent.toFixed(1)}%</span>}
+                    {c.stats.memoryUsage !== null && (
+                      <span>
+                        Mem: {c.stats.memoryUsage}
+                        {c.stats.memoryLimit ? ` / ${c.stats.memoryLimit}` : ''}
+                        {c.stats.memoryPercent !== null ? ` (${c.stats.memoryPercent.toFixed(1)}%)` : ''}
+                      </span>
+                    )}
+                    {c.stats.pidCount !== null && <span>PIDs: {c.stats.pidCount}</span>}
+                  </>
+                ) : (
+                  <span className="text-slate-400">stats unavailable</span>
+                )}
+                <button
+                  type="button"
+                  className="ml-auto text-slate-500 underline hover:text-slate-700"
+                  onClick={() => setOpenLogsFor(openLogsFor === c.containerName ? null : c.containerName)}
+                >
+                  {openLogsFor === c.containerName ? 'Hide logs' : 'Logs'}
+                </button>
+              </div>
+
+              {openLogsFor === c.containerName && (
+                <ContainerLogsPanel
+                  applicationId={applicationId}
+                  environmentDefinitionId={environmentDefinitionId}
+                  containerName={c.containerName}
+                />
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {status.healthCheck && status.healthCheck.type !== HealthCheckType.None && (
+        <p className="text-xs text-slate-500">
+          Health check:{' '}
+          {status.healthCheck.lastProbePassed === null ? 'unknown' : status.healthCheck.lastProbePassed ? 'passing' : 'failing'}
+        </p>
+      )}
+
+      {status.isReachable && (can(Permissions.ContainersControl) || can(Permissions.ContainersRecreate)) && (
+        <div className="flex flex-wrap gap-2 pt-1">
+          {can(Permissions.ContainersControl) && (
+            <>
+              <ActionButton
+                label="Restart"
+                variant="secondary"
+                onAction={() => ApplicationsApi.restartContainers(applicationId, environmentDefinitionId)}
+                onSuccess={reload}
+              />
+              <ActionButton
+                label="Start"
+                variant="secondary"
+                onAction={() => ApplicationsApi.startContainers(applicationId, environmentDefinitionId)}
+                onSuccess={reload}
+              />
+              <ActionButton
+                label="Stop"
+                variant="secondary"
+                onAction={() => ApplicationsApi.stopContainers(applicationId, environmentDefinitionId)}
+                onSuccess={reload}
+              />
+            </>
+          )}
+          {can(Permissions.ContainersRecreate) && (
+            <ActionButton
+              label="Recreate (destroys volumes)"
+              variant="danger"
+              confirmLabel="Confirm: this destroys volumes"
+              onAction={() => ApplicationsApi.recreateContainers(applicationId, environmentDefinitionId, { confirm: true })}
+              onSuccess={reload}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const LOG_TAIL_OPTIONS = [100, 200, 500, 1000] as const;
+
+/** Recent `docker logs --tail N` output for one container, fetched on demand
+ * (never auto-polled) — a configurable tail-lines select, a manual refresh,
+ * and readable monospace output with its own loading/error states. */
+function ContainerLogsPanel({
+  applicationId,
+  environmentDefinitionId,
+  containerName,
+}: {
+  applicationId: string;
+  environmentDefinitionId: string;
+  containerName: string;
+}) {
+  const [tailLines, setTailLines] = useState<number>(200);
+  const { data, isLoading, error, reload } = useAsyncData(
+    () => ApplicationsApi.containerLogs(applicationId, environmentDefinitionId, containerName, tailLines),
+    [applicationId, environmentDefinitionId, containerName, tailLines],
+  );
+
+  return (
+    <div className="mt-2 rounded-md border border-slate-200 bg-white p-2">
+      <div className="flex items-center justify-between gap-2">
+        <label className="flex items-center gap-1.5 text-slate-500">
+          Show last
+          <select
+            className="rounded border border-slate-300 px-1 py-0.5 text-xs"
+            value={tailLines}
+            onChange={(e) => setTailLines(Number(e.target.value))}
+          >
+            {LOG_TAIL_OPTIONS.map((n) => (
+              <option key={n} value={n}>
+                {n} lines
+              </option>
+            ))}
+          </select>
+        </label>
+        <button type="button" className="text-slate-500 underline hover:text-slate-700" onClick={reload} disabled={isLoading}>
+          Refresh
+        </button>
+      </div>
+
+      {isLoading && <p className="mt-2 text-slate-400">Loading logs…</p>}
+      {error && <p className="mt-2 text-rose-600">{error}</p>}
+      {data && !isLoading && !error && (
+        <>
+          {!data.success && <p className="mt-2 text-rose-600">{data.logs || 'Could not fetch logs for this container.'}</p>}
+          {data.success && (
+            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-slate-900 p-2 font-mono text-[11px] leading-4 text-slate-100">
+              {data.logs.trim().length > 0 ? data.logs : '(no log output)'}
+            </pre>
+          )}
+        </>
+      )}
     </div>
   );
 }

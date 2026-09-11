@@ -8,6 +8,61 @@ procedure — in short: back up first, `git pull` / pull the new image,
 (new nullable columns/tables); none has ever dropped or destructively
 altered existing data.
 
+## v1.1.0 — Real remote execution, GitLab integration & simplified authorization
+
+Closes the two biggest gaps called out in v1.0.0's known limitations:
+deployment execution/container monitoring now genuinely reach a remote
+`TargetServer` over SSH instead of always running locally/reporting
+unreachable, and GitLab connectivity is real and testable from the UI
+instead of a placeholder. Also removes multi-tenancy and the Role/
+Permission catalog entirely, replacing them with a simpler
+`User.IsAdmin` + `User.CanApproveProduction` + per-environment
+`UserEnvironmentAccess` model — see `PROJECT_STATE.md`'s "Phase 12"
+section for the full record.
+
+**Breaking changes**: the `Tenants`, `Roles`, `Permissions`, `UserRoles`,
+and `RolePermissions` tables are dropped by this release's migration —
+any pre-existing multi-tenant deployment of this platform (none are known
+to exist outside this project's own history) would need a manual data
+migration before upgrading; there is no automated backfill tool. A fresh
+install is unaffected. Every user must now have `IsAdmin` set or at least
+one `UserEnvironmentAccess` row to do anything — the bootstrap admin
+account is seeded with `IsAdmin = true` as before, so a fresh install's
+first login is unaffected.
+
+**Highlights**:
+- **Remote execution**: `TargetServer` now holds SSH connection details
+  (hostname/port/username/auth method + a securely-stored credential) and
+  a "Test Connection" action; LegacyFilesystem deployment execution and
+  all container monitoring/control operations run over SSH against the
+  configured target server.
+- **GitLab integration**: `Repository` now holds a securely-stored access
+  token and a "Test Connection" action; branch promotion and commit
+  lookup use it for real instead of degrading to "not reachable."
+- **Deploy from Release**: a ContainerImage-mode application can now
+  actually be deployed from one of its own built `Release`s (image
+  pull + `compose up -d` on the target server).
+- **Simplified authorization**: multi-tenancy and the Role/Permission
+  catalog are gone; every permission check is unchanged in code, only
+  what grants it changed (see `PROJECT_STATE.md`).
+- **Container CPU/memory stats and logs**: container monitoring now shows
+  live CPU%, memory usage/limit/%, and PID count per container, plus an
+  on-demand log viewer (`docker logs --tail N`, configurable tail lines,
+  manual refresh) — found missing during a pre-merge acceptance review
+  and closed in the same release rather than shipped as a known gap.
+
+**Migration notes**: one new migration
+(`Phase12_RemoveMultiTenancyAndRbac`) — applied automatically on first
+startup like every migration before it.
+
+**Known limitations**: no live SSH server, GitLab instance, or Docker
+daemon was available to exercise the new remote-execution/GitLab paths
+against real infrastructure in this release's own environment — see
+`PROJECT_STATE.md`'s Phase 12 "Known limitations" for exactly what was
+verified and the recommended manual verification steps before production
+reliance. A broader frontend visual/UX polish pass was deliberately
+deferred in favor of this release's remote-execution/authorization work.
+
 ## v1.0.0 — First production release
 
 The complete platform, covering the full application lifecycle end to end:

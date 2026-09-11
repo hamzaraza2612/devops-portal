@@ -1,3 +1,5 @@
+using DevOpsPortal.Application.Dtos.Environments;
+
 namespace DevOpsPortal.Application.Dtos.Users;
 
 public record UserDto(
@@ -6,6 +8,9 @@ public record UserDto(
     string Email,
     string FullName,
     bool IsActive,
+    bool IsAdmin,
+    bool CanApproveProduction,
+    IReadOnlyList<EnvironmentDefinitionDto> EnvironmentAccess,
     DateTimeOffset CreatedAt,
     DateTimeOffset? LastLoginAt,
     IReadOnlyList<string> Roles,
@@ -16,13 +21,17 @@ public record CreateUserRequest(
     string Email,
     string FullName,
     string Password,
-    IReadOnlyList<Guid> RoleIds);
+    bool IsAdmin,
+    bool CanApproveProduction,
+    IReadOnlyList<Guid> EnvironmentDefinitionIds);
 
 public record UpdateUserRequest(
     string Email,
     string FullName,
     bool IsActive,
-    IReadOnlyList<Guid> RoleIds);
+    bool IsAdmin,
+    bool CanApproveProduction,
+    IReadOnlyList<Guid> EnvironmentDefinitionIds);
 
 public record AdminResetPasswordRequest(string NewPassword);
 

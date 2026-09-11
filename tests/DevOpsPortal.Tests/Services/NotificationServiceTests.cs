@@ -19,7 +19,6 @@ public class NotificationServiceTests
     private static async Task<Fixture> CreateFixtureAsync(params INotificationProvider[] providers)
     {
         var db = TestDb.CreateInMemory();
-        await TestDb.SeedRolesAndPermissionsAsync(db);
         await TestDb.SeedEnvironmentDefinitionsAsync(db);
 
         var app = new ManagedApplication { Name = "Sample", Slug = "sample", DeploymentMode = DeploymentMode.LegacyFilesystem };
@@ -27,10 +26,11 @@ public class NotificationServiceTests
         await db.SaveChangesAsync();
 
         var env = await db.EnvironmentDefinitions.SingleAsync(e => e.Name == EnvironmentNames.Qa);
-        var approverId = await TestDb.CreateUserWithPermissionsAsync(db, "qa-approver", PermissionCodes.DeploymentsApproveQa);
+        // QA environment access bundles DeploymentsApproveQa (see AppDbContextExtensions).
+        var approverId = await TestDb.CreateUserWithEnvironmentAccessAsync(db, "qa-approver", EnvironmentNames.Qa);
 
         var currentUser = new FakeCurrentUserService();
-        var audit = new AuditService(db, currentUser, new FakeCurrentTenantService());
+        var audit = new AuditService(db, currentUser);
         var sut = new NotificationService(db, providers, audit, new FakeConfiguration(), NullLogger<NotificationService>.Instance);
 
         return new Fixture(sut, db, app, env, approverId);
@@ -108,7 +108,7 @@ public class NotificationServiceTests
     {
         var provider = new FakeNotificationProvider(true);
         var f = await CreateFixtureAsync(provider);
-        var requesterId = await TestDb.CreateUserWithPermissionsAsync(f.Db, "requester", PermissionCodes.DeploymentsDeployDev);
+        var requesterId = await TestDb.CreateUserWithEnvironmentAccessAsync(f.Db, "requester", EnvironmentNames.Dev);
         var deployment = new Deployment
         {
             Application = f.App, ApplicationId = f.App.Id,
@@ -129,7 +129,7 @@ public class NotificationServiceTests
     {
         var provider = new FakeNotificationProvider(true);
         var f = await CreateFixtureAsync(provider);
-        var requesterId = await TestDb.CreateUserWithPermissionsAsync(f.Db, "requester2", PermissionCodes.DeploymentsRollback);
+        var requesterId = await TestDb.CreateUserWithEnvironmentAccessAsync(f.Db, "requester2", EnvironmentNames.Dev);
         var deployment = new Deployment
         {
             Application = f.App, ApplicationId = f.App.Id,
@@ -151,7 +151,7 @@ public class NotificationServiceTests
     {
         var provider = new FakeNotificationProvider(true);
         var f = await CreateFixtureAsync(provider);
-        var requesterId = await TestDb.CreateUserWithPermissionsAsync(f.Db, "requester3", PermissionCodes.DeploymentsDeployDev);
+        var requesterId = await TestDb.CreateUserWithEnvironmentAccessAsync(f.Db, "requester3", EnvironmentNames.Dev);
         var deployment = new Deployment
         {
             Application = f.App, ApplicationId = f.App.Id,
@@ -172,7 +172,7 @@ public class NotificationServiceTests
     {
         var provider = new FakeNotificationProvider(true);
         var f = await CreateFixtureAsync(provider);
-        var requesterId = await TestDb.CreateUserWithPermissionsAsync(f.Db, "requester4", PermissionCodes.DeploymentsDeployDev);
+        var requesterId = await TestDb.CreateUserWithEnvironmentAccessAsync(f.Db, "requester4", EnvironmentNames.Dev);
         var deployment = new Deployment
         {
             Application = f.App, ApplicationId = f.App.Id,

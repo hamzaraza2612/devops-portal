@@ -12,8 +12,7 @@ public class BuildServerServiceTests
     private static BuildServerService CreateSut()
     {
         var db = TestDb.CreateInMemory();
-        var currentTenant = new FakeCurrentTenantService();
-        return new BuildServerService(db, new AuditService(db, new FakeCurrentUserService(), currentTenant), currentTenant);
+        return new BuildServerService(db, new AuditService(db, new FakeCurrentUserService()));
     }
 
     [Fact]

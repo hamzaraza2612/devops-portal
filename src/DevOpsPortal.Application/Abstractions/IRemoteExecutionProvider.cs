@@ -10,6 +10,33 @@ namespace DevOpsPortal.Application.Abstractions;
 /// knowing anything about *how* it got there.</summary>
 public record RemoteContainerInspectResult(bool Success, string RawJson, string? Error);
 
+/// <summary>Result of a `docker logs --tail N &lt;name&gt;` call — `Logs` is the raw
+/// (container stdout+stderr, merged) text. Never fabricates output: `Success`
+/// false means the command itself failed (unreachable, no such container,
+/// Docker error) and `Logs` is empty; `Error` explains why.</summary>
+public record RemoteContainerLogsResult(bool Success, string Logs, string? Error);
+
+/// <summary>Result of a `docker stats --no-stream --format '{{json .}}' &lt;name&gt;`
+/// call. `RawJson` is the untouched single-object JSON line for the caller to
+/// parse (same provider-agnostic-string pattern as
+/// <see cref="RemoteContainerInspectResult.RawJson"/>).</summary>
+public record RemoteContainerStatsResult(bool Success, string RawJson, string? Error);
+
+/// <summary>Result of a "Test Connection" check against a TargetServer (master
+/// requirements §6): verifies SSH connectivity, the authenticated remote user,
+/// basic OS identification, and Docker/Compose availability + versions. Never
+/// fakes a successful result — when SshConnected is false every other field is
+/// meaningless and ErrorMessage explains why.</summary>
+public record RemoteConnectionTestResult(
+    bool SshConnected,
+    string? AuthenticatedUser,
+    string? OsInfo,
+    bool DockerAvailable,
+    string? DockerVersion,
+    bool ComposeAvailable,
+    string? ComposeVersion,
+    string? ErrorMessage);
+
 /// <summary>
 /// The portal's ONLY boundary for reaching a specific TargetServer's Docker
 /// engine. This interface exists because master requirements for Phase 5
@@ -48,4 +75,25 @@ public interface IRemoteExecutionProvider
 
     Task<RemoteContainerInspectResult> InspectContainerAsync(
         TargetServer targetServer, string containerName, CancellationToken cancellationToken = default);
+
+    /// <summary>`docker logs --tail N &lt;name&gt;` — same "callers must only ever pass
+    /// a name discovered from this target server's own `docker compose ps`
+    /// output" contract as <see cref="InspectContainerAsync"/> (enforced by the
+    /// caller, <c>IContainerRuntimeProvider</c>, not here); this method itself
+    /// still independently validates the name is a plausible Docker name as
+    /// defense-in-depth before it is quoted and sent.</summary>
+    Task<RemoteContainerLogsResult> GetContainerLogsAsync(
+        TargetServer targetServer, string containerName, int tailLines, CancellationToken cancellationToken = default);
+
+    /// <summary>`docker stats --no-stream --format '{{json .}}' &lt;name&gt;` — a
+    /// single point-in-time snapshot (never the streaming/live form) for one
+    /// already-discovered container. Same name-safety contract as
+    /// <see cref="GetContainerLogsAsync"/>.</summary>
+    Task<RemoteContainerStatsResult> GetContainerStatsAsync(
+        TargetServer targetServer, string containerName, CancellationToken cancellationToken = default);
+
+    /// <summary>Master requirements §6 "Test Connection": actually connects and
+    /// verifies SSH connectivity, the authenticated user, and Docker/Compose
+    /// availability — never fabricates a successful result.</summary>
+    Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default);
 }

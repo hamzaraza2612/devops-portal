@@ -2,12 +2,15 @@
 
 A production-ready internal platform for managing the full application
 lifecycle: Git commit → build → container registry → DEV → QA → UAT →
-Production, with approvals, rollback, RBAC, multi-tenancy, secrets
+Production, with approvals, rollback, per-environment authorization, secrets
 management, and audit at every step.
 
-Multi-tenant from the ground up (each customer/organization is a fully
-isolated `Tenant`), built on .NET 8 (ASP.NET Core Web API, EF Core/Npgsql)
-with a React 19 + TypeScript frontend, deployed via Docker Compose.
+Single-organization, built on .NET 8 (ASP.NET Core Web API, EF Core/Npgsql)
+with a React 19 + TypeScript frontend, deployed via Docker Compose. Access
+is granted per user via an admin flag, an independent Production-approval
+("CTO") flag, and which DEV/QA/UAT/PRODUCTION environments they may act on.
+Deployments reach target servers over SSH, and GitLab repository
+connections use a real, testable API integration.
 
 **Current release: v1.0.0** — see [`CHANGELOG.md`](CHANGELOG.md) for release
 notes, and `PROJECT_STATE.md` for the complete phase-by-phase design
@@ -20,7 +23,7 @@ history and current architecture detail.
 | [Installation Guide](docs/installation-guide.md) | Standing up a new instance: prerequisites, config, backup/restore, upgrades |
 | [Configuration Guide](docs/configuration-guide.md) | Onboarding an organization: repositories, applications, targets, credentials |
 | [Deployment Guide](docs/deployment-guide.md) | The DEV → QA → UAT → Production workflow, end to end |
-| [Administrator Guide](docs/administrator-guide.md) | Users, roles, RBAC, tenants, audit |
+| [Administrator Guide](docs/administrator-guide.md) | Users, environment access, audit |
 | [Developer Guide](docs/developer-guide.md) | Local dev setup, extending the platform |
 | [QA/UAT Guide](docs/qa-uat-guide.md) | Reviewing and approving promotion requests |
 | [Production Approval Guide](docs/production-approval-guide.md) | The CTO approval gate |

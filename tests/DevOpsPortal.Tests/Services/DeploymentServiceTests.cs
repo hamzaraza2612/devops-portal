@@ -26,7 +26,6 @@ public class DeploymentServiceTests
     private static async Task<Fixture> CreateFixtureAsync()
     {
         var db = TestDb.CreateInMemory();
-        await TestDb.SeedRolesAndPermissionsAsync(db);
         await TestDb.SeedEnvironmentDefinitionsAsync(db);
 
         var app = new ManagedApplication { Name = "Sample", Slug = "sample", DeploymentMode = DeploymentMode.LegacyFilesystem };
@@ -57,30 +56,33 @@ public class DeploymentServiceTests
         }
         await db.SaveChangesAsync();
 
-        var devUserId = await TestDb.CreateUserWithPermissionsAsync(db, "dev1",
-            PermissionCodes.DeploymentsView, PermissionCodes.DeploymentsDeployDev, PermissionCodes.DeploymentsPromoteQa);
-        var qaUserId = await TestDb.CreateUserWithPermissionsAsync(db, "qa1",
-            PermissionCodes.DeploymentsView, PermissionCodes.DeploymentsApproveQa, PermissionCodes.DeploymentsDeployQa);
-        var uatUserId = await TestDb.CreateUserWithPermissionsAsync(db, "uat1",
-            PermissionCodes.DeploymentsView, PermissionCodes.DeploymentsApproveUat, PermissionCodes.DeploymentsDeployUat);
-        var devopsUserId = await TestDb.CreateUserWithPermissionsAsync(db, "devops1",
-            PermissionCodes.DeploymentsView, PermissionCodes.DeploymentsDeployDev,
-            PermissionCodes.DeploymentsPromoteQa, PermissionCodes.DeploymentsApproveQa, PermissionCodes.DeploymentsDeployQa,
-            PermissionCodes.DeploymentsPromoteUat, PermissionCodes.DeploymentsApproveUat, PermissionCodes.DeploymentsDeployUat,
-            PermissionCodes.DeploymentsPromoteProduction, PermissionCodes.DeploymentsDeployProduction, PermissionCodes.DeploymentsRollback);
-        var ctoUserId = await TestDb.CreateUserWithPermissionsAsync(db, "cto1",
-            PermissionCodes.DeploymentsView, PermissionCodes.DeploymentsApproveProduction);
-        var noPermUserId = await TestDb.CreateUserWithPermissionsAsync(db, "noperm1", PermissionCodes.DeploymentsView);
+        // Phase 12: environment access IS the permission grant — DeploymentsPromoteQa/
+        // ApproveQa/DeployQa (etc.) all come bundled together for whoever holds that
+        // environment's access (see AppDbContextExtensions), so "qa1" below both
+        // requests AND approves/deploys QA promotions; same for "uat1"/UAT. Production
+        // is the one boundary that still separates duties: DeploymentsApproveProduction
+        // is granted independently via User.CanApproveProduction, not by Production
+        // environment access — so devopsUserId can promote/deploy Production but never
+        // approve it, and ctoUserId approves it via the flag (and also needs Production
+        // access itself, since GetPromotionAsync/EnsureEnvironmentAccessAsync requires
+        // it to view the resulting promotion after approving).
+        var devUserId = await TestDb.CreateUserWithEnvironmentAccessAsync(db, "dev1", EnvironmentNames.Dev);
+        var qaUserId = await TestDb.CreateUserWithEnvironmentAccessAsync(db, "qa1", EnvironmentNames.Qa);
+        var uatUserId = await TestDb.CreateUserWithEnvironmentAccessAsync(db, "uat1", EnvironmentNames.Uat);
+        var devopsUserId = await TestDb.CreateUserWithEnvironmentAccessAsync(
+            db, "devops1", EnvironmentNames.Dev, EnvironmentNames.Qa, EnvironmentNames.Uat, EnvironmentNames.Production);
+        var ctoUserId = await TestDb.CreateUserWithEnvironmentAccessAsync(
+            db, "cto1", [EnvironmentNames.Production], canApproveProduction: true);
+        var noPermUserId = await TestDb.CreateUserWithNoAccessAsync(db, "noperm1");
 
         var currentUser = new FakeCurrentUserService { UserId = devUserId, Username = "dev1" };
-        var currentTenant = new FakeCurrentTenantService();
         var jobQueue = new FakeDeploymentJobQueue();
         var notificationProvider = new FakeNotificationProvider();
-        var audit = new AuditService(db, currentUser, currentTenant);
+        var audit = new AuditService(db, currentUser);
         var notificationService = new NotificationService(
             db, [notificationProvider], audit, new FakeConfiguration(), NullLogger<NotificationService>.Instance);
 
-        var sut = new DeploymentService(db, currentUser, currentTenant, audit, jobQueue, notificationService, new FakeGitProviderClient());
+        var sut = new DeploymentService(db, currentUser, audit, jobQueue, notificationService, new FakeGitProviderClient());
 
         return new Fixture(db, sut, currentUser, jobQueue, notificationProvider, app, envs, devUserId, qaUserId, uatUserId, devopsUserId, ctoUserId, noPermUserId);
     }
@@ -181,6 +183,7 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         var devDeployment = await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
+        f.CurrentUser.UserId = f.QaUserId;
 
         var dto = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
 
@@ -212,6 +215,7 @@ public class DeploymentServiceTests
         };
         f.Db.Deployments.Add(failedDeployment);
         await f.Db.SaveChangesAsync();
+        f.CurrentUser.UserId = f.QaUserId;
 
         await Assert.ThrowsAsync<ValidationException>(() =>
             f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(failedDeployment.Id)));
@@ -222,6 +226,7 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         var devDeployment = await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
+        f.CurrentUser.UserId = f.QaUserId;
         await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
 
         await Assert.ThrowsAsync<ConflictException>(() =>
@@ -243,8 +248,8 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         var devDeployment = await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
-        var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
         f.CurrentUser.UserId = f.QaUserId;
+        var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
 
         var approved = await f.Sut.ApprovePromotionAsync(promotion.Id, new DecidePromotionRequest("looks good"));
 
@@ -257,8 +262,9 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         var devDeployment = await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
+        f.CurrentUser.UserId = f.QaUserId;
         var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
-        f.CurrentUser.UserId = f.DevUserId; // developer cannot approve QA
+        f.CurrentUser.UserId = f.DevUserId; // developer has no QA environment access, so cannot approve QA
 
         await Assert.ThrowsAsync<ForbiddenException>(() => f.Sut.ApprovePromotionAsync(promotion.Id, new DecidePromotionRequest(null)));
     }
@@ -268,8 +274,8 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         var devDeployment = await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
-        var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
         f.CurrentUser.UserId = f.QaUserId;
+        var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
         await f.Sut.ApprovePromotionAsync(promotion.Id, new DecidePromotionRequest(null));
 
         await Assert.ThrowsAsync<ConflictException>(() => f.Sut.ApprovePromotionAsync(promotion.Id, new DecidePromotionRequest(null)));
@@ -280,8 +286,8 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         var devDeployment = await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
-        var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
         f.CurrentUser.UserId = f.QaUserId;
+        var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
 
         await f.Sut.ApprovePromotionAsync(promotion.Id, new DecidePromotionRequest(null));
 
@@ -295,8 +301,8 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         var devDeployment = await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
-        var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
         f.CurrentUser.UserId = f.QaUserId;
+        var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
 
         await Assert.ThrowsAsync<ValidationException>(() => f.Sut.DeployApprovedPromotionAsync(promotion.Id));
     }
@@ -306,8 +312,8 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         var devDeployment = await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
-        var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
         f.CurrentUser.UserId = f.QaUserId;
+        var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
         await f.Sut.ApprovePromotionAsync(promotion.Id, new DecidePromotionRequest(null));
 
         var deployment = await f.Sut.DeployApprovedPromotionAsync(promotion.Id);
@@ -322,8 +328,8 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         var devDeployment = await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
-        var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
         f.CurrentUser.UserId = f.QaUserId;
+        var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
         await f.Sut.ApprovePromotionAsync(promotion.Id, new DecidePromotionRequest(null));
         await f.Sut.DeployApprovedPromotionAsync(promotion.Id);
 
@@ -500,7 +506,7 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
-        f.CurrentUser.UserId = f.DevUserId;
+        f.CurrentUser.UserId = f.QaUserId;
         var devDeployment = await f.Db.Deployments.FirstAsync(d => d.CommitSha == "abc1234");
 
         var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
@@ -518,7 +524,7 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
-        f.CurrentUser.UserId = f.DevUserId;
+        f.CurrentUser.UserId = f.QaUserId;
         var devDeployment = await f.Db.Deployments.FirstAsync(d => d.CommitSha == "abc1234");
 
         await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
@@ -532,7 +538,7 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
-        f.CurrentUser.UserId = f.DevUserId;
+        f.CurrentUser.UserId = f.QaUserId;
         var devDeployment = await f.Db.Deployments.FirstAsync(d => d.CommitSha == "abc1234");
         await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
         var token = ExtractToken(f.NotificationProvider.Sent[0].Body);
@@ -558,12 +564,11 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
-        f.CurrentUser.UserId = f.DevUserId;
+        f.CurrentUser.UserId = f.QaUserId;
         var devDeployment = await f.Db.Deployments.FirstAsync(d => d.CommitSha == "abc1234");
         var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
         var token = ExtractToken(f.NotificationProvider.Sent[0].Body);
 
-        f.CurrentUser.UserId = f.QaUserId;
         await f.Sut.ApprovePromotionAsync(promotion.Id, new DecidePromotionRequest(null));
 
         var preview = await f.Sut.GetPromotionPreviewByTokenAsync(token);
@@ -575,16 +580,14 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "aaa1111");
-        f.CurrentUser.UserId = f.DevUserId;
+        f.CurrentUser.UserId = f.QaUserId;
         var devDeploymentA = await f.Db.Deployments.FirstAsync(d => d.CommitSha == "aaa1111");
         var promotionA = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeploymentA.Id));
         var tokenA = ExtractToken(f.NotificationProvider.Sent[0].Body);
 
-        f.CurrentUser.UserId = f.QaUserId;
         await f.Sut.RejectPromotionAsync(promotionA.Id, new DecidePromotionRequest("superseded"));
 
         await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "bbb2222");
-        f.CurrentUser.UserId = f.DevUserId;
         var devDeploymentB = await f.Db.Deployments.FirstAsync(d => d.CommitSha == "bbb2222");
         var promotionB = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeploymentB.Id));
 
@@ -601,7 +604,7 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
-        f.CurrentUser.UserId = f.DevUserId;
+        f.CurrentUser.UserId = f.QaUserId;
         var devDeployment = await f.Db.Deployments.FirstAsync(d => d.CommitSha == "abc1234");
         var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
         var token = ExtractToken(f.NotificationProvider.Sent[0].Body);
@@ -700,7 +703,7 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         var goodDeployment = await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "goodsha1");
-        f.CurrentUser.UserId = f.DevUserId; // developer has no deployments.rollback
+        f.CurrentUser.UserId = f.QaUserId; // has QA access, not DEV, so cannot roll back DEV
 
         await Assert.ThrowsAsync<ForbiddenException>(() =>
             f.Sut.RollbackAsync(f.Application.Id, f.Envs[EnvironmentNames.Dev].Id, new RollbackRequest(goodDeployment.Id)));
@@ -757,9 +760,9 @@ public class DeploymentServiceTests
     {
         var f = await CreateFixtureAsync();
         var devDeployment = await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, "abc1234");
+        f.CurrentUser.UserId = f.QaUserId;
 
         var promotion = await f.Sut.RequestPromotionAsync(f.Application.Id, f.Envs[EnvironmentNames.Qa].Id, new CreatePromotionRequest(devDeployment.Id));
-        f.CurrentUser.UserId = f.QaUserId;
         await f.Sut.ApprovePromotionAsync(promotion.Id, new DecidePromotionRequest(null));
         await f.Sut.DeployApprovedPromotionAsync(promotion.Id);
 

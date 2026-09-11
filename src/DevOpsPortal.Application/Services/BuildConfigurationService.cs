@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DevOpsPortal.Application.Services;
 
-public class BuildConfigurationService(IAppDbContext db, IAuditService auditService, ICurrentTenantService currentTenantService)
+public class BuildConfigurationService(IAppDbContext db, IAuditService auditService)
     : IBuildConfigurationService
 {
     public async Task<BuildConfigurationDto?> GetAsync(Guid applicationId, CancellationToken cancellationToken = default)
@@ -37,7 +37,7 @@ public class BuildConfigurationService(IAppDbContext db, IAuditService auditServ
 
         var config = await db.BuildConfigurations.FirstOrDefaultAsync(bc => bc.ApplicationId == applicationId, cancellationToken);
         var isNew = config is null;
-        config ??= new BuildConfiguration { TenantId = currentTenantService.RequireTenantId(), ApplicationId = applicationId };
+        config ??= new BuildConfiguration { ApplicationId = applicationId };
 
         config.ProjectOrSolutionPath = NormalizeOrNull(request.ProjectOrSolutionPath);
         config.PublishConfiguration = NormalizeOrNull(request.PublishConfiguration);

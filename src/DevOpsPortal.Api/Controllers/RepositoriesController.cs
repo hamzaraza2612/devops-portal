@@ -34,4 +34,14 @@ public class RepositoriesController(IRepositoryService repositoryService) : Cont
     [RequirePermission(PermissionCodes.RepositoriesManage)]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateRepositoryRequest request, CancellationToken cancellationToken) =>
         Ok(await repositoryService.UpdateAsync(id, request, cancellationToken));
+
+    [HttpPut("{id:guid}/access-token")]
+    [RequirePermission(PermissionCodes.RepositoriesManage)]
+    public async Task<IActionResult> SetAccessToken(Guid id, [FromBody] SetRepositoryAccessTokenRequest request, CancellationToken cancellationToken) =>
+        Ok(await repositoryService.SetAccessTokenAsync(id, request, cancellationToken));
+
+    [HttpPost("{id:guid}/test-connection")]
+    [RequirePermission(PermissionCodes.RepositoriesManage)]
+    public async Task<IActionResult> TestConnection(Guid id, CancellationToken cancellationToken) =>
+        Ok(await repositoryService.TestConnectionAsync(id, cancellationToken));
 }

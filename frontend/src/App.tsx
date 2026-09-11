@@ -17,9 +17,7 @@ import { NotFoundPage } from './pages/NotFoundPage';
 import { PendingRequestsPage } from './pages/PendingRequestsPage';
 import { BuildServersPage } from './pages/admin/BuildServersPage';
 import { RepositoriesPage } from './pages/admin/RepositoriesPage';
-import { RolesPage } from './pages/admin/RolesPage';
 import { TargetServersPage } from './pages/admin/TargetServersPage';
-import { TenantsPage } from './pages/admin/TenantsPage';
 import { UsersPage } from './pages/admin/UsersPage';
 
 export default function App() {
@@ -102,26 +100,10 @@ export default function App() {
                 }
               />
               <Route
-                path="admin/tenants"
-                element={
-                  <RequirePermission permission={Permissions.TenantsView}>
-                    <TenantsPage />
-                  </RequirePermission>
-                }
-              />
-              <Route
                 path="admin/users"
                 element={
                   <RequirePermission permission={Permissions.UsersView}>
                     <UsersPage />
-                  </RequirePermission>
-                }
-              />
-              <Route
-                path="admin/roles"
-                element={
-                  <RequirePermission permission={Permissions.RolesView}>
-                    <RolesPage />
                   </RequirePermission>
                 }
               />

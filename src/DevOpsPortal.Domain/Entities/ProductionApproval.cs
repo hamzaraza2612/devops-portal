@@ -18,7 +18,6 @@ namespace DevOpsPortal.Domain.Entities;
 public class ProductionApproval
 {
     public Guid Id { get; set; } = Guid.NewGuid();
-    public Guid TenantId { get; set; }
 
     public Guid PromotionRequestId { get; set; }
     public PromotionRequest PromotionRequest { get; set; } = null!;

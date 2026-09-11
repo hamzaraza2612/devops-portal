@@ -25,7 +25,13 @@ runs as the base image's built-in non-root `app` user).
 
 ## Completed phases
 
-**Phase 1 — Core backend + database + authentication + RBAC.** Done.
+**Phase 1 — Core backend + database + authentication + RBAC.** Done. Its
+Role/Permission catalog (`Roles`/`Permissions`/`UserRoles`/`RolePermissions`)
+was replaced in Phase 12 by a simpler `User.IsAdmin` +
+`User.CanApproveProduction` + per-environment `UserEnvironmentAccess` model
+— see "Phase 12" below. The permission-code strings and every
+`[RequirePermission]`/`EnsurePermissionAsync` check themselves are
+unchanged; only what feeds them changed.
 
 **Phase 2 — Legacy Deployment Discovery & Configuration.** Done. Redefined
 (per explicit instruction) from the original phase plan's "GitLab
@@ -96,7 +102,32 @@ query logic changed to get this, only a scalar `TenantId` column and one
 provisioning at tenant-creation time, organization-specific custom roles
 (`RoleService.CreateAsync`/`UpdateAsync`), and Admin UI screens for
 tenants/users/roles/repositories/deployment-targets/integrations. See
-dedicated section below.
+dedicated section below. **Superseded by Phase 12** — see that section.
+
+**Phase 10 — Production Hardening, Security & Recovery.** Done. Security
+review pass, deployment-safety verification, database review, backup/
+recovery documentation, audit coverage, observability, health endpoints,
+performance review. See dedicated section below.
+
+**Phase 11 — Final QA, Documentation & Release (v1.0.0).** Done. End-to-end
+workflow test, UI QA, installation docs, configuration audit, final
+security/secret scan, full documentation set, versioning/release notes,
+Docker validation, final test run. See dedicated section below.
+
+**Phase 12 — Final Core Implementation: real remote server control, Docker
+monitoring, GitLab connection, simplified users/environment access &
+complete deployment execution.** Done (backend and core frontend; a
+broader visual-polish pass is the one explicitly deferred item — see its
+section's "Known limitations"). Removes multi-tenancy and the Role/
+Permission catalog entirely, replacing authorization with `User.IsAdmin` +
+`User.CanApproveProduction` + per-environment `UserEnvironmentAccess`;
+adds real SSH-based remote command execution (`SshRemoteExecutionProvider`,
+`Renci.SshNet`) so container monitoring/control and LegacyFilesystem
+deployment actually reach target servers instead of always reporting
+"unreachable"; adds a real GitLab API client with a testable connection;
+wires ContainerImage/Release deployment execution end-to-end; adds
+container CPU/memory stats and an on-demand log viewer (§6a, closed in a
+pre-merge acceptance-review pass). See dedicated section below.
 
 ## Current database state
 
@@ -111,10 +142,21 @@ columns on `PromotionRequests`/`ProductionApprovals`; see dedicated section
 below), `Phase9_MultiTenant` (Phase 9 — new `Tenants` table; `TenantId`
 column + FK + index on every tenant-owned entity; composite tenant-scoped
 unique indexes replacing several previously-global ones; see dedicated
-section below).
+section below — **superseded**, see next), `Phase12_RemoveMultiTenancyAndRbac`
+(Phase 12 — drops `Tenants`, `Roles`, `Permissions`, `UserRoles`,
+`RolePermissions` and every `TenantId` column added by Phase 9; adds
+`UserEnvironmentAccess` (UserId, EnvironmentDefinitionId), `Users.IsAdmin`
+and `Users.CanApproveProduction`; adds `TargetServers.SshPort`/
+`SshUsername`/`SshAuthMethod`/`SshCredentialStoreKey`/
+`SshPassphraseStoreKey` and `Repositories.AccessTokenStoreKey`/
+`DefaultBranch`/`Username`; see dedicated section below).
 
-Phase 1 tables: `Users`, `Roles`, `Permissions`, `UserRoles` (join),
-`RolePermissions` (join), `AuditLogs`.
+Phase 1 tables (as originally shipped — **superseded by Phase 12**, see
+below): `Users`, `Roles`, `Permissions`, `UserRoles` (join),
+`RolePermissions` (join), `AuditLogs`. As of Phase 12, `Users` instead
+carries `IsAdmin`/`CanApproveProduction` directly and `Roles`/
+`Permissions`/`UserRoles`/`RolePermissions` no longer exist —
+authorization is `User` + `UserEnvironmentAccess` only.
 
 Phase 2 tables:
 - `Repositories` — Name (unique), Url, Provider, Description, IsActive. No credentials.
@@ -2376,6 +2418,15 @@ nothing from this manual pass was left running or committed.
 
 ## Phase 9 — Productization & Multi-Tenant Architecture
 
+> **Superseded by Phase 12.** Everything below describes what Phase 9 built
+> at the time, kept for history. Phase 12 (see its own section further
+> down) removed multi-tenancy and the Role/Permission catalog entirely —
+> `Tenant`, `Role`, `Permission`, `UserRole`, `RolePermission`,
+> `ICurrentTenantService`/`AmbientTenantContext`, `TenantResolutionMiddleware`,
+> and every `TenantId` column described here no longer exist in the
+> codebase. Do not use this section as a description of current behavior;
+> see "Phase 12" for what replaced it.
+
 Done. Objective: make the platform usable by multiple organizations
 without redesigning the deployment engine. Every design choice below was
 made to keep that engine (DeploymentExecutor's actual compose/health-check/
@@ -3318,12 +3369,395 @@ a future phase adding a Postgres-backed integration test tier (as opposed
 to the current all-InMemory-provider suite) could close this gap properly
 rather than relying on live verification alone.
 
+## Phase 12 — Final Core Implementation: real remote server control, Docker monitoring, GitLab connection, simplified users/environment access & complete deployment execution
+
+Done (backend and core frontend functionality). Objective: close the two
+biggest gaps flagged as open at the end of every prior phase — "deployment
+execution/container monitoring never actually reach a remote target
+server" and "GitLab integration is a placeholder" — while simplifying
+authorization down to what a single-organization deployment portal
+actually needs. A broader visual/UX polish pass beyond what this phase
+touched functionally is the one explicitly deferred item; see "Known
+limitations" below.
+
+### §1 — Remove multi-tenancy entirely
+
+`Tenant`, `ICurrentTenantService`/`AmbientTenantContext`,
+`TenantResolutionMiddleware`, every `TenantId` column and EF Core
+`HasQueryFilter`, and the `TenantsController`/tenant admin UI were all
+deleted outright — not deprecated, not feature-flagged off. The product is
+single-organization; Phase 9's multi-tenant work is preserved only as
+history in this document (see the superseded-notice at the top of its own
+section above).
+
+### §2 — Simplify authorization to User + per-environment access
+
+The entire `Role`/`Permission`/`UserRole`/`RolePermission` catalog was
+dropped. In its place: `User.IsAdmin` (full access to everything),
+`User.CanApproveProduction` (an independent flag — a "CTO" can approve
+Production promotions without being an admin and without holding
+Production environment access itself for anything else), and
+`UserEnvironmentAccess` (UserId, EnvironmentDefinitionId — which specific
+pipeline stages a user may act on).
+
+Deliberately the **only** thing that changed is what feeds the permission
+check — every `[RequirePermission]` attribute, every
+`EnsurePermissionAsync` call, and every `PermissionCodes` string is
+untouched. `AppDbContextExtensions.GetRolesAndPermissionsAsync` now
+synthesizes the same `PermissionCodes` claims on the fly from those three
+sources instead of joining through a database role/permission catalog:
+
+- Admin → every permission code.
+- Any environment access at all → a "base tier" bundle (`ApplicationsView`,
+  `EnvironmentsView`, `DeploymentsView`, `ContainersView`/`Control`/
+  `Recreate`, `BuildsView`/`Request`, `SecretsView`/`Reveal`) — these gate
+  actions that are further narrowed per-request by which specific
+  application/environment is involved, never by the claim alone.
+- Access to a specific environment → that environment's deploy/promote/
+  approve permissions (e.g. QA access grants `DeploymentsPromoteQa` +
+  `DeploymentsApproveQa` + `DeploymentsDeployQa` together — this phase does
+  not preserve a separate "can request a QA promotion but not approve it"
+  role; environment access is now the unit of authorization).
+- `CanApproveProduction` → `DeploymentsApproveProduction`, independent of
+  Production environment access.
+- Admin-only, never derivable from environment access: `UsersView`/
+  `Manage`, `RepositoriesView`/`Manage`, `TargetServersView`/`Manage`,
+  `BuildServersView`/`Manage`, `AuditView`, `SecretsManage`,
+  `ApplicationsManage`.
+
+**A genuine pre-existing gap found and fixed while doing this:** several
+coarse "base tier" permissions (e.g. `ContainersView`) were being granted
+to any user with access to *any* environment, but the services checking
+them had no additional check confirming the user has access to the
+*specific* environment being acted on — a QA-only user could, before this
+fix, view or control a PRODUCTION application's containers. Fixed with two
+new extension methods, `AppDbContextExtensions.HasEnvironmentAccessAsync`
+and `GetAccessibleEnvironmentIdsAsync`, wired into every read/write path in
+`ContainerOperationsService`, `DeploymentService`,
+`ApplicationEnvironmentService`, and `SecretReferenceService` that acts on
+or lists a specific environment's data. A second genuine bug fixed in the
+same pass: `PermissionCodes.BuildsRequest` had been left out of the
+base-tier bundle, so no non-admin user could ever request a build.
+`PermissionCodes.DeploymentsRollback` was removed (rollback now re-derives
+authorization from the same per-environment deploy permission a normal
+deploy to that environment requires, via `DeployPermissionByEnvironmentIncludingDev`
+in `DeploymentService`).
+
+### §3 — Real SSH-based remote execution (the primary objective of this phase)
+
+`SshRemoteExecutionProvider` (`src/DevOpsPortal.Infrastructure/Remote/`,
+`Renci.SshNet` 2026.0.0) is now the real `IRemoteExecutionProvider` —
+`NotConfiguredRemoteExecutionProvider` still exists and is still what a
+`TargetServer` without SSH configured resolves to (honest "unreachable"
+reporting is preserved, never faked). `TargetServer` gained `SshPort`
+(default 22), `SshUsername`, `SshAuthMethod` (Password or PrivateKey), and
+two opaque credential references — `SshCredentialStoreKey` (password or
+private-key PEM text) and `SshPassphraseStoreKey` (private-key passphrase,
+optional) — resolved through the same `ISecretProvider` every other secret
+in the portal already uses (`TargetServerService.SetSshCredentialAsync`/
+`SetSshPassphraseAsync`, never round-tripped back out via any DTO).
+`IsConfigured(TargetServer)` requires Hostname + SshUsername + a stored
+credential before anything is attempted.
+
+Every dynamic value that goes into a remote command string (container
+names, compose file paths, env var names/values, the fixed
+`ComposeOperation` verb) is escaped through `PosixShellEscaper.Quote`
+(POSIX single-quote escaping) before being interpolated — container names
+additionally validated with `IsSafeDockerName` as defense-in-depth even
+though callers only ever pass names discovered from `docker compose ps`
+output, never user-supplied free text. There is no free-form "run this
+command" surface anywhere; only the fixed `ComposeOperation` enum
+(`Up`, `Down`, `DownWithVolumes`, `Restart`, `Start`, `Stop`, `Pull`) and
+`docker inspect` on one already-discovered container name are reachable.
+`TargetServerService.TestConnectionAsync` (admin-only,
+`POST /api/target-servers/{id}/test-connection`) reports SSH connectivity,
+the authenticated remote user, OS info, and Docker/Compose
+availability/version — without ever returning the credential itself.
+
+`IRemoteExecutionProvider` and `IContainerRuntimeProvider` were both
+changed from Singleton to **Scoped** registration (a Singleton can never
+safely depend on the Scoped `ISecretProvider` the SSH provider needs).
+
+**Container monitoring** (`ContainerOperationsService.GetStatusAsync`) and
+**control** (restart/start/stop, `docker compose down -v`/`up -d`
+recreate) now go through this real provider — a target server that isn't
+reachable is reported as such (`IsReachable: false` +
+`UnreachableReason`), never silently treated as healthy or empty.
+
+### §4 — LegacyFilesystem deployment now actually deploys remotely
+
+`DeploymentExecutor.ExecuteLegacyFilesystemAsync` runs its
+`down`/`up -d` compose sequence via `IRemoteExecutionProvider.RunComposeAsync`
+against the deployment's configured `TargetServer` — the exact same
+resolved-secrets-as-environment-variables channel
+(`ComposeCommandRequest.EnvironmentVariables`) as before Phase 12, just
+carried over SSH instead of run as a local child process. A `TargetServer`
+with no SSH configured fails the deployment with a clear, actionable
+`DeploymentExecutionException` rather than silently running locally on the
+portal's own host (the exact anti-pattern every prior phase's "known gaps"
+section flagged).
+
+### §5 — GitLab connection: configurable and testable from the UI
+
+`GitLabProviderClient` gained a constructor-injected `ISecretProvider` and
+resolves the repository's access token from `Repository.AccessTokenStoreKey`
+(preferred) or the legacy `AccessTokenEnvVarName` (fallback, unchanged
+from Phase 2). `Repository` gained `DefaultBranch`, `Username`, and
+`AccessTokenStoreKey`; `RepositoryService.SetAccessTokenAsync` stores a new
+token opaquely (never returned by any DTO — `RepositoryDto` exposes only a
+`HasAccessToken` boolean) and `TestConnectionAsync` (admin-only,
+`POST /api/repositories/{id}/test-connection`) reports whether the GitLab
+API is reachable with the configured credential, the authenticated
+identity, and the resolved project name/path — without ever exposing the
+token. The Repositories admin page surfaces both actions.
+
+### §6 — Container monitoring UI
+
+`ApplicationDetailsPage` gained a live `ContainerMonitoringSection` (state
+badges, restart count, health, per-container actions gated by
+`ContainersControl`/`ContainersRecreate`) wired to the real
+`GET /api/applications/{id}/environments/{envId}/containers` endpoint —
+previously this surface either didn't exist or only ever showed
+"unreachable" placeholders.
+
+**§6a — CPU/memory stats and container logs (post-Phase-12 acceptance-review
+fix).** A code-level acceptance review against the original master
+requirements (before merging Phase 12) found exactly one real blocker:
+remote container **logs** and **CPU/memory statistics** didn't exist
+anywhere — `IRemoteExecutionProvider` had no `docker logs`/`docker stats`
+method, `ContainerOperationsService` had no logs method, and no endpoint
+existed. Fixed, reusing the existing abstractions rather than a parallel
+one:
+
+- `IRemoteExecutionProvider` gained `GetContainerLogsAsync` (`docker logs
+  --tail N <name>`, hard-capped at 5000 lines, same `IsSafeDockerName` +
+  `PosixShellEscaper.Quote` defense as every other dynamic value) and
+  `GetContainerStatsAsync` (`docker stats --no-stream --format
+  '{{json .}}' <name>`) — implemented in `SshRemoteExecutionProvider`
+  (real) and stubbed honestly in `NotConfiguredRemoteExecutionProvider`
+  (same "never fake success" pattern as every other method there).
+- **Stats are folded into the existing container status response**
+  (`ContainerInfoDto.Stats`, populated by `DockerComposeContainerRuntimeProvider.GetStatusAsync`
+  calling `GetContainerStatsAsync` alongside the existing
+  `InspectContainerAsync` call per discovered container) rather than a
+  separate polling endpoint — CPU%/Mem% are parsed to numbers; memory
+  usage/limit and network/block I/O are kept as Docker's own
+  human-readable formatted strings (e.g. `"128MiB"`, `"1.2kB / 3.4kB"`)
+  rather than re-derived into exact byte counts, matching what `docker
+  stats` itself reports. A stats failure never hides the inspect data —
+  the two are independent remote calls.
+- **Logs are a new on-demand endpoint**, `GET
+  /api/applications/{id}/environments/{envId}/containers/logs?containerName=&tailLines=`
+  (`ContainerOperationsService.GetLogsAsync`, same `ContainersView` +
+  `EnsureEnvironmentAccessAsync` gate as `GetStatusAsync`). Because this
+  endpoint takes a client-supplied `containerName` (unlike
+  `InspectContainerAsync`, which is only ever called internally with a
+  name `GetStatusAsync` just discovered), `containerName` is
+  **re-validated against this same application environment's own live
+  `compose ps` discovery** inside `DockerComposeContainerRuntimeProvider.GetLogsAsync`
+  before anything is fetched — closes what would otherwise be a new
+  cross-container-disclosure gap on a shared target server (an authorized
+  user for application A could otherwise guess/read logs for an unrelated
+  application B's container on the same host). `tailLines` outside
+  1–5000 is rejected (`ValidationException` → 400); `<= 0` falls back to
+  a default of 200.
+- **Frontend**: `ContainerMonitoringSection` now shows CPU%, memory
+  usage/limit/%, and PID count inline per container (or "stats
+  unavailable" when a snapshot wasn't returned), plus a "Logs" toggle
+  that opens `ContainerLogsPanel` — a tail-lines selector (100/200/500/
+  1000), manual refresh, monospace log output, and its own loading/error
+  states. No auto-polling was added (consistent with the rest of this
+  section, which only ever loads on mount/action/manual reload).
+
+### §7 — Deploy from a Release (ContainerImage mode)
+
+`ManagedApplication.DeploymentMode == ContainerImage` applications can now
+actually deploy: `CreateDevDeploymentRequest.ReleaseId` lets a caller
+reference one of the application's own immutable `Release` rows (never an
+arbitrary image string — `DeploymentService.ResolveDeploymentFieldsAsync`
+derives `CommitSha`/`Branch`/`ImageReference`/`VersionLabel` from the
+`Release` row server-side). `DeploymentExecutor.ExecuteContainerImageAsync`
+passes the resolved `ImageReference` through as an `IMAGE_REFERENCE`
+environment variable (same channel as secrets — see §4) and runs
+`compose pull` then `compose up -d`; the target server's compose file
+references it as `image: ${IMAGE_REFERENCE}`. Registry authentication on
+the target server (a private registry's docker login/credential helper) is
+a deliberate, documented scope limit — no registry-credential entity was
+added this phase; it's expected to be configured out-of-band on the target
+server itself, same as before.
+
+### Database changes
+
+Single migration `Phase12_RemoveMultiTenancyAndRbac`: drops `Tenants`,
+`Roles`, `Permissions`, `UserRoles`, `RolePermissions`, and every
+`TenantId` column added by Phase 9; adds `UserEnvironmentAccess`
+(UserId, EnvironmentDefinitionId — composite unique), `Users.IsAdmin`
+(bool), `Users.CanApproveProduction` (bool); adds
+`TargetServers.SshPort`/`SshUsername`/`SshAuthMethod`/
+`SshCredentialStoreKey`/`SshPassphraseStoreKey`; adds
+`Repositories.AccessTokenStoreKey`/`DefaultBranch`/`Username`.
+
+### Tests
+
+373/373 backend tests pass (`dotnet test` — full solution), 43/43 frontend
+tests pass (`vitest run`). `dotnet build` on the full solution and
+`npm run build` both clean, zero warnings. Test changes were substantial
+(essentially every service test file touched authorization or a changed
+constructor signature) — see git history for the full list; the concrete
+authorization-boundary tests worth calling out specifically:
+`ContainerOperationsServiceTests`/`SecretReferenceServiceTests` both gained
+a QA-only-vs-DEV cross-environment-access denial test (the exact IDOR gap
+found and fixed in §2), and `DeploymentServiceTests` covers the CTO
+separation-of-duty boundary (a user with Production deploy access but not
+`CanApproveProduction` cannot approve; the CTO flag holder can). New tests
+for the SSH provider (`SshRemoteExecutionProviderTests`) cover
+`PosixShellEscaper`/`ComposeOperationArgs` escaping directly (via
+`InternalsVisibleTo`) and `IsConfigured` gating, without a live SSH server.
+
+**§6a's 19 new backend tests**: `SshRemoteExecutionProviderTests` —
+not-configured and unsafe-container-name rejection for both
+`GetContainerLogsAsync`/`GetContainerStatsAsync`, without a live SSH
+server (same pattern as the existing `InspectContainerAsync` tests).
+`DockerComposeContainerRuntimeProviderTests` — stats JSON parsing/folding
+into the status result (success and failure-leaves-inspect-data-intact
+cases), and `GetLogsAsync`'s not-configured/compose-ps-failure/
+container-not-discovered/success paths (the "not discovered" case is the
+cross-container-disclosure test — asserts `GetContainerLogsAsync` is
+never even called for a plausible-but-undiscovered name).
+`ContainerOperationsServiceTests` — `GetLogsAsync` authorized-access
+success, `ForbiddenException` for both no-permission and
+wrong-environment-access, `ValidationException` for a missing
+`containerName` and an over-maximum `tailLines`, the `tailLines <= 0`
+default-fallback, and the unreachable-target-server failure path. **5 new
+frontend tests** in `ApplicationDetailsPage.test.tsx` — CPU/memory/PID
+rendering, the "stats unavailable" fallback, opening the log viewer
+through its loading state to rendered output, and both of its error
+states (network failure vs. a server response reporting `success: false`).
+
+### Security review (this phase)
+
+Focused review of everything new in Phase 12 (SSH command construction,
+secret handling, per-environment authorization enforcement, the new
+test-connection endpoints, the migration). One genuine finding, fixed:
+`SecretReferenceService.UpdateAsync`/`DeleteAsync` checked only the coarse
+`SecretsManage` permission and never confirmed the target secret's
+specific environment access, unlike `GetAsync`/`RevealAsync` which both
+already did — not exploitable today (`SecretsManage` is admin-only, and an
+admin always passes the environment check), but inconsistent with the
+rest of the codebase's pattern and a latent risk if `SecretsManage` is
+ever made grantable per-environment in a future phase. Fixed by adding the
+same `EnsureEnvironmentAccessAsync` check both methods already use
+elsewhere. Everything else checked came back clean: every dynamic value
+in an SSH command string goes through `PosixShellEscaper`; secret
+values/SSH credentials/GitLab tokens are never logged or included in
+audit `Details`/exception messages (verified via `LogSanitizer.Sanitize`
+and the dedicated redaction in `DeploymentExecutor`); the test-connection
+and set-credential endpoints on `RepositoriesController`/
+`TargetServersController` are admin-only; the Phase 12 migration's dropped
+tables (`Tenant`/`Role`/`Permission`/`UserRole`/`RolePermission`) have zero
+remaining references in `src/` outside historical migration snapshots.
+Not fully verifiable without live infrastructure: actual SSH server
+quirks and live GitLab API error-response content.
+
+### Docker / deployment validation
+
+`docker compose config` (with real-length dummy secrets supplied)
+validates cleanly. **No live Docker daemon is available in this sandbox**
+(consistent with every prior phase's documented environment limitation),
+so the API/frontend images could not be built or run in this session —
+their `Dockerfile`s are unchanged from Phase 11's already-validated
+multi-stage builds aside from the new `Renci.SshNet` package reference,
+which restores cleanly (`dotnet build`/`dotnet test` both restore and run
+it successfully).
+
+### Known limitations (this phase)
+
+- **No live SSH server, GitLab instance, or Docker daemon was available in
+  this sandbox to exercise the new remote-execution/GitLab paths
+  end-to-end against a real target.** Everything is verified by: (a) unit
+  tests against `PosixShellEscaper`/`ComposeOperationArgs` directly, (b)
+  `IsConfigured`/not-configured-path tests, (c) code review of exactly
+  what gets sent over the wire. Before relying on this in production,
+  manually verify against a real target server: configure a `TargetServer`
+  with real SSH credentials, use "Test Connection" to confirm
+  connectivity, then exercise a real DEV deployment and container
+  restart/recreate. Same for GitLab: configure a real `Repository` with a
+  real access token and use "Test Connection" before relying on branch
+  promotion or commit lookup.
+- **No registry-credential entity** — a private container registry's
+  authentication on the target server is out-of-band (see §7). A future
+  phase could add this if a registry actually requiring
+  authenticated pulls is used.
+- **The QA/UAT promotion workflow's authorization is now coarser than
+  before Phase 9/12**: a user with QA environment access can both request
+  a promotion into QA and approve/deploy it (see §2) — there is no longer
+  a way to grant "can request promotion" without also granting "can
+  approve/deploy" for the same environment. Production is the one
+  exception that keeps a real separation of duties (`CanApproveProduction`
+  is independent of Production environment access). If per-environment
+  request/approve separation for QA/UAT specifically is a real
+  requirement, it needs a deliberate follow-up design, not a reflexive
+  permission split — flag before starting rather than assuming.
+- **Broader frontend visual/UX polish** (a dedicated per-environment
+  dashboard layout pass, deeper environment-color-coding across every
+  screen, sidebar/nav refinement beyond what already exists) was not done
+  this phase — the functional container-monitoring/GitLab/SSH-config UI
+  surfaces (§5, §6) were built and tested, but a broader "make it feel
+  like a polished product" pass was deprioritized in favor of the
+  remote-execution/authorization work, which was explicitly the higher
+  priority ("MOST IMPORTANT" objective, per the task brief this phase
+  implements). Worth a dedicated follow-up phase if visual polish matters
+  more than further backend capability right now.
+
 ## Production-critical gaps / next implementation
 
-Carried forward, unresolved, and deliberately **not** touched by Phase 9
-(multi-tenancy is orthogonal to these — they apply equally inside a
-single tenant and were not hidden, removed, or worked around while making
-the product multi-tenant):
+**Items 1–5 below (carried forward since Phase 5/6/7) are now resolved by
+Phase 12** — kept here, struck through in spirit, so the history of what
+used to block this platform stays visible rather than silently
+disappearing:
+
+1. ~~No secure remote-execution mechanism exists.~~ **Resolved (Phase 12
+   §3/§4)** — `SshRemoteExecutionProvider` is real; `DeploymentExecutor`
+   deploys via SSH to the configured `TargetServer`, not locally.
+2. ~~No fake/local implementation substituted for real remote
+   execution.~~ Still true and still correct —
+   `NotConfiguredRemoteExecutionProvider` remains the honest fallback for
+   an unconfigured `TargetServer`.
+3. ~~The same remote-execution abstraction serves deployment execution,
+   monitoring, and control.~~ **Resolved** — all four (deploy, status,
+   restart/start/stop, recreate) go through the same real
+   `IRemoteExecutionProvider`/`IContainerRuntimeProvider` now.
+4. ~~Nothing deploys from a Release yet.~~ **Resolved (Phase 12 §7)** —
+   `CreateDevDeploymentRequest.ReleaseId` + `ExecuteContainerImageAsync`.
+5. ~~ContainerImage deployment secret injection is unbuilt.~~ **Resolved**
+   — `ExecuteContainerImageAsync` reuses the same
+   `ComposeCommandRequest.EnvironmentVariables` channel Legacy deployments
+   already used for resolved secrets.
+
+Carried forward, unresolved:
+
+6. **Session storage remains sessionStorage-based** (flagged since Phase
+   4), not an httpOnly cookie.
+7. **No registry-credential entity** for ContainerImage deployments to a
+   private registry (Phase 12 §7, new this phase — see its "Known
+   limitations").
+8. **No live SSH server/GitLab instance was available to test Phase 12's
+   new remote-execution/GitLab paths end-to-end** — see Phase 12's "Known
+   limitations" for exactly what was and wasn't verified, and the
+   recommended manual verification steps before production reliance.
+9. **QA/UAT promotion request vs. approve/deploy authorization is now
+   coarser** than before Phase 9/12 (Phase 12 §2/"Known limitations") — a
+   deliberate simplification, flagged in case per-environment separation
+   of duties for QA/UAT turns out to be a real requirement.
+10. **Broader frontend visual/UX polish** was deprioritized this phase in
+    favor of the higher-priority remote-execution/authorization work
+    (Phase 12 "Known limitations").
+11. **No backfill tooling was ever needed for pre-Phase-9 data** — moot as
+    of Phase 12, since multi-tenancy itself was removed; noted only so a
+    reader of history isn't left wondering what happened to that item.
+
+Not touched by any phase to date and still fully open:
+none of the above — this is now the complete list.
 
 1. **The portal is designed to run on a separate VM from the
    TargetServers it deploys to, but no secure remote-execution mechanism
@@ -3378,39 +3812,39 @@ rather than getting lost once multi-tenancy makes the codebase look more
 
 ## Release status
 
-**v1.0.0 — released.** Phase 11 (Final QA, Documentation & Release) is
-complete: the platform has been end-to-end verified (including failure/
-retry/rollback/unauthorized-access/concurrency/unavailable-target/
-unhealthy-container cases), UI-QA'd across every real screen, audited for
-hardcoded customer-specific values and leaked secrets (none found), fully
-documented (see `README.md`'s documentation index), and tagged. This is
-the first version of this platform considered ready for real internal
-production use. See Phase 11 above for the complete verification record,
-`CHANGELOG.md` for release notes, and
-[`docs/architecture.md`'s Known gaps section](docs/architecture.md#known-gaps)
-for exactly what "ready" does and doesn't mean — most notably, deployment
-execution still runs on the portal's own host rather than reaching a truly
-remote target server over the network (see below).
+**v1.0.0 (Phase 11) — released; Phase 12 supersedes its "known gaps."**
+Phase 11 shipped with deployment execution still running on the portal's
+own host and GitLab/remote-server integration as placeholders — both
+explicitly called out as the biggest gaps in that release. **Phase 12
+closes both**: deployment execution, container monitoring, and container
+control now genuinely reach a remote `TargetServer` over SSH, and GitLab
+connectivity is real and testable from the UI. Multi-tenancy and the
+Role/Permission catalog (Phase 9/1) were removed in the same phase in
+favor of a simpler User + per-environment-access model. See "Phase 12"
+above for the complete record — implementation, tests (354/354 backend,
+38/38 frontend), security review, and known limitations (most notably: no
+live SSH server/GitLab instance/Docker daemon was available in this
+sandbox to exercise the new paths against real infrastructure end-to-end;
+manual verification steps are documented in Phase 12's "Known
+limitations"). Not yet re-tagged as a new version — do that as part of
+whatever phase next touches `CHANGELOG.md`/versioning.
 
 ## Next phase
 
 Not yet assigned — awaiting explicit approval before starting further
-work. Strongest candidate, per the "Production-critical gaps" section
-directly above (unchanged by Phases 10–11 — neither touched these
-architecture-level gaps): a real secure remote-execution mechanism for
-`IRemoteExecutionProvider`, since it blocks the portal's own stated target
-architecture (Portal VM → secure remote execution → Target Server →
-Docker Compose) and would immediately benefit deployment execution,
-container monitoring, and container control all at once. Other
-candidates, unchanged from before: wiring `IDeploymentService`/
-`DeploymentExecutor` to deploy from a `Release` (Phase 6) and secret
-injection for that path (Phase 7), broader notification distribution or a
-second `INotificationProvider` (Phase 8), a platform-admin
-view-into-a-tenant capability (Phase 9, deliberately deferred), backfill
-tooling for pre-Phase-9 data, hardening session storage to an httpOnly
-cookie (flagged since Phase 4), wiring the backup script into an actual
-scheduled job for a given hosting environment (Phase 10, provided as a
-script + documented procedure rather than a hardcoded schedule), or a
-Postgres-backed integration test tier to properly cover the
-concurrency-exception fix (Phase 11 §9). Do not assume which without
-asking.
+work. With Phase 12 closing the remote-execution and GitLab gaps, the
+strongest remaining candidates are: the broader frontend visual/UX polish
+pass explicitly deferred by Phase 12 (§"Known limitations" — a dedicated
+per-environment dashboard layout, deeper environment color-coding,
+sidebar/nav refinement); a registry-credential entity so a ContainerImage
+deployment to a *private* registry doesn't require out-of-band
+`docker login` on every target server (Phase 12 §7); live verification of
+the SSH/GitLab paths against real infrastructure once available (Phase 12
+"Known limitations"); revisiting whether QA/UAT promotion request-vs-
+approve authorization needs to be split again now that Phase 12 collapsed
+it to "environment access" as a single unit (Phase 12 §2/"Known
+limitations" — only if a real requirement surfaces, not reflexively);
+hardening session storage to an httpOnly cookie (flagged since Phase 4);
+wiring the backup script into an actual scheduled job for a given hosting
+environment (Phase 10); or a Postgres-backed integration test tier (Phase
+11 §9, still open). Do not assume which without asking.

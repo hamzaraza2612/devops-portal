@@ -8,7 +8,9 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DevOpsPortal.Application.Services;
 
-public partial class RepositoryService(IAppDbContext db, IAuditService auditService, ICurrentTenantService currentTenantService) : IRepositoryService
+public partial class RepositoryService(
+    IAppDbContext db, IAuditService auditService, ISecretProvider secretProvider, IGitProviderClient gitProviderClient)
+    : IRepositoryService
 {
     public async Task<IReadOnlyList<RepositoryDto>> GetAllAsync(CancellationToken cancellationToken = default) =>
         await db.Repositories.OrderBy(r => r.Name)
@@ -33,11 +35,12 @@ public partial class RepositoryService(IAppDbContext db, IAuditService auditServ
 
         var repo = new Repository
         {
-            TenantId = currentTenantService.RequireTenantId(),
             Name = name,
             Url = request.Url.Trim(),
             Provider = request.Provider,
             Description = request.Description?.Trim(),
+            DefaultBranch = string.IsNullOrWhiteSpace(request.DefaultBranch) ? null : request.DefaultBranch.Trim(),
+            Username = string.IsNullOrWhiteSpace(request.Username) ? null : request.Username.Trim(),
             AccessTokenEnvVarName = NormalizeEnvVarName(request.AccessTokenEnvVarName),
             IsActive = true,
         };
@@ -66,6 +69,8 @@ public partial class RepositoryService(IAppDbContext db, IAuditService auditServ
         repo.Url = request.Url.Trim();
         repo.Provider = request.Provider;
         repo.Description = request.Description?.Trim();
+        repo.DefaultBranch = string.IsNullOrWhiteSpace(request.DefaultBranch) ? null : request.DefaultBranch.Trim();
+        repo.Username = string.IsNullOrWhiteSpace(request.Username) ? null : request.Username.Trim();
         repo.AccessTokenEnvVarName = NormalizeEnvVarName(request.AccessTokenEnvVarName);
         repo.IsActive = request.IsActive;
         await db.SaveChangesAsync(cancellationToken);
@@ -74,6 +79,43 @@ public partial class RepositoryService(IAppDbContext db, IAuditService auditServ
             details: $"Updated repository '{repo.Name}'; active={repo.IsActive}", cancellationToken: cancellationToken);
 
         return ToDto(repo);
+    }
+
+    public async Task<RepositoryDto> SetAccessTokenAsync(Guid id, SetRepositoryAccessTokenRequest request, CancellationToken cancellationToken = default)
+    {
+        var repo = await db.Repositories.FirstOrDefaultAsync(r => r.Id == id, cancellationToken)
+            ?? throw new NotFoundException("Repository", id);
+
+        if (string.IsNullOrEmpty(request.Value))
+            throw new ValidationException("Value is required.");
+
+        // The plaintext value crosses into the provider here and nowhere else —
+        // never logged, never placed in the audit details below.
+        repo.AccessTokenStoreKey = await secretProvider.StoreAsync(repo.AccessTokenStoreKey, request.Value, cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
+
+        await auditService.LogAsync("repository.access_token.set", AuditResult.Success, "Repository", repo.Id.ToString(),
+            details: $"GitLab access token set for repository '{repo.Name}'", cancellationToken: cancellationToken);
+
+        return ToDto(repo);
+    }
+
+    public async Task<RepositoryConnectionTestResultDto> TestConnectionAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var repo = await db.Repositories.FirstOrDefaultAsync(r => r.Id == id, cancellationToken)
+            ?? throw new NotFoundException("Repository", id);
+
+        var result = await gitProviderClient.TestConnectionAsync(repo, cancellationToken);
+        var testedAt = DateTimeOffset.UtcNow;
+
+        await auditService.LogAsync(
+            "repository.test_connection", result.Connected ? AuditResult.Success : AuditResult.Failure, "Repository", repo.Id.ToString(),
+            details: result.Connected
+                ? $"CONNECTED to '{result.ProjectName}'" + (result.AuthenticatedAs is null ? "" : $" as '{result.AuthenticatedAs}'")
+                : $"FAILED: {result.ErrorMessage}",
+            cancellationToken: cancellationToken);
+
+        return new RepositoryConnectionTestResultDto(result.Connected, result.AuthenticatedAs, result.ProjectName, result.ErrorMessage, testedAt);
     }
 
     /// <summary>Rejects anything but a plain http(s) URL — in particular, URLs with
@@ -104,7 +146,8 @@ public partial class RepositoryService(IAppDbContext db, IAuditService auditServ
         string.IsNullOrWhiteSpace(envVarName) ? null : envVarName.Trim();
 
     private static RepositoryDto ToDto(Repository r) =>
-        new(r.Id, r.Name, r.Url, r.Provider, r.Description, r.AccessTokenEnvVarName, r.IsActive, r.CreatedAt);
+        new(r.Id, r.Name, r.Url, r.Provider, r.Description, r.DefaultBranch, r.Username,
+            r.AccessTokenStoreKey is not null, r.AccessTokenEnvVarName, r.IsActive, r.CreatedAt);
 
     [GeneratedRegex("^[A-Z][A-Z0-9_]{2,99}$")]
     private static partial Regex EnvVarNamePattern();

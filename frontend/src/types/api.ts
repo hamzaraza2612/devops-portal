@@ -57,7 +57,39 @@ export const RepositoryProvider = {
 } as const;
 export type RepositoryProvider = (typeof RepositoryProvider)[keyof typeof RepositoryProvider];
 
+export const SshAuthMethod = {
+  PrivateKey: 0,
+  Password: 1,
+} as const;
+export type SshAuthMethod = (typeof SshAuthMethod)[keyof typeof SshAuthMethod];
+
+export const ContainerState = {
+  Unknown: 0,
+  Running: 1,
+  Exited: 2,
+  Restarting: 3,
+  Paused: 4,
+  Created: 5,
+  Unhealthy: 6,
+} as const;
+export type ContainerState = (typeof ContainerState)[keyof typeof ContainerState];
+
+// --- Environments (reference data) ---
+
+export interface EnvironmentDefinitionDto {
+  id: string;
+  name: string;
+  sortOrder: number;
+  isProductionLike: boolean;
+  isActive: boolean;
+}
+
 // --- Auth / Users ---
+// Phase 12 replaced the Role/Permission catalog with a simplified
+// User.IsAdmin / User.CanApproveProduction / per-environment access model
+// (see PROJECT_STATE.md) — `roles`/`permissions` below are still present
+// (synthesized server-side) so every existing permission-gated UI check
+// keeps working unchanged.
 
 export interface UserDto {
   id: string;
@@ -65,6 +97,9 @@ export interface UserDto {
   email: string;
   fullName: string;
   isActive: boolean;
+  isAdmin: boolean;
+  canApproveProduction: boolean;
+  environmentAccess: EnvironmentDefinitionDto[];
   createdAt: string;
   lastLoginAt: string | null;
   roles: string[];
@@ -82,66 +117,6 @@ export interface LoginResponse {
   user: UserDto;
 }
 
-// --- Tenants (Phase 9 — platform-administrator only) ---
-
-export interface TenantDto {
-  id: string;
-  name: string;
-  slug: string;
-  description: string | null;
-  isActive: boolean;
-  createdAt: string;
-  updatedAt: string | null;
-}
-
-export interface CreateTenantRequest {
-  name: string;
-  slug: string;
-  description: string | null;
-  initialAdminUsername: string;
-  initialAdminEmail: string;
-  initialAdminPassword: string | null;
-}
-
-export interface CreateTenantResponse {
-  tenant: TenantDto;
-  initialAdminUsername: string;
-  generatedPassword: string | null;
-}
-
-export interface UpdateTenantRequest {
-  name: string;
-  description: string | null;
-  isActive: boolean;
-}
-
-// --- Roles ---
-
-export interface RoleDto {
-  id: string;
-  name: string;
-  description: string;
-  isSystem: boolean;
-  permissions: string[];
-}
-
-export interface PermissionDto {
-  id: string;
-  code: string;
-  description: string;
-}
-
-export interface CreateRoleRequest {
-  name: string;
-  description: string;
-  permissionIds: string[];
-}
-
-export interface UpdateRoleRequest {
-  description: string;
-  permissionIds: string[];
-}
-
 // --- Users (admin management) ---
 
 export interface CreateUserRequest {
@@ -149,14 +124,27 @@ export interface CreateUserRequest {
   email: string;
   fullName: string;
   password: string;
-  roleIds: string[];
+  isAdmin: boolean;
+  canApproveProduction: boolean;
+  environmentDefinitionIds: string[];
 }
 
 export interface UpdateUserRequest {
   email: string;
   fullName: string;
   isActive: boolean;
-  roleIds: string[];
+  isAdmin: boolean;
+  canApproveProduction: boolean;
+  environmentDefinitionIds: string[];
+}
+
+export interface AdminResetPasswordRequest {
+  newPassword: string;
+}
+
+export interface ChangeOwnPasswordRequest {
+  currentPassword: string;
+  newPassword: string;
 }
 
 // --- Build servers (integrations) ---
@@ -193,16 +181,6 @@ export interface UpdateBuildServerRequest {
   baseUrl: string;
   username: string | null;
   apiTokenEnvVarName: string | null;
-  isActive: boolean;
-}
-
-// --- Environments (reference data) ---
-
-export interface EnvironmentDefinitionDto {
-  id: string;
-  name: string;
-  sortOrder: number;
-  isProductionLike: boolean;
   isActive: boolean;
 }
 
@@ -289,7 +267,7 @@ export interface UpsertApplicationEnvironmentRequest {
   isActive: boolean;
 }
 
-// --- Repositories / Target servers ---
+// --- Repositories (GitLab) ---
 
 export interface RepositoryDto {
   id: string;
@@ -297,6 +275,9 @@ export interface RepositoryDto {
   url: string;
   provider: RepositoryProvider;
   description: string | null;
+  defaultBranch: string | null;
+  username: string | null;
+  hasAccessToken: boolean;
   accessTokenEnvVarName: string | null;
   isActive: boolean;
   createdAt: string;
@@ -307,6 +288,8 @@ export interface CreateRepositoryRequest {
   url: string;
   provider: RepositoryProvider;
   description: string | null;
+  defaultBranch: string | null;
+  username: string | null;
   accessTokenEnvVarName: string | null;
 }
 
@@ -315,9 +298,25 @@ export interface UpdateRepositoryRequest {
   url: string;
   provider: RepositoryProvider;
   description: string | null;
+  defaultBranch: string | null;
+  username: string | null;
   accessTokenEnvVarName: string | null;
   isActive: boolean;
 }
+
+export interface SetRepositoryAccessTokenRequest {
+  value: string;
+}
+
+export interface RepositoryConnectionTestResultDto {
+  connected: boolean;
+  authenticatedAs: string | null;
+  projectName: string | null;
+  errorMessage: string | null;
+  testedAt: string;
+}
+
+// --- Target servers (SSH) ---
 
 export interface AllowedDeploymentRootDto {
   id: string;
@@ -332,6 +331,11 @@ export interface TargetServerDto {
   name: string;
   description: string | null;
   hostname: string | null;
+  sshPort: number;
+  sshUsername: string | null;
+  sshAuthMethod: SshAuthMethod;
+  hasSshCredential: boolean;
+  hasSshPassphrase: boolean;
   isActive: boolean;
   createdAt: string;
   allowedDeploymentRoots: AllowedDeploymentRootDto[];
@@ -341,13 +345,39 @@ export interface CreateTargetServerRequest {
   name: string;
   description: string | null;
   hostname: string | null;
+  sshPort: number;
+  sshUsername: string | null;
+  sshAuthMethod: SshAuthMethod;
 }
 
 export interface UpdateTargetServerRequest {
   name: string;
   description: string | null;
   hostname: string | null;
+  sshPort: number;
+  sshUsername: string | null;
+  sshAuthMethod: SshAuthMethod;
   isActive: boolean;
+}
+
+export interface SetSshCredentialRequest {
+  value: string;
+}
+
+export interface SetSshPassphraseRequest {
+  value: string | null;
+}
+
+export interface TargetServerConnectionTestResultDto {
+  sshConnected: boolean;
+  authenticatedUser: string | null;
+  osInfo: string | null;
+  dockerAvailable: boolean;
+  dockerVersion: string | null;
+  composeAvailable: boolean;
+  composeVersion: string | null;
+  errorMessage: string | null;
+  testedAt: string;
 }
 
 export interface CreateAllowedDeploymentRootRequest {
@@ -391,10 +421,11 @@ export interface DeploymentLogEntryDto {
 }
 
 export interface CreateDevDeploymentRequest {
-  commitSha: string;
+  commitSha: string | null;
   commitMessage: string | null;
   commitAuthor: string | null;
   branch: string | null;
+  releaseId: string | null;
 }
 
 export interface RollbackRequest {
@@ -453,7 +484,7 @@ export interface DecidePromotionRequest {
   notes: string | null;
 }
 
-// --- Build configuration ---
+// --- Build configuration / Builds / Releases ---
 
 export interface BuildConfigurationDto {
   id: string;
@@ -464,6 +495,26 @@ export interface BuildConfigurationDto {
   imageRegistry: string | null;
   imageName: string | null;
   imageTagStrategy: ImageTagStrategy;
+}
+
+export const BuildStatus = {
+  Queued: 0,
+  Running: 1,
+  Succeeded: 2,
+  Failed: 3,
+} as const;
+export type BuildStatus = (typeof BuildStatus)[keyof typeof BuildStatus];
+
+export interface ReleaseDto {
+  id: string;
+  applicationId: string;
+  buildRequestId: string;
+  commitSha: string;
+  branch: string | null;
+  buildNumber: number;
+  imageReference: string;
+  buildStatus: BuildStatus;
+  createdAt: string;
 }
 
 // --- Git commit lookup ---
@@ -510,6 +561,78 @@ export interface PagedResult<T> {
   page: number;
   pageSize: number;
   totalCount: number;
+}
+
+// --- Containers (live status/control — master requirements §8/§9/§10) ---
+
+/** A `docker stats --no-stream` snapshot for one container. Memory usage/
+ * limit and network/block I/O are Docker's own human-readable formatted
+ * strings (e.g. "128MiB", "1.2kB / 3.4kB"), not exact byte counts. */
+export interface ContainerStatsDto {
+  cpuPercent: number | null;
+  memoryUsage: string | null;
+  memoryLimit: string | null;
+  memoryPercent: number | null;
+  networkIO: string | null;
+  blockIO: string | null;
+  pidCount: number | null;
+}
+
+export interface ContainerInfoDto {
+  serviceName: string;
+  containerName: string;
+  image: string;
+  imageTag: string | null;
+  state: ContainerState;
+  dockerHealthStatus: string | null;
+  startedAt: string | null;
+  uptime: string | null;
+  restartCount: number;
+  ports: string[];
+  stats: ContainerStatsDto | null;
+}
+
+/** Recent `docker logs --tail N` output for one container, fetched on demand. */
+export interface ContainerLogsDto {
+  containerName: string;
+  success: boolean;
+  logs: string;
+}
+
+export interface HealthCheckStatusDto {
+  type: HealthCheckType;
+  lastProbePassed: boolean | null;
+  lastProbeDetail: string | null;
+  lastProbeAt: string;
+  lastSuccessfulCheckAt: string | null;
+}
+
+export interface ContainerEnvironmentStatusDto {
+  applicationId: string;
+  environmentDefinitionId: string;
+  environmentName: string;
+  isConfigured: boolean;
+  isReachable: boolean;
+  unreachableReason: string | null;
+  targetServerName: string | null;
+  expectedServiceName: string | null;
+  expectedContainerName: string | null;
+  containers: ContainerInfoDto[];
+  healthCheck: HealthCheckStatusDto | null;
+  currentImageOrVersion: string | null;
+  lastRestartAt: string | null;
+  latestDeploymentId: string | null;
+  latestDeploymentStatus: DeploymentStatus | null;
+}
+
+export interface ContainerActionResultDto {
+  success: boolean;
+  message: string;
+  performedAt: string;
+}
+
+export interface RecreateWithVolumesRequest {
+  confirm: boolean;
 }
 
 // --- Secrets / Credentials ---

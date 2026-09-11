@@ -15,6 +15,13 @@ public interface IContainerOperationsService
     Task<ContainerEnvironmentStatusDto> GetStatusAsync(
         Guid applicationId, Guid environmentDefinitionId, CancellationToken cancellationToken = default);
 
+    /// <summary>Recent `docker logs --tail N` output for one already-discovered
+    /// container of this application environment. Same permission/environment-
+    /// access gate as GetStatusAsync; tailLines &lt;= 0 falls back to a sensible
+    /// default, a value above the maximum is rejected.</summary>
+    Task<ContainerLogsDto> GetLogsAsync(
+        Guid applicationId, Guid environmentDefinitionId, string containerName, int tailLines, CancellationToken cancellationToken = default);
+
     Task<ContainerActionResultDto> RestartAsync(
         Guid applicationId, Guid environmentDefinitionId, CancellationToken cancellationToken = default);
 

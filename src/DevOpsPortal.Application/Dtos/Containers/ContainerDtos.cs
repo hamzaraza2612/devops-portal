@@ -2,6 +2,19 @@ using DevOpsPortal.Domain.Enums;
 
 namespace DevOpsPortal.Application.Dtos.Containers;
 
+/// <summary>A `docker stats --no-stream` snapshot for one container — see
+/// Application.Abstractions.ContainerStatsInfo (this is its API-facing
+/// equivalent) for why memory usage/limit and network/block I/O are kept as
+/// Docker's own formatted strings rather than exact byte counts.</summary>
+public record ContainerStatsDto(
+    double? CpuPercent,
+    string? MemoryUsage,
+    string? MemoryLimit,
+    double? MemoryPercent,
+    string? NetworkIO,
+    string? BlockIO,
+    int? PidCount);
+
 public record ContainerInfoDto(
     string ServiceName,
     string ContainerName,
@@ -12,7 +25,13 @@ public record ContainerInfoDto(
     DateTimeOffset? StartedAt,
     TimeSpan? Uptime,
     int RestartCount,
-    IReadOnlyList<string> Ports);
+    IReadOnlyList<string> Ports,
+    ContainerStatsDto? Stats);
+
+/// <summary>Recent `docker logs --tail N` output for one container, fetched
+/// on demand (never polled automatically) — see
+/// ContainerOperationsService.GetLogsAsync.</summary>
+public record ContainerLogsDto(string ContainerName, bool Success, string Logs);
 
 /// <summary>Combines a live probe (run fresh on every status request, using the
 /// same IHealthCheckProbe Phase 3's deployment engine uses) with the last

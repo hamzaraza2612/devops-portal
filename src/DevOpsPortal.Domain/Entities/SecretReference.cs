@@ -12,7 +12,6 @@ namespace DevOpsPortal.Domain.Entities;
 public class SecretReference
 {
     public Guid Id { get; set; } = Guid.NewGuid();
-    public Guid TenantId { get; set; }
 
     /// <summary>Human-chosen identifier, unique within its (Scope, ApplicationId,
     /// EnvironmentDefinitionId) tuple — e.g. "db-password". Enforced in

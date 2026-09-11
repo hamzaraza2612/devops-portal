@@ -25,7 +25,6 @@ public class BranchPromotionTests
     private static async Task<Fixture> CreateFixtureAsync(IGitProviderClient? gitProviderClient = null, bool withRepository = true, bool withBranches = true)
     {
         var db = TestDb.CreateInMemory();
-        await TestDb.SeedRolesAndPermissionsAsync(db);
         await TestDb.SeedEnvironmentDefinitionsAsync(db);
 
         var repository = new Repository { Name = "sample-repo", Url = "https://gitlab.example.com/group/sample.git", Provider = RepositoryProvider.GitLab, AccessTokenEnvVarName = "GITLAB_TOKEN_SAMPLE" };
@@ -62,15 +61,17 @@ public class BranchPromotionTests
         }
         await db.SaveChangesAsync();
 
-        var devUserId = await TestDb.CreateUserWithPermissionsAsync(db, "dev1",
-            PermissionCodes.DeploymentsView, PermissionCodes.DeploymentsDeployDev, PermissionCodes.DeploymentsPromoteQa);
+        // Needs both DEV (to hold the succeeded source deployment against) and QA
+        // access (DeploymentsPromoteQa is bundled with QA access — see
+        // AppDbContextExtensions) since this fixture's single user both deploys
+        // to DEV and requests the promotion into QA.
+        var devUserId = await TestDb.CreateUserWithEnvironmentAccessAsync(db, "dev1", EnvironmentNames.Dev, EnvironmentNames.Qa);
 
         var currentUser = new FakeCurrentUserService { UserId = devUserId, Username = "dev1" };
-        var currentTenant = new FakeCurrentTenantService();
         var jobQueue = new NoopJobQueue();
-        var audit = new AuditService(db, currentUser, currentTenant);
+        var audit = new AuditService(db, currentUser);
         var notificationService = new NotificationService(db, [], audit, new TestConfiguration(), NullLogger<NotificationService>.Instance);
-        var sut = new DeploymentService(db, currentUser, currentTenant, audit, jobQueue, notificationService, gitProviderClient ?? new FakeGitProviderClient());
+        var sut = new DeploymentService(db, currentUser, audit, jobQueue, notificationService, gitProviderClient ?? new FakeGitProviderClient());
 
         var deployment = new Deployment
         {

@@ -132,12 +132,18 @@ public class NotificationService(
 
     // ------------------------------------------------------------- internals
 
-    private async Task<IReadOnlyList<string>> ResolveEmailsByPermissionAsync(string permissionCode, CancellationToken cancellationToken) =>
-        await db.Users
-            .Where(u => u.IsActive && u.UserRoles.Any(ur => ur.Role.RolePermissions.Any(rp => rp.Permission.Code == permissionCode)))
-            .Select(u => u.Email)
-            .Distinct()
-            .ToListAsync(cancellationToken);
+    private async Task<IReadOnlyList<string>> ResolveEmailsByPermissionAsync(string permissionCode, CancellationToken cancellationToken)
+    {
+        var activeUsers = await db.Users.Where(u => u.IsActive).Select(u => new { u.Id, u.Email }).ToListAsync(cancellationToken);
+        var recipients = new List<string>();
+        foreach (var user in activeUsers)
+        {
+            var (_, permissions) = await db.GetRolesAndPermissionsAsync(user.Id, cancellationToken);
+            if (permissions.Contains(permissionCode))
+                recipients.Add(user.Email);
+        }
+        return recipients.Distinct().ToList();
+    }
 
     private async Task<string?> ResolveUsernameAsync(Guid userId, CancellationToken cancellationToken) =>
         await db.Users.Where(u => u.Id == userId).Select(u => u.Username).FirstOrDefaultAsync(cancellationToken);

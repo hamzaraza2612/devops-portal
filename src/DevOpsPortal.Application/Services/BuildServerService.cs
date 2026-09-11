@@ -14,7 +14,7 @@ namespace DevOpsPortal.Application.Services;
 /// environment-variable name only, mirroring RepositoryService's handling of
 /// Repository.AccessTokenEnvVarName.
 /// </summary>
-public class BuildServerService(IAppDbContext db, IAuditService auditService, ICurrentTenantService currentTenantService) : IBuildServerService
+public class BuildServerService(IAppDbContext db, IAuditService auditService) : IBuildServerService
 {
     private static readonly System.Text.RegularExpressions.Regex EnvVarNamePattern =
         new(@"^[A-Z][A-Z0-9_]{2,99}$", System.Text.RegularExpressions.RegexOptions.Compiled);
@@ -40,7 +40,6 @@ public class BuildServerService(IAppDbContext db, IAuditService auditService, IC
 
         var server = new BuildServer
         {
-            TenantId = currentTenantService.RequireTenantId(),
             Name = name,
             Description = request.Description?.Trim(),
             ProviderType = request.ProviderType,

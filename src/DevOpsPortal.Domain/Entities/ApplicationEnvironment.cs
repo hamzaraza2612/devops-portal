@@ -13,7 +13,6 @@ namespace DevOpsPortal.Domain.Entities;
 public class ApplicationEnvironment
 {
     public Guid Id { get; set; } = Guid.NewGuid();
-    public Guid TenantId { get; set; }
 
     public Guid ApplicationId { get; set; }
     public ManagedApplication Application { get; set; } = null!;

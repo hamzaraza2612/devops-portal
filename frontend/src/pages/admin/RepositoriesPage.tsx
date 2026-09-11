@@ -5,7 +5,8 @@ import { Card, EmptyState, ErrorBanner, LoadingSpinner, PageHeader } from '../..
 import { useAsyncData } from '../../hooks/useAsyncData';
 import { Permissions } from '../../auth/permissions';
 import { useAuth } from '../../auth/AuthContext';
-import { RepositoryProvider, type RepositoryDto } from '../../types/api';
+import { RepositoryProvider, type RepositoryConnectionTestResultDto, type RepositoryDto } from '../../types/api';
+import { describeError } from '../../api/client';
 
 export function RepositoriesPage() {
   const { data, isLoading, error, reload } = useAsyncData(RepositoriesApi.list, []);
@@ -19,8 +20,8 @@ export function RepositoriesPage() {
   return (
     <div>
       <PageHeader
-        title="Repositories"
-        subtitle="Git repository references your applications build and deploy from. Never stores credentials — only the name of a server-side environment variable holding an access token."
+        title="Repositories / GitLab"
+        subtitle="GitLab repository connections your applications build and deploy from. The access token is stored encrypted — never in Git, never returned by any API."
         actions={
           can(Permissions.RepositoriesManage) && (
             <button
@@ -46,44 +47,73 @@ export function RepositoriesPage() {
       {data.length === 0 ? (
         <EmptyState title="No repositories configured yet." />
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
-          <table className="min-w-full divide-y divide-slate-200 text-sm">
-            <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-4 py-2">Name</th>
-                <th className="px-4 py-2">URL</th>
-                <th className="px-4 py-2">Access token env var</th>
-                <th className="px-4 py-2">Status</th>
-                {can(Permissions.RepositoriesManage) && <th className="px-4 py-2" />}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {data.map((repo) => (
-                <RepositoryRow key={repo.id} repo={repo} canManage={can(Permissions.RepositoriesManage)} onChanged={reload} />
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-3">
+          {data.map((repo) => (
+            <RepositoryCard key={repo.id} repo={repo} canManage={can(Permissions.RepositoriesManage)} onChanged={reload} />
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-function RepositoryRow({ repo, canManage, onChanged }: { repo: RepositoryDto; canManage: boolean; onChanged: () => void }) {
+function RepositoryCard({ repo, canManage, onChanged }: { repo: RepositoryDto; canManage: boolean; onChanged: () => void }) {
+  const [testResult, setTestResult] = useState<RepositoryConnectionTestResultDto | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
+  const [isTesting, setIsTesting] = useState(false);
+  const [showTokenForm, setShowTokenForm] = useState(false);
+  const [token, setToken] = useState('');
+
+  async function runTest() {
+    setIsTesting(true);
+    setTestError(null);
+    try {
+      setTestResult(await RepositoriesApi.testConnection(repo.id));
+    } catch (err) {
+      setTestError(describeError(err));
+      setTestResult(null);
+    } finally {
+      setIsTesting(false);
+    }
+  }
+
   return (
-    <tr className={repo.isActive ? '' : 'opacity-60'}>
-      <td className="px-4 py-2.5 font-medium text-slate-900">{repo.name}</td>
-      <td className="px-4 py-2.5 text-slate-600">
-        <span className="break-all">{repo.url}</span>
-      </td>
-      <td className="px-4 py-2.5 font-mono text-xs text-slate-600">{repo.accessTokenEnvVarName ?? '—'}</td>
-      <td className="px-4 py-2.5">
+    <Card className={repo.isActive ? '' : 'opacity-60'}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="font-medium text-slate-900">{repo.name}</h3>
+          <p className="break-all text-xs text-slate-500">{repo.url}</p>
+        </div>
         <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${repo.isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>
           {repo.isActive ? 'Active' : 'Inactive'}
         </span>
-      </td>
-      {canManage && (
-        <td className="px-4 py-2.5">
+      </div>
+
+      <dl className="mt-3 grid gap-1 text-xs sm:grid-cols-2">
+        <Row label="Default branch" value={repo.defaultBranch ?? '—'} />
+        <Row label="Username" value={repo.username ?? '—'} />
+        <Row label="Access token" value={repo.hasAccessToken ? 'Configured' : repo.accessTokenEnvVarName ? `env: ${repo.accessTokenEnvVarName}` : 'Not configured'} />
+      </dl>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+        <button
+          type="button"
+          onClick={() => void runTest()}
+          disabled={isTesting}
+          className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+        >
+          {isTesting ? 'Testing…' : 'Test GitLab Connection'}
+        </button>
+        {canManage && (
+          <button
+            type="button"
+            onClick={() => setShowTokenForm((v) => !v)}
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            {showTokenForm ? 'Cancel' : 'Set access token'}
+          </button>
+        )}
+        {canManage && (
           <ActionButton
             label={repo.isActive ? 'Deactivate' : 'Activate'}
             variant={repo.isActive ? 'danger' : 'secondary'}
@@ -94,15 +124,60 @@ function RepositoryRow({ repo, canManage, onChanged }: { repo: RepositoryDto; ca
                 url: repo.url,
                 provider: repo.provider,
                 description: repo.description,
+                defaultBranch: repo.defaultBranch,
+                username: repo.username,
                 accessTokenEnvVarName: repo.accessTokenEnvVarName,
                 isActive: !repo.isActive,
               })
             }
             onSuccess={onChanged}
           />
-        </td>
+        )}
+      </div>
+
+      {testError && <p className="mt-2 text-xs text-red-600">{testError}</p>}
+      {testResult && (
+        <p className={`mt-2 text-xs font-medium ${testResult.connected ? 'text-emerald-700' : 'text-red-600'}`}>
+          {testResult.connected
+            ? `CONNECTED to ${testResult.projectName ?? repo.name}${testResult.authenticatedAs ? ` as ${testResult.authenticatedAs}` : ''}`
+            : `FAILED: ${testResult.errorMessage}`}
+        </p>
       )}
-    </tr>
+
+      {showTokenForm && canManage && (
+        <div className="mt-3 flex flex-wrap items-end gap-2 border-t border-slate-100 pt-3">
+          <label className="block text-xs font-medium text-slate-600">
+            GitLab access token
+            <input
+              type="password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              className={inputClass}
+              placeholder="Paste token — never displayed again"
+            />
+          </label>
+          <ActionButton
+            label="Save token"
+            disabled={!token.trim()}
+            onAction={() => RepositoriesApi.setAccessToken(repo.id, { value: token.trim() })}
+            onSuccess={() => {
+              setToken('');
+              setShowTokenForm(false);
+              onChanged();
+            }}
+          />
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between gap-3">
+      <dt className="text-slate-500">{label}</dt>
+      <dd className="font-medium text-slate-800">{value}</dd>
+    </div>
   );
 }
 
@@ -110,6 +185,8 @@ function RepositoryForm({ onSubmitted }: { onSubmitted: () => void }) {
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [description, setDescription] = useState('');
+  const [defaultBranch, setDefaultBranch] = useState('');
+  const [username, setUsername] = useState('');
   const [accessTokenEnvVarName, setAccessTokenEnvVarName] = useState('');
 
   const canSubmit = name.trim() && url.trim();
@@ -123,23 +200,35 @@ function RepositoryForm({ onSubmitted }: { onSubmitted: () => void }) {
           <input value={name} onChange={(e) => setName(e.target.value)} className={inputClass} />
         </label>
         <label className="block text-xs font-medium text-slate-600">
-          URL
+          GitLab URL
           <input value={url} onChange={(e) => setUrl(e.target.value)} className={inputClass} placeholder="https://gitlab.example.com/group/app.git" />
+        </label>
+        <label className="block text-xs font-medium text-slate-600">
+          Default branch
+          <input value={defaultBranch} onChange={(e) => setDefaultBranch(e.target.value)} className={inputClass} placeholder="main" />
+        </label>
+        <label className="block text-xs font-medium text-slate-600">
+          Username
+          <input value={username} onChange={(e) => setUsername(e.target.value)} className={inputClass} placeholder="GitLab username or service account" />
         </label>
         <label className="block text-xs font-medium text-slate-600 sm:col-span-2">
           Description
           <input value={description} onChange={(e) => setDescription(e.target.value)} className={inputClass} placeholder="Optional" />
         </label>
         <label className="block text-xs font-medium text-slate-600 sm:col-span-2">
-          Access token environment variable name
+          Legacy: access token environment variable name
           <input
             value={accessTokenEnvVarName}
             onChange={(e) => setAccessTokenEnvVarName(e.target.value)}
             className={inputClass}
-            placeholder="e.g. GITLAB_TOKEN_MYAPP — never the token itself"
+            placeholder="Optional — prefer setting the access token directly after creating"
           />
         </label>
       </div>
+      <p className="mt-2 text-xs text-slate-400">
+        After creating this repository, use &ldquo;Set access token&rdquo; to store the GitLab access token securely, then &ldquo;Test GitLab
+        Connection&rdquo; to verify it.
+      </p>
       <div className="mt-3">
         <ActionButton
           label="Create repository"
@@ -151,6 +240,8 @@ function RepositoryForm({ onSubmitted }: { onSubmitted: () => void }) {
               url: url.trim(),
               provider: RepositoryProvider.GitLab,
               description: description.trim() || null,
+              defaultBranch: defaultBranch.trim() || null,
+              username: username.trim() || null,
               accessTokenEnvVarName: accessTokenEnvVarName.trim() || null,
             })
           }

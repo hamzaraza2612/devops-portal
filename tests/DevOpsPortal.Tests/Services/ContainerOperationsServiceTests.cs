@@ -25,6 +25,7 @@ public class ContainerOperationsServiceTests
         Guid ViewUserId,
         Guid ControlUserId,
         Guid RecreateUserId,
+        Guid OtherEnvironmentUserId,
         Guid NoPermissionUserId);
 
     private static async Task<Fixture> CreateFixtureAsync(
@@ -34,7 +35,6 @@ public class ContainerOperationsServiceTests
         bool appEnvActive = true)
     {
         var db = TestDb.CreateInMemory();
-        await TestDb.SeedRolesAndPermissionsAsync(db);
         await TestDb.SeedEnvironmentDefinitionsAsync(db);
 
         var app = new ManagedApplication { Name = "Sample", Slug = "sample", DeploymentMode = DeploymentMode.LegacyFilesystem };
@@ -63,20 +63,27 @@ public class ContainerOperationsServiceTests
         await db.SaveChangesAsync();
 
         var currentUser = new FakeCurrentUserService();
-        var audit = new AuditService(db, currentUser, new FakeCurrentTenantService());
+        var audit = new AuditService(db, currentUser);
         var sut = new ContainerOperationsService(
             db, currentUser, audit,
             runtimeProvider ?? new FakeContainerRuntimeProvider(),
             healthProbe ?? new FakeHealthCheckProbe(true));
 
-        var viewUserId = await TestDb.CreateUserWithPermissionsAsync(db, "viewer", PermissionCodes.ContainersView);
-        var controlUserId = await TestDb.CreateUserWithPermissionsAsync(
-            db, "controller", PermissionCodes.ContainersView, PermissionCodes.ContainersControl);
-        var recreateUserId = await TestDb.CreateUserWithPermissionsAsync(
-            db, "recreator", PermissionCodes.ContainersView, PermissionCodes.ContainersControl, PermissionCodes.ContainersRecreate);
-        var noPermissionUserId = await TestDb.CreateUserWithPermissionsAsync(db, "nobody", PermissionCodes.UsersView);
+        // ContainersView/Control/Recreate are all granted together to anyone with
+        // access to at least one environment (see AppDbContextExtensions) — the
+        // real remaining authorization boundary is per-specific-environment (see
+        // EnsureEnvironmentAccessAsync), covered by otherEnvironmentUserId below.
+        // Also granted Production access (not just DEV) since a couple of tests
+        // exercise "environment not configured for this application" against
+        // PRODUCTION specifically and need to get past the access check first.
+        var authorizedUserId = await TestDb.CreateUserWithEnvironmentAccessAsync(
+            db, "authorized", EnvironmentNames.Dev, EnvironmentNames.Production);
+        var otherEnvironmentUserId = await TestDb.CreateUserWithEnvironmentAccessAsync(db, "qa-only", EnvironmentNames.Qa);
+        var noPermissionUserId = await TestDb.CreateUserWithNoAccessAsync(db, "nobody");
 
-        return new Fixture(sut, db, currentUser, app, devEnv, appEnv, server, viewUserId, controlUserId, recreateUserId, noPermissionUserId);
+        return new Fixture(
+            sut, db, currentUser, app, devEnv, appEnv, server,
+            authorizedUserId, authorizedUserId, authorizedUserId, otherEnvironmentUserId, noPermissionUserId);
     }
 
     // ---------------------------------------------------- reachability (default provider)
@@ -177,6 +184,84 @@ public class ContainerOperationsServiceTests
         await Assert.ThrowsAsync<ForbiddenException>(() => f.Sut.GetStatusAsync(f.App.Id, f.DevEnv.Id));
     }
 
+    // -------------------------------------------------------------------- logs
+
+    [Fact]
+    public async Task GetLogsAsync_WithAuthorizedEnvironmentAccess_ReturnsLogs()
+    {
+        var provider = new FakeContainerRuntimeProvider(logsResult: new ContainerLogsResult(true, true, "line 1\nline 2\n", null));
+        var f = await CreateFixtureAsync(runtimeProvider: provider);
+        f.CurrentUser.UserId = f.ViewUserId;
+
+        var result = await f.Sut.GetLogsAsync(f.App.Id, f.DevEnv.Id, "sample-web-1", 100);
+
+        Assert.True(result.Success);
+        Assert.Equal("line 1\nline 2\n", result.Logs);
+        Assert.Equal("sample-web-1", provider.LastLogsContainerName);
+        Assert.Equal(100, provider.LastLogsTailLines);
+    }
+
+    [Fact]
+    public async Task GetLogsAsync_WithoutContainersViewPermission_ThrowsForbidden()
+    {
+        var f = await CreateFixtureAsync();
+        f.CurrentUser.UserId = f.NoPermissionUserId;
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => f.Sut.GetLogsAsync(f.App.Id, f.DevEnv.Id, "sample-web-1", 100));
+    }
+
+    [Fact]
+    public async Task GetLogsAsync_WithAccessToADifferentEnvironmentOnly_ThrowsForbidden()
+    {
+        var f = await CreateFixtureAsync();
+        f.CurrentUser.UserId = f.OtherEnvironmentUserId; // has QA access, not DEV
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => f.Sut.GetLogsAsync(f.App.Id, f.DevEnv.Id, "sample-web-1", 100));
+    }
+
+    [Fact]
+    public async Task GetLogsAsync_WithMissingContainerName_ThrowsValidation()
+    {
+        var f = await CreateFixtureAsync();
+        f.CurrentUser.UserId = f.ViewUserId;
+
+        await Assert.ThrowsAsync<ValidationException>(() => f.Sut.GetLogsAsync(f.App.Id, f.DevEnv.Id, "", 100));
+    }
+
+    [Fact]
+    public async Task GetLogsAsync_WithTailLinesAboveMaximum_ThrowsValidation()
+    {
+        var f = await CreateFixtureAsync();
+        f.CurrentUser.UserId = f.ViewUserId;
+
+        await Assert.ThrowsAsync<ValidationException>(() => f.Sut.GetLogsAsync(f.App.Id, f.DevEnv.Id, "sample-web-1", 1_000_000));
+    }
+
+    [Fact]
+    public async Task GetLogsAsync_WithZeroOrNegativeTailLines_FallsBackToADefault_RatherThanThrowing()
+    {
+        var provider = new FakeContainerRuntimeProvider(logsResult: new ContainerLogsResult(true, true, "ok", null));
+        var f = await CreateFixtureAsync(runtimeProvider: provider);
+        f.CurrentUser.UserId = f.ViewUserId;
+
+        var result = await f.Sut.GetLogsAsync(f.App.Id, f.DevEnv.Id, "sample-web-1", 0);
+
+        Assert.True(result.Success);
+        Assert.True(provider.LastLogsTailLines > 0);
+    }
+
+    [Fact]
+    public async Task GetLogsAsync_WhenTargetServerUnreachable_ReturnsFailure_WithoutThrowing()
+    {
+        var provider = new FakeContainerRuntimeProvider(logsResult: new ContainerLogsResult(false, false, string.Empty, "not configured"));
+        var f = await CreateFixtureAsync(runtimeProvider: provider);
+        f.CurrentUser.UserId = f.ViewUserId;
+
+        var result = await f.Sut.GetLogsAsync(f.App.Id, f.DevEnv.Id, "sample-web-1", 100);
+
+        Assert.False(result.Success);
+    }
+
     // ---------------------------------------------------------- restart/start/stop
 
     [Fact]
@@ -184,7 +269,7 @@ public class ContainerOperationsServiceTests
     {
         var provider = new FakeContainerRuntimeProvider(operationResult: new ContainerRuntimeOperationResult(true, true, "ok"));
         var f = await CreateFixtureAsync(runtimeProvider: provider);
-        f.CurrentUser.UserId = f.ViewUserId; // holds View but not Control
+        f.CurrentUser.UserId = f.OtherEnvironmentUserId; // has QA access, not DEV
 
         await Assert.ThrowsAsync<ForbiddenException>(() => f.Sut.RestartAsync(f.App.Id, f.DevEnv.Id));
         Assert.Equal(0, provider.OperationInvocationCount);
@@ -285,7 +370,7 @@ public class ContainerOperationsServiceTests
     public async Task RecreateWithVolumesAsync_WithoutRecreatePermission_ThrowsForbidden()
     {
         var f = await CreateFixtureAsync(useDownWithVolumesOnDeploy: true);
-        f.CurrentUser.UserId = f.ControlUserId; // holds Control but not Recreate
+        f.CurrentUser.UserId = f.OtherEnvironmentUserId; // has QA access, not DEV
 
         await Assert.ThrowsAsync<ForbiddenException>(() => f.Sut.RecreateWithVolumesAsync(f.App.Id, f.DevEnv.Id, new RecreateWithVolumesRequest(true)));
     }
@@ -412,19 +497,25 @@ public class ContainerOperationsServiceTests
     {
         private readonly ContainerRuntimeStatusResult _statusResult;
         private readonly Func<ComposeOperation, ContainerRuntimeOperationResult> _operationResultFor;
+        private readonly ContainerLogsResult _logsResult;
 
         public List<(TargetServer Server, ComposeOperation Operation)> OperationsInvoked { get; } = [];
         public int OperationInvocationCount => OperationsInvoked.Count;
         public TargetServer? LastGetStatusTargetServer { get; private set; }
+        public int LogsInvocationCount { get; private set; }
+        public string? LastLogsContainerName { get; private set; }
+        public int? LastLogsTailLines { get; private set; }
 
         public FakeContainerRuntimeProvider(
             ContainerRuntimeStatusResult? statusResult = null,
             ContainerRuntimeOperationResult? operationResult = null,
-            Func<ComposeOperation, ContainerRuntimeOperationResult>? perOperationResult = null)
+            Func<ComposeOperation, ContainerRuntimeOperationResult>? perOperationResult = null,
+            ContainerLogsResult? logsResult = null)
         {
             _statusResult = statusResult ?? new ContainerRuntimeStatusResult(false, "No remote execution mechanism is configured for target server.", []);
             _operationResultFor = perOperationResult
                 ?? (_ => operationResult ?? new ContainerRuntimeOperationResult(false, false, "No remote execution mechanism is configured for target server."));
+            _logsResult = logsResult ?? new ContainerLogsResult(false, false, string.Empty, "No remote execution mechanism is configured for target server.");
         }
 
         public Task<ContainerRuntimeStatusResult> GetStatusAsync(
@@ -440,6 +531,16 @@ public class ContainerOperationsServiceTests
         {
             OperationsInvoked.Add((targetServer, operation));
             return Task.FromResult(_operationResultFor(operation));
+        }
+
+        public Task<ContainerLogsResult> GetLogsAsync(
+            TargetServer targetServer, string workingDirectory, string composeFilePath, string? projectName, string containerName, int tailLines,
+            CancellationToken cancellationToken = default)
+        {
+            LogsInvocationCount++;
+            LastLogsContainerName = containerName;
+            LastLogsTailLines = tailLines;
+            return Task.FromResult(_logsResult);
         }
     }
 }

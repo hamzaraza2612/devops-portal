@@ -31,15 +31,6 @@ public static class DependencyInjection
             options.UseNpgsql(connectionString, npgsql => npgsql.EnableRetryOnFailure(maxRetryCount: 3)));
         services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
 
-        // One AmbientTenantContext instance per scope, exposed as both the read-only
-        // ICurrentTenantService (consumed by AppDbContext's global query filters and
-        // every service) and the settable IMutableTenantContext (consumed by
-        // TenantResolutionMiddleware for HTTP requests and DeploymentWorker for
-        // background jobs — see AmbientTenantContext's doc comment).
-        services.AddScoped<AmbientTenantContext>();
-        services.AddScoped<ICurrentTenantService>(sp => sp.GetRequiredService<AmbientTenantContext>());
-        services.AddScoped<IMutableTenantContext>(sp => sp.GetRequiredService<AmbientTenantContext>());
-
         services.Configure<JwtSettings>(configuration.GetSection(JwtSettings.SectionName));
         services.AddSingleton<IPasswordHasher, PasswordHasher>();
         services.AddSingleton<IJwtTokenService, JwtTokenService>();
@@ -56,16 +47,19 @@ public static class DependencyInjection
         services.AddSingleton<IDeploymentJobQueue, InMemoryDeploymentJobQueue>();
         services.AddHostedService<DeploymentWorker>();
 
-        services.AddSingleton<IComposeCommandExecutor, ComposeCommandExecutor>();
         services.AddHttpClient<IHealthCheckProbe, HealthCheckProbe>(client => client.Timeout = TimeSpan.FromSeconds(30));
 
-        // No secure remote execution mechanism exists yet (see PROJECT_STATE.md's
-        // Phase 5 remote-execution correction) — NotConfiguredRemoteExecutionProvider
-        // is the only implementation, and is honest that every target server is
-        // unreachable rather than silently running Docker locally. Swap this
-        // registration, not any caller, when real remote connectivity is built.
-        services.AddSingleton<IRemoteExecutionProvider, NotConfiguredRemoteExecutionProvider>();
-        services.AddSingleton<IContainerRuntimeProvider, DockerComposeContainerRuntimeProvider>();
+        // Phase 12: real SSH-based remote execution (master requirements §5/§7 — the
+        // portal VM is separate from every TargetServer). SshRemoteExecutionProvider
+        // is honest per-TargetServer too: IsConfigured() is false (nothing attempted)
+        // until a TargetServer has Hostname/SshUsername/a stored credential, in which
+        // case it behaves exactly like NotConfiguredRemoteExecutionProvider did for
+        // every server before this phase. Scoped (not Singleton): depends on
+        // ISecretProvider (registered below), which is itself Scoped — and
+        // IContainerRuntimeProvider, which is built on top of it, must be Scoped too
+        // so a Singleton never captures a Scoped dependency.
+        services.AddScoped<IRemoteExecutionProvider, SshRemoteExecutionProvider>();
+        services.AddScoped<IContainerRuntimeProvider, DockerComposeContainerRuntimeProvider>();
 
         services.Configure<SmtpSettings>(configuration.GetSection(SmtpSettings.SectionName));
         services.AddSingleton<IEmailSender, SmtpEmailSender>();

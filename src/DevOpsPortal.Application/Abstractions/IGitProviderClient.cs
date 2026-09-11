@@ -4,6 +4,12 @@ namespace DevOpsPortal.Application.Abstractions;
 
 public record GitCommitInfo(string Sha, string Message, string? AuthorName, string? AuthorEmail, DateTimeOffset? CommittedAt);
 
+/// <summary>Result of a "Test GitLab Connection" check (master requirements §3):
+/// actually reaches the configured GitLab instance and reports CONNECTED (with
+/// the resolved project and, if a token is configured, the authenticated user)
+/// or FAILED with a useful error message — never fabricated.</summary>
+public record GitConnectionTestResult(bool Connected, string? AuthenticatedAs, string? ProjectName, string? ErrorMessage);
+
 /// <summary>Wraps a provider call that may legitimately fail (network, auth, branch not
 /// found) without that being an application error — callers show ErrorMessage rather
 /// than treating this as an exception.</summary>
@@ -37,4 +43,10 @@ public interface IGitProviderClient
     /// configured) — same GitProviderResult contract as the read methods above.</summary>
     Task<GitProviderResult<string>> PromoteBranchAsync(
         Repository repository, string sourceBranch, string targetBranch, CancellationToken cancellationToken = default);
+
+    /// <summary>Master requirements §3 "Test GitLab Connection": actually reaches
+    /// the configured GitLab instance and verifies the project is reachable (and,
+    /// if a token is configured, that it authenticates) — never fabricates a
+    /// successful result.</summary>
+    Task<GitConnectionTestResult> TestConnectionAsync(Repository repository, CancellationToken cancellationToken = default);
 }

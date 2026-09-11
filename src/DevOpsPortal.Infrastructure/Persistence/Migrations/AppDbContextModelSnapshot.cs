@@ -45,12 +45,7 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("TargetServerId")
                         .HasColumnType("uuid");
 
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
                     b.HasKey("Id");
-
-                    b.HasIndex("TenantId");
 
                     b.HasIndex("TargetServerId", "RootPath")
                         .IsUnique();
@@ -127,9 +122,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("TargetServerId")
                         .HasColumnType("uuid");
 
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
                     b.Property<DateTimeOffset?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -141,8 +133,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.HasIndex("EnvironmentDefinitionId");
 
                     b.HasIndex("TargetServerId");
-
-                    b.HasIndex("TenantId");
 
                     b.HasIndex("ApplicationId", "EnvironmentDefinitionId")
                         .IsUnique();
@@ -175,9 +165,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Property<int>("Result")
                         .HasColumnType("integer");
 
-                    b.Property<Guid?>("TenantId")
-                        .HasColumnType("uuid");
-
                     b.Property<DateTimeOffset>("Timestamp")
                         .HasColumnType("timestamp with time zone");
 
@@ -190,8 +177,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("Action");
-
-                    b.HasIndex("TenantId");
 
                     b.HasIndex("Timestamp");
 
@@ -242,9 +227,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Property<string>("SdkVersion")
                         .HasColumnType("text");
 
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
                     b.Property<DateTimeOffset?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -254,8 +236,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.HasIndex("BuildServerId");
-
-                    b.HasIndex("TenantId");
 
                     b.ToTable("BuildConfigurations");
                 });
@@ -313,14 +293,9 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Property<int>("Status")
                         .HasColumnType("integer");
 
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
                     b.HasKey("Id");
 
                     b.HasIndex("BuildServerId");
-
-                    b.HasIndex("TenantId");
 
                     b.HasIndex("ApplicationId", "RequestedAt");
 
@@ -359,15 +334,12 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Property<int>("ProviderType")
                         .HasColumnType("integer");
 
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
                     b.Property<string>("Username")
                         .HasColumnType("text");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "Name")
+                    b.HasIndex("Name")
                         .IsUnique();
 
                     b.ToTable("BuildServers");
@@ -441,9 +413,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Property<int>("Status")
                         .HasColumnType("integer");
 
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
                     b.Property<string>("VersionLabel")
                         .HasColumnType("text");
 
@@ -458,8 +427,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.HasIndex("ReleaseId");
 
                     b.HasIndex("RollbackOfDeploymentId");
-
-                    b.HasIndex("TenantId");
 
                     b.HasIndex("ApplicationId", "EnvironmentDefinitionId")
                         .IsUnique()
@@ -491,15 +458,10 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Property<int>("Sequence")
                         .HasColumnType("integer");
 
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
                     b.Property<DateTimeOffset>("Timestamp")
                         .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("TenantId");
 
                     b.HasIndex("DeploymentId", "Sequence")
                         .IsUnique();
@@ -527,12 +489,9 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Property<int>("SortOrder")
                         .HasColumnType("integer");
 
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "Name")
+                    b.HasIndex("Name")
                         .IsUnique();
 
                     b.ToTable("EnvironmentDefinitions");
@@ -572,9 +531,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Property<string>("SourcePath")
                         .HasColumnType("text");
 
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
                     b.Property<DateTimeOffset?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -582,33 +538,10 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("RepositoryId");
 
-                    b.HasIndex("TenantId", "Slug")
+                    b.HasIndex("Slug")
                         .IsUnique();
 
                     b.ToTable("Applications");
-                });
-
-            modelBuilder.Entity("DevOpsPortal.Domain.Entities.Permission", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Code")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
-
-                    b.Property<string>("Description")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Code")
-                        .IsUnique();
-
-                    b.ToTable("Permissions");
                 });
 
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.ProductionApproval", b =>
@@ -649,9 +582,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Property<int>("Status")
                         .HasColumnType("integer");
 
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
                     b.HasKey("Id");
 
                     b.HasIndex("ApprovalTokenHash")
@@ -659,8 +589,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("PromotionRequestId")
                         .IsUnique();
-
-                    b.HasIndex("TenantId");
 
                     b.ToTable("ProductionApprovals");
                 });
@@ -728,9 +656,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Property<int>("Status")
                         .HasColumnType("integer");
 
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
                     b.Property<string>("ToBranch")
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
@@ -746,8 +671,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.HasIndex("FromEnvironmentDefinitionId");
 
                     b.HasIndex("SourceDeploymentId");
-
-                    b.HasIndex("TenantId");
 
                     b.HasIndex("ToEnvironmentDefinitionId");
 
@@ -790,17 +713,12 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .HasMaxLength(1000)
                         .HasColumnType("character varying(1000)");
 
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
                     b.HasKey("Id");
 
                     b.HasIndex("ApplicationId");
 
                     b.HasIndex("BuildRequestId")
                         .IsUnique();
-
-                    b.HasIndex("TenantId");
 
                     b.ToTable("Releases");
                 });
@@ -815,8 +733,16 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 
+                    b.Property<string>("AccessTokenStoreKey")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DefaultBranch")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
 
                     b.Property<string>("Description")
                         .HasColumnType("text");
@@ -832,68 +758,21 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Property<int>("Provider")
                         .HasColumnType("integer");
 
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
                     b.Property<string>("Url")
                         .IsRequired()
                         .HasMaxLength(1000)
                         .HasColumnType("character varying(1000)");
 
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId", "Name")
-                        .IsUnique();
-
-                    b.ToTable("Repositories");
-                });
-
-            modelBuilder.Entity("DevOpsPortal.Domain.Entities.Role", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Description")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<bool>("IsSystem")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
-
-                    b.Property<Guid?>("TenantId")
-                        .HasColumnType("uuid");
+                    b.Property<string>("Username")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
 
                     b.HasKey("Id");
 
                     b.HasIndex("Name")
-                        .IsUnique()
-                        .HasFilter("\"TenantId\" IS NULL");
-
-                    b.HasIndex("TenantId", "Name")
                         .IsUnique();
 
-                    b.ToTable("Roles");
-                });
-
-            modelBuilder.Entity("DevOpsPortal.Domain.Entities.RolePermission", b =>
-                {
-                    b.Property<Guid>("RoleId")
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid>("PermissionId")
-                        .HasColumnType("uuid");
-
-                    b.HasKey("RoleId", "PermissionId");
-
-                    b.HasIndex("PermissionId");
-
-                    b.ToTable("RolePermissions");
+                    b.ToTable("Repositories");
                 });
 
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.SecretReference", b =>
@@ -952,9 +831,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
                     b.Property<DateTimeOffset?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -965,8 +841,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("EnvironmentDefinitionId");
-
-                    b.HasIndex("TenantId");
 
                     b.HasIndex("ApplicationId", "EnvironmentDefinitionId");
 
@@ -1015,7 +889,8 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .HasColumnType("text");
 
                     b.Property<string>("Hostname")
-                        .HasColumnType("text");
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
 
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
@@ -1025,51 +900,30 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
+                    b.Property<int>("SshAuthMethod")
+                        .HasColumnType("integer");
 
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId", "Name")
-                        .IsUnique();
-
-                    b.ToTable("TargetServers");
-                });
-
-            modelBuilder.Entity("DevOpsPortal.Domain.Entities.Tenant", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Description")
-                        .HasColumnType("text");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.Property<string>("Slug")
-                        .IsRequired()
+                    b.Property<string>("SshCredentialStoreKey")
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 
-                    b.Property<DateTimeOffset?>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
+                    b.Property<string>("SshPassphraseStoreKey")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<int>("SshPort")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("SshUsername")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("Slug")
+                    b.HasIndex("Name")
                         .IsUnique();
 
-                    b.ToTable("Tenants");
+                    b.ToTable("TargetServers");
                 });
 
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.User", b =>
@@ -1077,6 +931,9 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
+
+                    b.Property<bool>("CanApproveProduction")
+                        .HasColumnType("boolean");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -1094,15 +951,15 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
 
+                    b.Property<bool>("IsAdmin")
+                        .HasColumnType("boolean");
+
                     b.Property<DateTimeOffset?>("LastLoginAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("PasswordHash")
                         .IsRequired()
                         .HasColumnType("text");
-
-                    b.Property<Guid?>("TenantId")
-                        .HasColumnType("uuid");
 
                     b.Property<string>("Username")
                         .IsRequired()
@@ -1114,27 +971,32 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.HasIndex("Email")
                         .IsUnique();
 
-                    b.HasIndex("TenantId");
-
                     b.HasIndex("Username")
                         .IsUnique();
 
                     b.ToTable("Users");
                 });
 
-            modelBuilder.Entity("DevOpsPortal.Domain.Entities.UserRole", b =>
+            modelBuilder.Entity("DevOpsPortal.Domain.Entities.UserEnvironmentAccess", b =>
                 {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("EnvironmentDefinitionId")
+                        .HasColumnType("uuid");
+
                     b.Property<Guid>("UserId")
                         .HasColumnType("uuid");
 
-                    b.Property<Guid>("RoleId")
-                        .HasColumnType("uuid");
+                    b.HasKey("Id");
 
-                    b.HasKey("UserId", "RoleId");
+                    b.HasIndex("EnvironmentDefinitionId");
 
-                    b.HasIndex("RoleId");
+                    b.HasIndex("UserId", "EnvironmentDefinitionId")
+                        .IsUnique();
 
-                    b.ToTable("UserRoles");
+                    b.ToTable("UserEnvironmentAccess");
                 });
 
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.AllowedDeploymentRoot", b =>
@@ -1143,12 +1005,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .WithMany("AllowedDeploymentRoots")
                         .HasForeignKey("TargetServerId")
                         .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.Navigation("TargetServer");
@@ -1174,25 +1030,11 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.Navigation("Application");
 
                     b.Navigation("EnvironmentDefinition");
 
                     b.Navigation("TargetServer");
-                });
-
-            modelBuilder.Entity("DevOpsPortal.Domain.Entities.AuditLog", b =>
-                {
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.BuildConfiguration", b =>
@@ -1207,12 +1049,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("BuildServerId")
                         .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
 
                     b.Navigation("Application");
 
@@ -1233,24 +1069,9 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.Navigation("Application");
 
                     b.Navigation("BuildServer");
-                });
-
-            modelBuilder.Entity("DevOpsPortal.Domain.Entities.BuildServer", b =>
-                {
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
                 });
 
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.Deployment", b =>
@@ -1288,12 +1109,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .HasForeignKey("RollbackOfDeploymentId")
                         .OnDelete(DeleteBehavior.Restrict);
 
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.Navigation("Application");
 
                     b.Navigation("ApplicationEnvironment");
@@ -1315,22 +1130,7 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.Navigation("Deployment");
-                });
-
-            modelBuilder.Entity("DevOpsPortal.Domain.Entities.EnvironmentDefinition", b =>
-                {
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
                 });
 
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.ManagedApplication", b =>
@@ -1339,12 +1139,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("RepositoryId")
                         .OnDelete(DeleteBehavior.SetNull);
-
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
 
                     b.Navigation("Repository");
                 });
@@ -1355,12 +1149,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .WithOne("ProductionApproval")
                         .HasForeignKey("DevOpsPortal.Domain.Entities.ProductionApproval", "PromotionRequestId")
                         .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.Navigation("PromotionRequest");
@@ -1383,12 +1171,6 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.HasOne("DevOpsPortal.Domain.Entities.Deployment", "SourceDeployment")
                         .WithMany()
                         .HasForeignKey("SourceDeploymentId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
@@ -1421,51 +1203,9 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.Navigation("Application");
 
                     b.Navigation("BuildRequest");
-                });
-
-            modelBuilder.Entity("DevOpsPortal.Domain.Entities.Repository", b =>
-                {
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("DevOpsPortal.Domain.Entities.Role", b =>
-                {
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict);
-                });
-
-            modelBuilder.Entity("DevOpsPortal.Domain.Entities.RolePermission", b =>
-                {
-                    b.HasOne("DevOpsPortal.Domain.Entities.Permission", "Permission")
-                        .WithMany("RolePermissions")
-                        .HasForeignKey("PermissionId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("DevOpsPortal.Domain.Entities.Role", "Role")
-                        .WithMany("RolePermissions")
-                        .HasForeignKey("RoleId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Permission");
-
-                    b.Navigation("Role");
                 });
 
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.SecretReference", b =>
@@ -1480,49 +1220,26 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                         .HasForeignKey("EnvironmentDefinitionId")
                         .OnDelete(DeleteBehavior.Restrict);
 
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.Navigation("Application");
 
                     b.Navigation("EnvironmentDefinition");
                 });
 
-            modelBuilder.Entity("DevOpsPortal.Domain.Entities.TargetServer", b =>
+            modelBuilder.Entity("DevOpsPortal.Domain.Entities.UserEnvironmentAccess", b =>
                 {
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
+                    b.HasOne("DevOpsPortal.Domain.Entities.EnvironmentDefinition", "EnvironmentDefinition")
                         .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("DevOpsPortal.Domain.Entities.User", b =>
-                {
-                    b.HasOne("DevOpsPortal.Domain.Entities.Tenant", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict);
-                });
-
-            modelBuilder.Entity("DevOpsPortal.Domain.Entities.UserRole", b =>
-                {
-                    b.HasOne("DevOpsPortal.Domain.Entities.Role", "Role")
-                        .WithMany("UserRoles")
-                        .HasForeignKey("RoleId")
+                        .HasForeignKey("EnvironmentDefinitionId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.HasOne("DevOpsPortal.Domain.Entities.User", "User")
-                        .WithMany("UserRoles")
+                        .WithMany("EnvironmentAccess")
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.Navigation("Role");
+                    b.Navigation("EnvironmentDefinition");
 
                     b.Navigation("User");
                 });
@@ -1542,21 +1259,9 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
                     b.Navigation("Environments");
                 });
 
-            modelBuilder.Entity("DevOpsPortal.Domain.Entities.Permission", b =>
-                {
-                    b.Navigation("RolePermissions");
-                });
-
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.PromotionRequest", b =>
                 {
                     b.Navigation("ProductionApproval");
-                });
-
-            modelBuilder.Entity("DevOpsPortal.Domain.Entities.Role", b =>
-                {
-                    b.Navigation("RolePermissions");
-
-                    b.Navigation("UserRoles");
                 });
 
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.TargetServer", b =>
@@ -1566,7 +1271,7 @@ namespace DevOpsPortal.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("DevOpsPortal.Domain.Entities.User", b =>
                 {
-                    b.Navigation("UserRoles");
+                    b.Navigation("EnvironmentAccess");
                 });
 #pragma warning restore 612, 618
         }

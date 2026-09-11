@@ -131,6 +131,105 @@ public class DockerComposeContainerRuntimeProviderTests
         Assert.NotNull(web.StartedAt);
     }
 
+    [Fact]
+    public async Task GetStatusAsync_WhenStatsSucceeds_FoldsStatsIntoTheContainerResult()
+    {
+        var psOutput = """[{"Name":"sampleapp-web-1","Service":"web","Image":"nginx:alpine","State":"running","Health":""}]""";
+        var statsJson = """{"CPUPerc":"1.23%","MemUsage":"128MiB / 1.952GiB","MemPerc":"6.40%","NetIO":"1.2kB / 3.4kB","BlockIO":"0B / 0B","PIDs":"7"}""";
+        var remote = new FakeRemoteExecutionProvider(isConfigured: true, psSuccess: true, psOutput: psOutput, statsSuccess: true, statsJson: statsJson);
+        var sut = CreateSut(remote);
+
+        var result = await sut.GetStatusAsync(Server, "/opt/apps/sample", "docker-compose.yml", null);
+
+        var web = Assert.Single(result.Containers);
+        Assert.NotNull(web.Stats);
+        Assert.Equal(1.23, web.Stats!.CpuPercent);
+        Assert.Equal("128MiB", web.Stats.MemoryUsage);
+        Assert.Equal("1.952GiB", web.Stats.MemoryLimit);
+        Assert.Equal(6.40, web.Stats.MemoryPercent);
+        Assert.Equal("1.2kB / 3.4kB", web.Stats.NetworkIO);
+        Assert.Equal("0B / 0B", web.Stats.BlockIO);
+        Assert.Equal(7, web.Stats.PidCount);
+    }
+
+    [Fact]
+    public async Task GetStatusAsync_WhenStatsFails_StillReturnsInspectData_WithNullStats()
+    {
+        var psOutput = """[{"Name":"sampleapp-web-1","Service":"web","Image":"nginx:alpine","State":"running","Health":""}]""";
+        var remote = new FakeRemoteExecutionProvider(isConfigured: true, psSuccess: true, psOutput: psOutput, statsSuccess: false);
+        var sut = CreateSut(remote);
+
+        var result = await sut.GetStatusAsync(Server, "/opt/apps/sample", "docker-compose.yml", null);
+
+        var web = Assert.Single(result.Containers);
+        Assert.Null(web.Stats);
+        Assert.Equal("web", web.ServiceName); // inspect/ps data is unaffected by a stats failure
+    }
+
+    // ------------------------------------------------------------------ logs
+
+    [Fact]
+    public async Task GetLogsAsync_WhenTargetServerNotConfigured_ReturnsUnreachable_WithoutAttemptingAnything()
+    {
+        var remote = new FakeRemoteExecutionProvider(isConfigured: false);
+        var sut = CreateSut(remote);
+
+        var result = await sut.GetLogsAsync(Server, "/opt/apps/sample", "docker-compose.yml", null, "sampleapp-web-1", 100);
+
+        Assert.False(result.IsReachable);
+        Assert.Equal(0, remote.LogsInvocationCount);
+    }
+
+    [Fact]
+    public async Task GetLogsAsync_WhenContainerNameIsNotAmongThisProjectsDiscoveredContainers_ReturnsFailure_WithoutFetchingLogs()
+    {
+        var psOutput = """[{"Name":"sampleapp-web-1","Service":"web","Image":"nginx:alpine","State":"running","Health":""}]""";
+        var remote = new FakeRemoteExecutionProvider(isConfigured: true, psSuccess: true, psOutput: psOutput, logsSuccess: true, logsOutput: "should never be returned");
+        var sut = CreateSut(remote);
+
+        // "some-other-apps-db-1" looks like a plausible Docker name but was never
+        // discovered by THIS project's own `compose ps` — must be rejected even
+        // though it would otherwise pass IsSafeDockerName at the SSH layer.
+        var result = await sut.GetLogsAsync(Server, "/opt/apps/sample", "docker-compose.yml", null, "some-other-apps-db-1", 100);
+
+        Assert.True(result.IsReachable);
+        Assert.False(result.Success);
+        Assert.Equal(string.Empty, result.Logs);
+        Assert.Contains("not a container of this application environment", result.Error);
+        Assert.Equal(0, remote.LogsInvocationCount);
+    }
+
+    [Fact]
+    public async Task GetLogsAsync_WhenContainerNameIsDiscovered_FetchesAndReturnsLogs()
+    {
+        var psOutput = """[{"Name":"sampleapp-web-1","Service":"web","Image":"nginx:alpine","State":"running","Health":""}]""";
+        var remote = new FakeRemoteExecutionProvider(
+            isConfigured: true, psSuccess: true, psOutput: psOutput, logsSuccess: true, logsOutput: "line 1\nline 2\n");
+        var sut = CreateSut(remote);
+
+        var result = await sut.GetLogsAsync(Server, "/opt/apps/sample", "docker-compose.yml", null, "sampleapp-web-1", 50);
+
+        Assert.True(result.IsReachable);
+        Assert.True(result.Success);
+        Assert.Equal("line 1\nline 2\n", result.Logs);
+        Assert.Equal(1, remote.LogsInvocationCount);
+        Assert.Equal("sampleapp-web-1", remote.LastLogsContainerName);
+        Assert.Equal(50, remote.LastLogsTailLines);
+    }
+
+    [Fact]
+    public async Task GetLogsAsync_WhenComposePsFails_ReturnsFailure_WithoutFetchingLogs()
+    {
+        var remote = new FakeRemoteExecutionProvider(isConfigured: true, psSuccess: false);
+        var sut = CreateSut(remote);
+
+        var result = await sut.GetLogsAsync(Server, "/opt/apps/sample", "docker-compose.yml", null, "sampleapp-web-1", 100);
+
+        Assert.True(result.IsReachable);
+        Assert.False(result.Success);
+        Assert.Equal(0, remote.LogsInvocationCount);
+    }
+
     // ---------------------------------------------------------------- operations
 
     [Fact]
@@ -165,10 +264,17 @@ public class DockerComposeContainerRuntimeProviderTests
         bool inspectSuccess = false,
         string inspectJson = "",
         bool composeSuccess = false,
-        string composeOutput = "") : IRemoteExecutionProvider
+        string composeOutput = "",
+        bool statsSuccess = false,
+        string statsJson = "",
+        bool logsSuccess = false,
+        string logsOutput = "") : IRemoteExecutionProvider
     {
         public int ComposeInvocationCount { get; private set; }
         public ComposeOperation? LastComposeOperation { get; private set; }
+        public int LogsInvocationCount { get; private set; }
+        public string? LastLogsContainerName { get; private set; }
+        public int? LastLogsTailLines { get; private set; }
 
         public bool IsConfigured(TargetServer targetServer) => isConfigured;
 
@@ -183,5 +289,19 @@ public class DockerComposeContainerRuntimeProviderTests
 
         public Task<RemoteContainerInspectResult> InspectContainerAsync(TargetServer targetServer, string containerName, CancellationToken cancellationToken = default) =>
             Task.FromResult(new RemoteContainerInspectResult(inspectSuccess, inspectSuccess ? inspectJson : string.Empty, inspectSuccess ? null : "inspect failed"));
+
+        public Task<RemoteContainerLogsResult> GetContainerLogsAsync(TargetServer targetServer, string containerName, int tailLines, CancellationToken cancellationToken = default)
+        {
+            LogsInvocationCount++;
+            LastLogsContainerName = containerName;
+            LastLogsTailLines = tailLines;
+            return Task.FromResult(new RemoteContainerLogsResult(logsSuccess, logsSuccess ? logsOutput : string.Empty, logsSuccess ? null : "logs failed"));
+        }
+
+        public Task<RemoteContainerStatsResult> GetContainerStatsAsync(TargetServer targetServer, string containerName, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new RemoteContainerStatsResult(statsSuccess, statsSuccess ? statsJson : string.Empty, statsSuccess ? null : "stats failed"));
+
+        public Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new RemoteConnectionTestResult(isConfigured, null, null, false, null, false, null, isConfigured ? null : "not configured"));
     }
 }

@@ -1,21 +1,24 @@
 import { useMemo, useState } from 'react';
-import { RolesApi, UsersApi } from '../../api/endpoints';
+import { EnvironmentsApi, UsersApi } from '../../api/endpoints';
 import { ActionButton } from '../../components/ActionButton';
 import { Card, EmptyState, ErrorBanner, LoadingSpinner, PageHeader } from '../../components/Common';
 import { useAsyncData } from '../../hooks/useAsyncData';
 import { Permissions } from '../../auth/permissions';
 import { useAuth } from '../../auth/AuthContext';
-import type { RoleDto, UserDto } from '../../types/api';
+import type { EnvironmentDefinitionDto, UserDto } from '../../types/api';
 import { formatRelative } from '../../utils/format';
 
 async function loadUsers() {
-  const [users, roles] = await Promise.all([UsersApi.list(), RolesApi.list()]);
-  return { users, roles };
+  const [users, environments] = await Promise.all([UsersApi.list(), EnvironmentsApi.list()]);
+  return { users, environments };
 }
 
-/** Tenant-scoped: only the current tenant's own users are ever visible or
- * creatable here — enforced server-side by AppDbContext's query filters, not
- * by anything in this page. */
+/** Phase 12 replaced the Role/Permission catalog with a simplified model
+ * (see PROJECT_STATE.md): every user is either an admin (full access) or
+ * holds explicit access to specific environments (DEV/QA/UAT/PRODUCTION),
+ * plus an independent CanApproveProduction ("CTO approver") flag. Server-side
+ * authorization is enforced from exactly these fields — this page only
+ * decides what to offer, never what is allowed. */
 export function UsersPage() {
   const { data, isLoading, error, reload } = useAsyncData(loadUsers, []);
   const { can } = useAuth();
@@ -29,7 +32,7 @@ export function UsersPage() {
     <div>
       <PageHeader
         title="Users"
-        subtitle="Users within your organization and the roles they hold."
+        subtitle="Users and which environments each one can access. A user without access to an environment is denied server-side, not just hidden in the UI."
         actions={
           can(Permissions.UsersManage) && (
             <button
@@ -44,9 +47,9 @@ export function UsersPage() {
       />
 
       {showCreate && (
-        <CreateUserForm
-          roles={data.roles}
-          onCreated={() => {
+        <UserForm
+          environments={data.environments}
+          onSubmitted={() => {
             setShowCreate(false);
             reload();
           }}
@@ -56,72 +59,174 @@ export function UsersPage() {
       {data.users.length === 0 ? (
         <EmptyState title="No users yet." />
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
-          <table className="min-w-full divide-y divide-slate-200 text-sm">
-            <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-4 py-2">Username</th>
-                <th className="px-4 py-2">Email</th>
-                <th className="px-4 py-2">Roles</th>
-                <th className="px-4 py-2">Last login</th>
-                <th className="px-4 py-2">Status</th>
-                {can(Permissions.UsersManage) && <th className="px-4 py-2" />}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {data.users.map((user) => (
-                <UserRow key={user.id} user={user} roles={data.roles} canManage={can(Permissions.UsersManage)} onChanged={reload} />
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-3">
+          {data.users.map((user) => (
+            <UserCard key={user.id} user={user} environments={data.environments} canManage={can(Permissions.UsersManage)} onChanged={reload} />
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-function UserRow({ user, roles, canManage, onChanged }: { user: UserDto; roles: RoleDto[]; canManage: boolean; onChanged: () => void }) {
-  const roleIds = useMemo(() => roles.filter((r) => user.roles.includes(r.name)).map((r) => r.id), [roles, user.roles]);
+function UserCard({
+  user,
+  environments,
+  canManage,
+  onChanged,
+}: {
+  user: UserDto;
+  environments: EnvironmentDefinitionDto[];
+  canManage: boolean;
+  onChanged: () => void;
+}) {
+  const [showEdit, setShowEdit] = useState(false);
 
   return (
-    <tr className={user.isActive ? '' : 'opacity-60'}>
-      <td className="px-4 py-2.5 font-medium text-slate-900">{user.username}</td>
-      <td className="px-4 py-2.5 text-slate-600">{user.email}</td>
-      <td className="px-4 py-2.5 text-slate-600">{user.roles.join(', ') || '—'}</td>
-      <td className="px-4 py-2.5 text-slate-500">{user.lastLoginAt ? formatRelative(user.lastLoginAt) : 'Never'}</td>
-      <td className="px-4 py-2.5">
+    <Card className={user.isActive ? '' : 'opacity-60'}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="font-medium text-slate-900">{user.username}</p>
+          <p className="text-xs text-slate-500">{user.email}</p>
+        </div>
         <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${user.isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>
           {user.isActive ? 'Active' : 'Inactive'}
         </span>
-      </td>
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {user.isAdmin && <Badge label="Admin" color="bg-indigo-100 text-indigo-700" />}
+        {user.canApproveProduction && <Badge label="Production Approver" color="bg-purple-100 text-purple-700" />}
+        {user.environmentAccess.map((e) => (
+          <Badge key={e.id} label={e.name} color="bg-slate-100 text-slate-700" />
+        ))}
+        {!user.isAdmin && user.environmentAccess.length === 0 && <span className="text-xs text-slate-400">No environment access</span>}
+      </div>
+
+      <p className="mt-2 text-xs text-slate-500">Last login: {user.lastLoginAt ? formatRelative(user.lastLoginAt) : 'Never'}</p>
+
       {canManage && (
-        <td className="px-4 py-2.5">
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+          <button
+            type="button"
+            onClick={() => setShowEdit((v) => !v)}
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            {showEdit ? 'Cancel' : 'Edit access'}
+          </button>
           <ActionButton
             label={user.isActive ? 'Deactivate' : 'Activate'}
             variant={user.isActive ? 'danger' : 'secondary'}
             confirmLabel={user.isActive ? 'Confirm deactivate' : undefined}
             onAction={() =>
-              UsersApi.update(user.id, { email: user.email, fullName: user.fullName, isActive: !user.isActive, roleIds })
+              UsersApi.update(user.id, {
+                email: user.email,
+                fullName: user.fullName,
+                isActive: !user.isActive,
+                isAdmin: user.isAdmin,
+                canApproveProduction: user.canApproveProduction,
+                environmentDefinitionIds: user.environmentAccess.map((e) => e.id),
+              })
             }
             onSuccess={onChanged}
           />
-        </td>
+        </div>
       )}
-    </tr>
+
+      {showEdit && canManage && (
+        <UserAccessEditor
+          user={user}
+          environments={environments}
+          onSaved={() => {
+            setShowEdit(false);
+            onChanged();
+          }}
+        />
+      )}
+    </Card>
   );
 }
 
-function CreateUserForm({ roles, onCreated }: { roles: RoleDto[]; onCreated: () => void }) {
+function Badge({ label, color }: { label: string; color: string }) {
+  return <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${color}`}>{label}</span>;
+}
+
+function UserAccessEditor({
+  user,
+  environments,
+  onSaved,
+}: {
+  user: UserDto;
+  environments: EnvironmentDefinitionDto[];
+  onSaved: () => void;
+}) {
+  const [isAdmin, setIsAdmin] = useState(user.isAdmin);
+  const [canApproveProduction, setCanApproveProduction] = useState(user.canApproveProduction);
+  const [envIds, setEnvIds] = useState<string[]>(user.environmentAccess.map((e) => e.id));
+
+  function toggleEnv(id: string) {
+    setEnvIds((prev) => (prev.includes(id) ? prev.filter((e) => e !== id) : [...prev, id]));
+  }
+
+  return (
+    <div className="mt-3 space-y-3 border-t border-slate-100 pt-3">
+      <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
+        <input type="checkbox" checked={isAdmin} onChange={(e) => setIsAdmin(e.target.checked)} />
+        Admin (full access to everything)
+      </label>
+      <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
+        <input type="checkbox" checked={canApproveProduction} onChange={(e) => setCanApproveProduction(e.target.checked)} />
+        Production approver (CTO — can approve, never deploys)
+      </label>
+
+      {!isAdmin && (
+        <div>
+          <p className="text-xs font-medium text-slate-600">Environment access</p>
+          <div className="mt-1 flex flex-wrap gap-2">
+            {environments.map((env) => (
+              <label key={env.id} className="flex items-center gap-1.5 rounded-md border border-slate-300 px-2 py-1 text-xs">
+                <input type="checkbox" checked={envIds.includes(env.id)} onChange={() => toggleEnv(env.id)} />
+                {env.name}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <ActionButton
+        label="Save access"
+        onAction={() =>
+          UsersApi.update(user.id, {
+            email: user.email,
+            fullName: user.fullName,
+            isActive: user.isActive,
+            isAdmin,
+            canApproveProduction,
+            environmentDefinitionIds: isAdmin ? [] : envIds,
+          })
+        }
+        onSuccess={onSaved}
+      />
+    </div>
+  );
+}
+
+function UserForm({ environments, onSubmitted }: { environments: EnvironmentDefinitionDto[]; onSubmitted: () => void }) {
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
   const [password, setPassword] = useState('');
-  const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>([]);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [canApproveProduction, setCanApproveProduction] = useState(false);
+  const [envIds, setEnvIds] = useState<string[]>([]);
 
-  const canSubmit = username.trim() && email.trim() && fullName.trim() && password.length >= 8 && selectedRoleIds.length > 0;
+  const canSubmit = useMemo(
+    () => username.trim() && email.trim() && fullName.trim() && password.length >= 8,
+    [username, email, fullName, password],
+  );
 
-  function toggleRole(id: string) {
-    setSelectedRoleIds((prev) => (prev.includes(id) ? prev.filter((r) => r !== id) : [...prev, id]));
+  function toggleEnv(id: string) {
+    setEnvIds((prev) => (prev.includes(id) ? prev.filter((e) => e !== id) : [...prev, id]));
   }
 
   return (
@@ -145,26 +250,49 @@ function CreateUserForm({ roles, onCreated }: { roles: RoleDto[]; onCreated: () 
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} placeholder="At least 8 characters" />
         </label>
       </div>
-      <div className="mt-3">
-        <p className="text-xs font-medium text-slate-600">Roles</p>
-        <div className="mt-1 flex flex-wrap gap-2">
-          {roles.map((role) => (
-            <label key={role.id} className="flex items-center gap-1.5 rounded-md border border-slate-300 px-2 py-1 text-xs">
-              <input type="checkbox" checked={selectedRoleIds.includes(role.id)} onChange={() => toggleRole(role.id)} />
-              {role.name}
-            </label>
-          ))}
-        </div>
+
+      <div className="mt-3 space-y-2">
+        <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
+          <input type="checkbox" checked={isAdmin} onChange={(e) => setIsAdmin(e.target.checked)} />
+          Admin (full access to everything)
+        </label>
+        <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
+          <input type="checkbox" checked={canApproveProduction} onChange={(e) => setCanApproveProduction(e.target.checked)} />
+          Production approver (CTO — can approve, never deploys)
+        </label>
+
+        {!isAdmin && (
+          <div>
+            <p className="text-xs font-medium text-slate-600">Environment access</p>
+            <div className="mt-1 flex flex-wrap gap-2">
+              {environments.map((env) => (
+                <label key={env.id} className="flex items-center gap-1.5 rounded-md border border-slate-300 px-2 py-1 text-xs">
+                  <input type="checkbox" checked={envIds.includes(env.id)} onChange={() => toggleEnv(env.id)} />
+                  {env.name}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
+
       <div className="mt-3">
         <ActionButton
           label="Create user"
           disabled={!canSubmit}
-          disabledReason="Fill in every field, use a password of at least 8 characters, and select at least one role."
+          disabledReason="Fill in every field with a password of at least 8 characters."
           onAction={() =>
-            UsersApi.create({ username: username.trim(), email: email.trim(), fullName: fullName.trim(), password, roleIds: selectedRoleIds })
+            UsersApi.create({
+              username: username.trim(),
+              email: email.trim(),
+              fullName: fullName.trim(),
+              password,
+              isAdmin,
+              canApproveProduction,
+              environmentDefinitionIds: isAdmin ? [] : envIds,
+            })
           }
-          onSuccess={onCreated}
+          onSuccess={onSubmitted}
         />
       </div>
     </Card>

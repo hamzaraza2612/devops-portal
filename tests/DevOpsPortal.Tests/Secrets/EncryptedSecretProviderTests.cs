@@ -11,7 +11,7 @@ namespace DevOpsPortal.Tests.Secrets;
 public class EncryptedSecretProviderTests
 {
     private static AppDbContext CreateDb() =>
-        new(new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options, new FakeCurrentTenantService());
+        new(new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
     private static EncryptedSecretProvider CreateSut(AppDbContext db, string key = "0123456789abcdef0123456789abcdef") =>
         new(db, Options.Create(new SecretEncryptionSettings { EncryptionKey = key }), NullLogger<EncryptedSecretProvider>.Instance);

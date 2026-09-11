@@ -48,4 +48,19 @@ public class TargetServersController(ITargetServerService targetServerService) :
     public async Task<IActionResult> UpdateAllowedRoot(
         Guid id, Guid rootId, [FromBody] UpdateAllowedDeploymentRootRequest request, CancellationToken cancellationToken) =>
         Ok(await targetServerService.UpdateAllowedRootAsync(id, rootId, request, cancellationToken));
+
+    [HttpPut("{id:guid}/ssh-credential")]
+    [RequirePermission(PermissionCodes.TargetServersManage)]
+    public async Task<IActionResult> SetSshCredential(Guid id, [FromBody] SetSshCredentialRequest request, CancellationToken cancellationToken) =>
+        Ok(await targetServerService.SetSshCredentialAsync(id, request, cancellationToken));
+
+    [HttpPut("{id:guid}/ssh-passphrase")]
+    [RequirePermission(PermissionCodes.TargetServersManage)]
+    public async Task<IActionResult> SetSshPassphrase(Guid id, [FromBody] SetSshPassphraseRequest request, CancellationToken cancellationToken) =>
+        Ok(await targetServerService.SetSshPassphraseAsync(id, request, cancellationToken));
+
+    [HttpPost("{id:guid}/test-connection")]
+    [RequirePermission(PermissionCodes.TargetServersManage)]
+    public async Task<IActionResult> TestConnection(Guid id, CancellationToken cancellationToken) =>
+        Ok(await targetServerService.TestConnectionAsync(id, cancellationToken));
 }

@@ -14,11 +14,6 @@ namespace DevOpsPortal.Infrastructure.Deployments;
 /// container yet. Deployments run one at a time in this process; per-app-
 /// environment mutual exclusion is additionally enforced at request time by
 /// IDeploymentService so this is not the only safety net.
-///
-/// Sets the job's TenantId on the scope's IMutableTenantContext before
-/// resolving IDeploymentExecutor: this scope has no HTTP context, so nothing
-/// would otherwise populate ICurrentTenantService, and AppDbContext's global
-/// query filters would silently see every tenant-owned query return nothing.
 /// </summary>
 public class DeploymentWorker(
     IDeploymentJobQueue queue,
@@ -40,7 +35,6 @@ public class DeploymentWorker(
             }
 
             using var scope = scopeFactory.CreateScope();
-            scope.ServiceProvider.GetRequiredService<IMutableTenantContext>().SetTenantId(job.TenantId);
             var executor = scope.ServiceProvider.GetRequiredService<IDeploymentExecutor>();
 
             try

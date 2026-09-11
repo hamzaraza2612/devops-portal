@@ -30,10 +30,15 @@ public record DeploymentDto(
 public record DeploymentLogEntryDto(int Sequence, DateTimeOffset Timestamp, DeploymentLogLevel Level, string Message);
 
 /// <summary>Body for POST /api/applications/{applicationId}/environments/dev/deployments.
-/// CommitMessage/CommitAuthor are caller-supplied (typically copied from a prior commit-lookup
-/// call) rather than re-fetched server-side, so deployment creation never depends on GitLab
-/// being reachable at that exact moment.</summary>
-public record CreateDevDeploymentRequest(string CommitSha, string? CommitMessage, string? CommitAuthor, string? Branch);
+/// For a LegacyFilesystem-mode application: CommitSha is required (CommitMessage/CommitAuthor
+/// are caller-supplied, typically copied from a prior commit-lookup call, rather than
+/// re-fetched server-side, so deployment creation never depends on GitLab being reachable at
+/// that exact moment) and ReleaseId must be omitted. For a ContainerImage-mode application
+/// (master requirements §16/§17): ReleaseId is required and must reference one of this
+/// application's own Releases — CommitSha/CommitMessage/CommitAuthor/Branch/ImageReference are
+/// all derived from that immutable Release server-side, never taken from the request body, so
+/// what gets deployed always matches a real, already-built image.</summary>
+public record CreateDevDeploymentRequest(string? CommitSha, string? CommitMessage, string? CommitAuthor, string? Branch, Guid? ReleaseId = null);
 
 public record RollbackRequest(Guid TargetDeploymentId);
 

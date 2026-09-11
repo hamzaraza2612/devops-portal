@@ -27,11 +27,19 @@ public class ContainerOperationsService(
     IContainerRuntimeProvider containerRuntimeProvider,
     IHealthCheckProbe healthCheckProbe) : IContainerOperationsService
 {
+    /// <summary>tailLines <= 0 falls back to this default; a caller-supplied value
+    /// above MaxTailLines is rejected outright (master requirements §23:
+    /// "impose a sensible maximum to prevent excessive remote output").</summary>
+    private const int DefaultTailLines = 200;
+    private const int MaxTailLines = 5000;
+
+
     public async Task<ContainerEnvironmentStatusDto> GetStatusAsync(
         Guid applicationId, Guid environmentDefinitionId, CancellationToken cancellationToken = default)
     {
         var userId = RequireUserId();
         await EnsurePermissionAsync(userId, PermissionCodes.ContainersView, cancellationToken);
+        await EnsureEnvironmentAccessAsync(userId, environmentDefinitionId, cancellationToken);
 
         var (application, environmentDefinition, appEnv) = await LoadAsync(applicationId, environmentDefinitionId, cancellationToken);
 
@@ -75,6 +83,43 @@ public class ContainerOperationsService(
             latestDeployment?.Id, latestDeployment?.Status);
     }
 
+    /// <summary>Recent `docker logs --tail N` output for one container — fetched
+    /// on demand (never auto-polled), same permission/environment-access gate as
+    /// GetStatusAsync. containerName is re-validated against this environment's
+    /// own live `compose ps` discovery inside IContainerRuntimeProvider.GetLogsAsync,
+    /// so a caller can never pull logs for a container outside this application
+    /// environment even by guessing a plausible-looking name.</summary>
+    public async Task<ContainerLogsDto> GetLogsAsync(
+        Guid applicationId, Guid environmentDefinitionId, string containerName, int tailLines, CancellationToken cancellationToken = default)
+    {
+        var userId = RequireUserId();
+        await EnsurePermissionAsync(userId, PermissionCodes.ContainersView, cancellationToken);
+        await EnsureEnvironmentAccessAsync(userId, environmentDefinitionId, cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(containerName))
+            throw new ValidationException("containerName is required.");
+        if (tailLines > MaxTailLines)
+            throw new ValidationException($"tailLines cannot exceed {MaxTailLines}.");
+
+        var (application, environmentDefinition, appEnv) = await LoadAsync(applicationId, environmentDefinitionId, cancellationToken);
+        RequireConfigured(application, appEnv);
+
+        var effectiveTailLines = tailLines <= 0 ? DefaultTailLines : tailLines;
+        var result = await containerRuntimeProvider.GetLogsAsync(
+            appEnv!.TargetServer, appEnv.DeploymentRootPath!, appEnv.ComposeFilePath, appEnv.ComposeProjectName, containerName, effectiveTailLines,
+            cancellationToken);
+
+        if (!result.IsReachable)
+        {
+            return new ContainerLogsDto(
+                containerName, false, LogSanitizer.Sanitize($"{application.Name}/{environmentDefinition.Name}: {result.Error}"));
+        }
+
+        return result.Success
+            ? new ContainerLogsDto(containerName, true, LogSanitizer.Sanitize(result.Logs))
+            : new ContainerLogsDto(containerName, false, LogSanitizer.Sanitize(result.Error ?? "Failed to fetch logs."));
+    }
+
     public Task<ContainerActionResultDto> RestartAsync(Guid applicationId, Guid environmentDefinitionId, CancellationToken cancellationToken = default) =>
         RunControlOperationAsync(applicationId, environmentDefinitionId, ComposeOperation.Restart, "container.restart", "restart", cancellationToken);
 
@@ -89,6 +134,7 @@ public class ContainerOperationsService(
     {
         var userId = RequireUserId();
         await EnsurePermissionAsync(userId, PermissionCodes.ContainersControl, cancellationToken);
+        await EnsureEnvironmentAccessAsync(userId, environmentDefinitionId, cancellationToken);
 
         var (application, environmentDefinition, appEnv) = await LoadAsync(applicationId, environmentDefinitionId, cancellationToken);
         RequireConfigured(application, appEnv);
@@ -116,6 +162,7 @@ public class ContainerOperationsService(
     {
         var userId = RequireUserId();
         await EnsurePermissionAsync(userId, PermissionCodes.ContainersRecreate, cancellationToken);
+        await EnsureEnvironmentAccessAsync(userId, environmentDefinitionId, cancellationToken);
 
         var (application, environmentDefinition, appEnv) = await LoadAsync(applicationId, environmentDefinitionId, cancellationToken);
         RequireConfigured(application, appEnv);
@@ -182,7 +229,11 @@ public class ContainerOperationsService(
         info.ServiceName, info.ContainerName, info.Image, info.ImageTag, info.State, info.DockerHealthStatus,
         info.StartedAt,
         info.State == ContainerState.Running && info.StartedAt is { } startedAt ? DateTimeOffset.UtcNow - startedAt : null,
-        info.RestartCount, info.Ports);
+        info.RestartCount, info.Ports, ToStatsDto(info.Stats));
+
+    private static ContainerStatsDto? ToStatsDto(ContainerStatsInfo? stats) => stats is null
+        ? null
+        : new ContainerStatsDto(stats.CpuPercent, stats.MemoryUsage, stats.MemoryLimit, stats.MemoryPercent, stats.NetworkIO, stats.BlockIO, stats.PidCount);
 
     private async Task<HealthCheckStatusDto> BuildHealthCheckStatusAsync(
         Guid applicationId, Guid environmentDefinitionId, ApplicationEnvironment appEnv, CancellationToken cancellationToken)
@@ -237,5 +288,15 @@ public class ContainerOperationsService(
         var (_, permissions) = await db.GetRolesAndPermissionsAsync(userId, cancellationToken);
         if (!permissions.Contains(permissionCode))
             throw new ForbiddenException($"Missing required permission '{permissionCode}'.");
+    }
+
+    /// <summary>ContainersView/Control/Recreate are granted to anyone with access
+    /// to ANY environment (see AppDbContextExtensions) — this confirms the user
+    /// is specifically allowed to act on THIS environment (master requirements
+    /// §2/§12).</summary>
+    private async Task EnsureEnvironmentAccessAsync(Guid userId, Guid environmentDefinitionId, CancellationToken cancellationToken)
+    {
+        if (!await db.HasEnvironmentAccessAsync(userId, environmentDefinitionId, cancellationToken))
+            throw new ForbiddenException("You do not have access to this environment.");
     }
 }

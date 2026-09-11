@@ -13,4 +13,9 @@ public interface IBuildService
     Task<IReadOnlyList<BuildRequestDto>> ListAsync(Guid? applicationId, CancellationToken cancellationToken = default);
 
     Task<BuildLogDto> GetLogAsync(Guid buildRequestId, CancellationToken cancellationToken = default);
+
+    /// <summary>Immutable releases available to deploy for a ContainerImage-mode
+    /// application (master requirements §16/§17) — every successful build's Release
+    /// row, newest first.</summary>
+    Task<IReadOnlyList<ReleaseDto>> ListReleasesAsync(Guid applicationId, CancellationToken cancellationToken = default);
 }

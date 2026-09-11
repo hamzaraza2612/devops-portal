@@ -9,7 +9,7 @@ using Microsoft.EntityFrameworkCore;
 namespace DevOpsPortal.Application.Services;
 
 public class ApplicationEnvironmentService(
-    IAppDbContext db, IAuditService auditService, IGitProviderClient gitProviderClient, ICurrentTenantService currentTenantService)
+    IAppDbContext db, ICurrentUserService currentUser, IAuditService auditService, IGitProviderClient gitProviderClient)
     : IApplicationEnvironmentService
 {
     public async Task<IReadOnlyList<ApplicationEnvironmentDto>> GetForApplicationAsync(
@@ -18,12 +18,18 @@ public class ApplicationEnvironmentService(
         if (!await db.Applications.AnyAsync(a => a.Id == applicationId, cancellationToken))
             throw new NotFoundException("Application", applicationId);
 
-        var rows = await db.ApplicationEnvironments
+        // Environment separation (master requirements §12): a user only sees the rows for
+        // environments they're granted — never a mixed DEV/QA/UAT/PRODUCTION list.
+        var accessibleEnvIds = await db.GetAccessibleEnvironmentIdsAsync(RequireUserId(), cancellationToken);
+
+        var query = db.ApplicationEnvironments
             .Include(ae => ae.EnvironmentDefinition)
             .Include(ae => ae.TargetServer)
-            .Where(ae => ae.ApplicationId == applicationId)
-            .OrderBy(ae => ae.EnvironmentDefinition.SortOrder)
-            .ToListAsync(cancellationToken);
+            .Where(ae => ae.ApplicationId == applicationId);
+        if (accessibleEnvIds is not null)
+            query = query.Where(ae => accessibleEnvIds.Contains(ae.EnvironmentDefinitionId));
+
+        var rows = await query.OrderBy(ae => ae.EnvironmentDefinition.SortOrder).ToListAsync(cancellationToken);
 
         return rows.Select(ToDto).ToList();
     }
@@ -31,6 +37,7 @@ public class ApplicationEnvironmentService(
     public async Task<ApplicationEnvironmentDto> GetAsync(
         Guid applicationId, Guid environmentDefinitionId, CancellationToken cancellationToken = default)
     {
+        await EnsureEnvironmentAccessAsync(environmentDefinitionId, cancellationToken);
         var row = await LoadAsync(applicationId, environmentDefinitionId, cancellationToken)
             ?? throw new NotFoundException("ApplicationEnvironment", $"{applicationId}/{environmentDefinitionId}");
         return ToDto(row);
@@ -58,7 +65,6 @@ public class ApplicationEnvironmentService(
         var isNew = row is null;
         row ??= new ApplicationEnvironment
         {
-            TenantId = currentTenantService.RequireTenantId(),
             ApplicationId = applicationId,
             EnvironmentDefinitionId = environmentDefinitionId,
         };
@@ -166,6 +172,7 @@ public class ApplicationEnvironmentService(
     public async Task<GitProviderResult<GitCommitInfo>> GetLatestCommitAsync(
         Guid applicationId, Guid environmentDefinitionId, CancellationToken cancellationToken = default)
     {
+        await EnsureEnvironmentAccessAsync(environmentDefinitionId, cancellationToken);
         var (repository, branch) = await ResolveRepositoryAndBranchAsync(applicationId, environmentDefinitionId, cancellationToken);
         return await gitProviderClient.GetLatestCommitAsync(repository, branch, cancellationToken);
     }
@@ -173,8 +180,21 @@ public class ApplicationEnvironmentService(
     public async Task<GitProviderResult<IReadOnlyList<GitCommitInfo>>> GetRecentCommitsAsync(
         Guid applicationId, Guid environmentDefinitionId, int count, CancellationToken cancellationToken = default)
     {
+        await EnsureEnvironmentAccessAsync(environmentDefinitionId, cancellationToken);
         var (repository, branch) = await ResolveRepositoryAndBranchAsync(applicationId, environmentDefinitionId, cancellationToken);
         return await gitProviderClient.GetRecentCommitsAsync(repository, branch, count, cancellationToken);
+    }
+
+    private Guid RequireUserId() => currentUser.UserId ?? throw new ForbiddenException("Not authenticated.");
+
+    /// <summary>ApplicationsView is granted to anyone with access to ANY
+    /// environment (see AppDbContextExtensions) — this confirms the user is
+    /// specifically allowed to see THIS environment's configuration (master
+    /// requirements §2/§12).</summary>
+    private async Task EnsureEnvironmentAccessAsync(Guid environmentDefinitionId, CancellationToken cancellationToken)
+    {
+        if (!await db.HasEnvironmentAccessAsync(RequireUserId(), environmentDefinitionId, cancellationToken))
+            throw new ForbiddenException("You do not have access to this environment.");
     }
 
     private async Task<(Repository Repository, string Branch)> ResolveRepositoryAndBranchAsync(

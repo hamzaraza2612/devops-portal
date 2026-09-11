@@ -1,27 +1,42 @@
 # Administrator Guide
 
-Managing users, roles, tenants, and the RBAC model.
+Managing users, environment access, and authorization.
 
-## Platform vs. tenant administration
+## Authorization model
 
-Two distinct admin levels exist:
+This is a single-organization platform — there is no tenant/organization
+concept to administer. Every user's access is defined by three things on
+their own `User` record:
 
-- **Platform administrator** (`PLATFORM_ADMIN` role, `tenants.manage`
-  permission) — created once at installation (see the
-  [Installation Guide](installation-guide.md)). Can create/deactivate
-  Tenants. Holds **no** application, deployment, or credential permissions
-  inside any tenant — a platform admin cannot see a tenant's applications,
-  secrets, or deployment history. This separation is deliberate: the entity
-  that provisions organizations is not automatically able to read their
-  data.
-- **Tenant administrator** (`ADMIN` role within a tenant, created
-  automatically when the tenant is provisioned) — full access within that
-  one tenant only. Everything in the rest of this guide describes
-  tenant-level administration.
+- **`isAdmin`** — full access to everything: every application,
+  environment, secret, and every admin-only area (Users, Repositories,
+  Target Servers, Build Servers, Audit log). There is no partial-admin
+  tier; an admin cannot be scoped to "some" environments.
+- **`canApproveProduction`** — an independent flag, deliberately separate
+  from environment access, that lets a user (a "CTO"-type approver) grant
+  the required CTO approval on a Production promotion request. A user can
+  hold this flag without having Production deployment access at all, and
+  a user with Production deployment access does not get this flag for
+  free — approving and deploying Production are always two different
+  people/permissions unless someone deliberately holds both.
+- **Environment access** — which of DEV/QA/UAT/PRODUCTION a user may act
+  on. Access to a given environment grants that environment's full
+  deploy/promote/approve/deploy-to-it set of actions together (e.g. QA
+  access lets a user both request a promotion into QA and approve/deploy
+  it — there is no separate "can request but not approve" tier for a
+  single environment). Holding access to *any* environment also grants a
+  base tier of read/operate permissions that apply across every
+  application: viewing applications and deployments, viewing/controlling/
+  recreating containers, viewing/requesting builds, and viewing/revealing
+  secrets — each of those is then further narrowed to the *specific*
+  environment being acted on, enforced server-side (a user with only QA
+  access gets a 403 calling a Production-specific endpoint, even though
+  they hold the base "containers.view" permission).
 
-Every tenant is fully isolated: a user in one tenant can never see another
-tenant's applications, users, deployments, secrets, or audit log, regardless
-of role — enforced server-side on every query, not just hidden in the UI.
+Every permission check server-side is still driven by the same fixed
+permission-code strings as before (e.g. `deployments.deploy.dev`,
+`containers.control`, `secrets.reveal`) — what changed is only what
+grants them; there is no role catalog to create, edit, or assign anymore.
 
 ## Users
 
@@ -33,55 +48,40 @@ Admin → Users. `POST /api/users` to create:
   "email": "jsmith@example.com",
   "fullName": "Jane Smith",
   "password": "...",
-  "roleIds": ["<role id>"]
+  "isAdmin": false,
+  "canApproveProduction": false,
+  "environmentDefinitionIds": ["<DEV environment id>", "<QA environment id>"]
 }
 ```
 
-A user can hold multiple roles; their effective permissions are the union.
 Deactivating a user (rather than deleting) is the only removal path — this
 preserves their attribution on historical deployments/audit entries.
 Password minimum is 8 characters; an admin can reset any user's password,
 and a user can change their own (requires their current password).
 
-## Roles and permissions
+To change what a user can do, update their `isAdmin`/`canApproveProduction`
+flags and/or their environment access list via `PUT /api/users/{id}` or the
+Admin → Users screen — there's no separate role-assignment step.
 
-Six default roles are provisioned with every new tenant — **DEVELOPER**,
-**QA**, **UAT**, **DEVOPS**, **CTO**, **ADMIN** — each with a sensible
-starting permission set (see the table below). You can also create
-**custom roles** with any combination of permissions (Admin → Roles → New
-Role, or `POST /api/roles`) — the default roles are a starting point, not a
-fixed list.
-
-| Role | Typical permissions |
-|---|---|
-| DEVELOPER | Deploy to DEV, promote to QA, view builds/deployments, view+reveal credentials |
-| QA | Approve + deploy QA promotions |
-| UAT | Approve + deploy UAT promotions |
-| DEVOPS | Deploy to every environment, promote everywhere, approve QA/UAT, rollback, manage secrets/build servers/target servers |
-| CTO | Approve Production promotions only — **not** deploy to Production; approving and deploying Production are always two different actions, even if the same person holds both permissions |
-| ADMIN | Everything, including user/role/repository/tenant-scoped management |
-
-Permissions are granular (e.g. `deployments.approve.qa` is separate from
-`deployments.approve.uat`/`.production`) so you can grant exactly the
-access a role needs — see Admin → Roles for the full permission catalog
-when creating a custom role.
-
-**Permission changes take effect on next login**, not instantly — a
-signed-in user's token already carries their permission set. Revoking
-access immediately requires deactivating the user, not just changing their
-role.
+**Access changes take effect on next login**, not instantly — a signed-in
+user's token already carries their permission set. Revoking access
+immediately requires deactivating the user, not just changing their
+environment access or flags.
 
 ## Repositories, deployment targets, build servers
 
 See the [Configuration Guide](configuration-guide.md) — these are
-administrative, tenant-scoped configuration, all reachable from the Admin
-section of the sidebar.
+administrative configuration, all reachable from the Admin section of the
+sidebar. Repositories and Target Servers each have a "Test Connection"
+action (admin-only) to verify GitLab/SSH connectivity is actually
+configured correctly before relying on it for a real deployment — see the
+Configuration Guide for details.
 
 ## Audit log
 
 Admin → Audit (`audit.view`). Every security-sensitive action — logins
 (success and failure), every deployment/promotion/approval/rollback
-decision, every credential create/update/delete/reveal, every user/role/
+decision, every credential create/update/delete/reveal, every user/
 repository/target-server change — is recorded with actor, timestamp, and
 outcome. Filter by user, action, and date range. This is not configurable
 off and has no retention-deletion tooling built in (see
