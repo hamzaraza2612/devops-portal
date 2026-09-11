@@ -86,6 +86,18 @@ deep-links to a read-only, unauthenticated preview via a secure, expiring,
 SHA-256-hashed one-time token that is never itself a path to approve or
 reject anything. See dedicated section below.
 
+**Phase 9 — Productization & Multi-Tenant Architecture.** Done. Introduces
+`Tenant` (organization/customer) as the top-level ownership boundary and
+retrofits every tenant-owned entity with a `TenantId`, enforced
+server-side via EF Core global query filters — no existing service's
+query logic changed to get this, only a scalar `TenantId` column and one
+`HasQueryFilter(...)` line per entity in `AppDbContext`. Adds tenant CRUD
+(`TenantService`, platform-administrator-only), per-tenant role/environment
+provisioning at tenant-creation time, organization-specific custom roles
+(`RoleService.CreateAsync`/`UpdateAsync`), and Admin UI screens for
+tenants/users/roles/repositories/deployment-targets/integrations. See
+dedicated section below.
+
 ## Current database state
 
 PostgreSQL via EF Core migrations (`src/DevOpsPortal.Infrastructure/Persistence/Migrations`):
@@ -96,7 +108,10 @@ PostgreSQL via EF Core migrations (`src/DevOpsPortal.Infrastructure/Persistence/
 `SecretReferences` metadata table + `SecretValues` ciphertext-only table),
 `Phase8_NotificationsApprovals` (Phase 8 — approval-token/notification
 columns on `PromotionRequests`/`ProductionApprovals`; see dedicated section
-below).
+below), `Phase9_MultiTenant` (Phase 9 — new `Tenants` table; `TenantId`
+column + FK + index on every tenant-owned entity; composite tenant-scoped
+unique indexes replacing several previously-global ones; see dedicated
+section below).
 
 Phase 1 tables: `Users`, `Roles`, `Permissions`, `UserRoles` (join),
 `RolePermissions` (join), `AuditLogs`.
@@ -2359,18 +2374,384 @@ nothing from this manual pass was left running or committed.
   narrowly to the `PromotionCard` fields master requirements §5
   explicitly asked for, not a general UI expansion.
 
+## Phase 9 — Productization & Multi-Tenant Architecture
+
+Done. Objective: make the platform usable by multiple organizations
+without redesigning the deployment engine. Every design choice below was
+made to keep that engine (DeploymentExecutor's actual compose/health-check/
+secret-resolution/notification logic) byte-for-byte unchanged — only
+mechanical tenant-context threading was added to it.
+
+### Architecture
+
+```
+Tenant (new root entity — Id, Name, Slug (globally unique), Description, IsActive)
+   │  owned by: applications, repositories, environments, deployment
+   │  targets, deployments (+ logs, promotions, production approvals),
+   │  build servers/requests/releases, secret references, audit logs,
+   │  and (nullable) users/roles
+   ▼
+Every tenant-owned entity carries a `TenantId` column (non-nullable Guid;
+nullable Guid? on User/Role/AuditLog specifically — see below)
+   ▼
+AppDbContext.OnModelCreating: one HasQueryFilter(x => x.TenantId ==
+currentTenantService.TenantId) per tenant-owned entity type
+   ▼
+ICurrentTenantService (Application.Abstractions) — read-only `Guid?
+TenantId { get; }`, injected into AppDbContext's constructor and captured
+by the query-filter lambdas, so EF re-evaluates it on every query
+   ▼
+Two things populate the mutable side (IMutableTenantContext, impl.
+AmbientTenantContext, Infrastructure/Security):
+  - TenantResolutionMiddleware (Api) — HTTP requests: copies the
+    `tenant_id` JWT claim (absent entirely for a platform administrator)
+    into the scope, right after UseAuthentication()
+  - DeploymentWorker (Infrastructure) — background deployment jobs: the
+    worker's manually-created DI scope has no HTTP context, so
+    IDeploymentJobQueue now carries a `DeploymentJob(DeploymentId,
+    TenantId)` record instead of a bare Guid, and the worker sets the
+    scope's IMutableTenantContext from that before resolving
+    IDeploymentExecutor
+```
+
+This is the entire isolation mechanism. No existing service's LINQ
+queries changed — `db.Applications.Where(...)`, `db.Deployments...`, etc.
+are all transparently scoped to whichever tenant is ambient in that
+DbContext instance's DI scope, exactly like `IsActive` filtering would be
+if this were an ordinary soft-delete pattern.
+
+**The non-cascading query-filter caveat** (why every entity has its own
+`TenantId`, not just the top-level ones): EF Core query filters do not
+propagate through navigation/FK reachability by themselves. `AllowedDeploymentRoot`
+is only reachable via `TargetServerId`, and `DeploymentLogEntry` only via
+`DeploymentId` — if either table lacked its own `TenantId` + filter, a
+cross-tenant row could still surface through a raw `db.AllowedDeploymentRoots`
+or `db.DeploymentLogEntries` query even though the parent it points to is
+correctly filtered. So every entity got its own column and its own filter,
+independently.
+
+### Tenant boundary details
+
+- **`Permission`** — stays global, unscoped, no `TenantId` at all: the
+  capability catalog is platform-wide, never owned by a tenant.
+- **`User`/`Role`** — `TenantId` is **nullable**. Null means
+  "platform-level": a platform administrator (`User.TenantId == null`,
+  holding the single global `PLATFORM_ADMIN` role, `Role.TenantId ==
+  null`) or a system-wide role definition. The *same* filter formula
+  (`x.TenantId == currentTenantService.TenantId`) handles both cases
+  without special-casing: a platform admin's JWT naturally carries no
+  tenant claim, so their queries only ever match other null-`TenantId`
+  rows — they see no tenant's data by default, which is the safe default,
+  not an oversight. (A platform admin managing a specific tenant's data,
+  if ever needed, is out of scope for this phase — not implemented.)
+- **`Username`/`Email` stay globally unique**, not tenant-scoped — a
+  deliberate exception. Login looks a user up by username alone, before
+  any tenant is known (the tenant claim only exists once login has
+  already resolved the user), so two tenants sharing a username would
+  make login ambiguous. Enforced via a global unique index (unchanged)
+  and via `UserService`/`TenantService`/`AuthService` explicitly calling
+  `.IgnoreQueryFilters()` on that one lookup — documented inline at each
+  call site. `AppDbContextExtensions.GetRolesAndPermissionsAsync` (used
+  by login and several services to resolve one already-known user's own
+  roles/permissions) also uses `IgnoreQueryFilters()`, for the same
+  reason: without it, `ur.Role.Name` would apply `Role`'s filter mid-join
+  and silently return zero roles for every tenant-scoped user during
+  login, since no tenant is ambient yet at that point.
+- **`Tenant` itself has no query filter** — it IS the isolation boundary,
+  not a thing isolated by it. Visible only through
+  `PermissionCodes.TenantsView`/`TenantsManage`, which are never granted
+  to any tenant's own provisioned roles (`TenantService.CreateAsync`
+  explicitly excludes both codes when granting the new tenant's ADMIN
+  role "every permission" — a real bug caught by
+  `TenantIsolationTests.TenantService_CreateAsync_NeverGrantsTheNewTenantsAdminRole_...`
+  during this phase's own testing, fixed before merge).
+- **Anonymous approval-preview endpoints**
+  (`GetPromotionPreviewByTokenAsync`/`GetProductionApprovalPreviewByTokenAsync`,
+  `[AllowAnonymous]`, Phase 8) also use `IgnoreQueryFilters()` — there is
+  no tenant context on an unauthenticated request, and the 256-bit token
+  itself (globally unique) is the sole, sufficient selector.
+- **Previously-global unique indexes became tenant-scoped composites**:
+  `ManagedApplication.Slug`, `Repository.Name`, `TargetServer.Name`,
+  `BuildServer.Name`, `EnvironmentDefinition.Name` are now
+  `(TenantId, X)` — two tenants can both have an application named
+  "sample-app". `Role.Name` is `(TenantId, Name)` unique **plus** a
+  Postgres partial unique index on `Name` filtered to `TenantId IS NULL`
+  (Postgres treats `NULL != NULL`, so the composite alone would not stop
+  two system-wide roles from sharing a name).
+- **Tenant deactivation locks out its users at login** —
+  `AuthService.LoginAsync` checks `Tenant.IsActive` for a tenant-scoped
+  user (queried without `IgnoreQueryFilters`, since `Tenant` has no filter
+  to begin with) and rejects with "This account's organization is
+  inactive." if the tenant was deactivated via `TenantService.UpdateAsync`.
+
+### Tenant provisioning (`TenantService.CreateAsync`)
+
+One call creates: the `Tenant` row; the tenant's own copy of the default
+role set (`RoleNames.All` — ADMIN/DEVOPS/DEVELOPER/QA/UAT/CTO, all
+`IsSystem = true`, all scoped to the new `TenantId`); the tenant's own
+pipeline `EnvironmentDefinition`s (DEV/QA/UAT/PRODUCTION); default
+role→permission grants (`DefaultRolePermissions`, a new `Domain.Constants`
+class — the single source of truth this phase extracted from what used to
+be a private method on `DataSeeder`, now shared by nothing else needing
+duplicating); the tenant's ADMIN role granted every permission **except**
+`TenantsView`/`TenantsManage`; and one initial tenant-admin `User` who can
+sign in immediately. This is a one-time provisioning step, not idempotent
+seeding — a brand-new tenant has no pre-existing rows, so unlike
+`DataSeeder` there is nothing to check for first, and none of it runs
+inside the ambient ("no tenant yet, since the caller is a platform admin")
+scope — every created row's `TenantId` is set explicitly to the new
+tenant's `Id`.
+
+`CreateTenantRequest` accepts an optional `InitialAdminPassword`; when
+omitted, one is generated (`RandomPasswordGenerator`, extracted from
+`DataSeeder`'s equivalent bootstrap logic and now shared by both) and
+returned exactly once in `CreateTenantResponse.GeneratedPassword` — never
+logged, never persisted in plaintext, never retrievable again.
+
+### `DataSeeder` restructuring
+
+`DataSeeder.SeedAsync` now seeds **global, platform-level data only**:
+the `Permission` catalog, the single system-wide `PLATFORM_ADMIN` role
+(`RoleNames.PlatformAdmin`, distinct from the per-tenant `RoleNames.Admin`
+every tenant also gets its own copy of), and a bootstrap platform-admin
+`User` (`TenantId = null`) if none exists yet. This runs with no tenant
+ambient (the app has just started, no HTTP request exists), so every
+query in it is naturally scoped to `TenantId == null` by the same global
+query filters everything else uses — no special-casing needed. Everything
+that used to live here for the non-admin roles (default role→permission
+grants, the `EnvironmentDefinition` seed) moved to
+`TenantService.CreateAsync`'s per-tenant provisioning, described above.
+
+### Background worker tenant threading
+
+`IDeploymentJobQueue.Enqueue`/`DequeueAsync` now carry a
+`DeploymentJob(Guid DeploymentId, Guid TenantId)` record instead of a bare
+`Guid` (`InMemoryDeploymentJobQueue`'s `Channel<T>` follows suit).
+`DeploymentService.SaveAndEnqueueAsync` enqueues `deployment.TenantId`
+alongside its id. `DeploymentWorker` resolves `IMutableTenantContext` from
+its per-job scope and calls `SetTenantId(job.TenantId)` **before**
+resolving `IDeploymentExecutor` — everything `IDeploymentExecutor` and its
+dependencies (`SecretReferenceService`, `NotificationService`, etc.) query
+afterward is correctly tenant-scoped, with zero changes to any of their
+own code. `DeploymentLogEntry` rows written during execution
+(`DeploymentExecutor`'s private `DeploymentLogWriter`) are stamped with
+the same `TenantId` the `Deployment` itself carries.
+
+### Organization-specific roles (master requirements §3)
+
+`RoleService` gained `CreateAsync`/`UpdateAsync` (previously read-only:
+`GetAllRolesAsync`/`GetAllPermissionsAsync` only — there was no way to
+create a custom role at all before this phase). A created role is always
+tenant-scoped (`TenantId` from the caller's own tenant, `IsSystem =
+false`); `UpdateAsync` rejects any attempt to modify an `IsSystem` role
+(`ForbiddenException`) — the seeded defaults are read-only, protecting
+them from accidental modification while still letting an organization add
+its own roles (e.g. a "RELEASE_MANAGER" role with a hand-picked
+permission subset). Gated by the existing `roles.manage` permission — no
+new permission code needed for this part.
+
+### New/changed API surface
+
+- `POST/GET /api/tenants`, `PUT /api/tenants/{id}`, `GET
+  /api/tenants/{id}` — `tenants.view`/`tenants.manage`
+  (`TenantsController`, `[RequirePermission(PermissionCodes.TenantsView)]`
+  at the controller level, `TenantsManage` on the mutating endpoints).
+- `POST /api/roles`, `PUT /api/roles/{id}` — `roles.manage` (new; GET
+  endpoints unchanged).
+- New permission codes: `tenants.view`, `tenants.manage` — platform-
+  administrator-only, never assignable to any tenant's own role (see
+  above).
+
+### Configuration / Techbey-assumption cleanup
+
+No hardcoded organization-specific values were found remaining in code at
+the start of this phase beyond what tenant-scoping itself now
+generalizes: git provider, registry, environments, deployment targets,
+build provider, and notification provider were already provider-
+abstracted interfaces from Phases 2/3/6/7/8 (`IGitProviderClient`,
+`IBuildProvider`, `INotificationProvider`, `IContainerRuntimeProvider`).
+What this phase specifically removed was the *global, singleton* nature
+of the configuration those abstractions point at — `EnvironmentDefinition`,
+`Role`, `TargetServer`, `Repository`, and `BuildServer` rows all now
+belong to exactly one tenant instead of being shared platform-wide, so
+each organization configures its own environments/deployment
+targets/repositories/build servers/allowed-deployment-roots independently.
+
+### Admin UI (frontend)
+
+New pages under `frontend/src/pages/admin/`, routed under `/admin/*`,
+gated by `RequirePermission` per route and an "Admin ▾" nav dropdown
+(`Layout.tsx`) that only renders items the signed-in user actually holds
+the view permission for:
+
+| Page | Route | Permission | Notes |
+|---|---|---|---|
+| `TenantsPage` | `/admin/tenants` | `tenants.view`/`tenants.manage` | Platform-admin only. Create form provisions a tenant + initial admin in one step; shows the generated password exactly once. Activate/deactivate toggle. |
+| `UsersPage` | `/admin/users` | `users.view`/`users.manage` | Tenant-scoped list + create form (username/email/password/roles) + activate/deactivate. |
+| `RolesPage` | `/admin/roles` | `roles.view`/`roles.manage` | Lists roles with their granted permissions; create/edit forms for non-system roles only (system roles shown read-only). |
+| `RepositoriesPage` | `/admin/repositories` | `repositories.view`/`repositories.manage` | List + create form + activate/deactivate. |
+| `TargetServersPage` | `/admin/target-servers` | `targetservers.view`/`targetservers.manage` | List + create form + activate/deactivate; expandable per-server allowed-deployment-roots view/add form. |
+| `BuildServersPage` (labeled "Integrations") | `/admin/integrations` | `buildservers.view`/`buildservers.manage` | List + create form + activate/deactivate. |
+
+These are genuinely new UI surface — before this phase, Users/Roles/
+Repositories/TargetServers/BuildServers were API-only (no frontend page
+existed for any of them; even `ApplicationsListPage`, which does exist,
+has no inline create/edit form and points admins at "the API/admin
+tooling"). Never expose a secret: `AccessTokenEnvVarName`/
+`ApiTokenEnvVarName` fields shown here are (as the API always returned)
+only the *name* of a server-side environment variable, never a token
+value — no field on any of these pages can ever display one, because the
+API never sends one.
+
+### Testing (master requirements §7 — tested aggressively, per instruction)
+
+New `tests/DevOpsPortal.Tests/Services/TenantIsolationTests.cs`, 11 tests,
+all sharing one physical InMemory database across two (or more) tenants
+and flipping the ambient `FakeCurrentTenantService` between them — the
+exact scenario the query filters exist to guard (many tenants' rows
+living side by side in the same tables, same as production Postgres):
+cross-tenant application list/get-by-id, same-slug-different-tenant (no
+collision), cross-tenant deployments/logs (list, direct-by-id query),
+cross-tenant repositories (list, same-name-different-tenant), cross-tenant
+user listing/get-by-id + global username uniqueness, two tenants each
+having their own non-colliding "ADMIN" role, a permission held in one
+tenant never satisfying a check for a user in another, the
+`TenantsManage`/`TenantsView` exclusion bug described above, a full
+tenant-creation → login → JWT-permissions round trip, and tenant
+deactivation locking out its users at login.
+
+`TestDb.CreateInMemory()` (existing, used by ~30 other test files)
+required no changes to keep working: `FakeCurrentTenantService.TenantId`
+defaults to `Guid.Empty`, chosen specifically because it's also the
+implicit C# default of every entity's non-nullable `TenantId` property
+when a test constructs one inline without setting it — so the entire
+existing suite's inline `new ManagedApplication { ... }`-style
+constructions needed zero changes. The handful of places constructing
+`User`/`Role` directly (nullable `TenantId`, defaults to `null`, which
+does *not* match `Guid.Empty`) were updated to set it explicitly; a new
+`TestDb.CreateInMemory(out FakeCurrentTenantService tenantContext)`
+overload exists for tests that need to switch tenants mid-test.
+
+**Verification**: all 325 backend tests pass (314 pre-existing + 11 new,
+zero regressions), all 38 frontend tests pass, `dotnet ef migrations
+has-pending-model-changes` reports none, a live `dotnet ef database
+update` against a fresh Postgres 16 instance applied cleanly, and a live
+`dotnet run` + `curl` session confirmed over real HTTP: two tenants each
+creating an application with the identical slug (both succeed, no
+collision); each tenant's application list showing only its own
+application; a cross-tenant direct-by-id fetch returning 404; a tenant
+admin attempting to list or create tenants returning 403; and a
+cross-tenant username collision correctly returning 409. A Playwright
+smoke pass over the built frontend (dev server + live API) additionally
+confirmed: the Admin nav renders only permission-held items, all six
+admin pages render without console errors, a tenant admin is shown the
+"you don't have permission" page (not a crash) when navigating directly
+to `/admin/tenants`, and creating a custom role through the `RolesPage`
+form round-trips correctly (appears in the list immediately after
+creation).
+
+### Known limitations
+
+- **No backfill/migration tooling for pre-existing single-tenant data.**
+  This phase assumes a fresh deployment (consistent with how every prior
+  phase's live verification used a fresh Postgres instance) — there is no
+  tool to assign a `TenantId` to rows that existed before this migration.
+  Applying this migration to a database with real pre-Phase-9 data would
+  need a manual backfill (create one `Tenant` row, `UPDATE` every
+  tenant-owned table's `TenantId` to that tenant's id) before the
+  now-`NOT NULL` columns and FK constraints would accept it.
+- **A platform administrator cannot browse into a specific tenant's data.**
+  By design (see "Tenant boundary details" above) — not implemented as a
+  deliberate scope decision, since master requirements didn't ask for it
+  and it would need its own careful audit-logging/consent story to avoid
+  becoming a backdoor around the isolation this phase exists to build.
+- **`AllowedDeploymentRoot` create/update via the Admin UI is add-only** —
+  `TargetServersPage` can list and add allowed roots but has no UI for
+  editing/deactivating one (the API supports `PUT
+  .../allowed-roots/{rootId}`; only the UI is incomplete here).
+- **EF Core model-validation warning** (`Model.Validation[10622]`, logged
+  every startup/migration in dev, not an error): "Entity 'Role' has a
+  global query filter defined and is the required end of a relationship
+  with the entity 'RolePermission'/'UserRole'." This is expected and
+  intentional — `UserRole`/`RolePermission` are pure join tables with no
+  `TenantId`/filter of their own, and navigating through them to a
+  filtered `Role` is exactly the mechanism `AppDbContextExtensions.GetRolesAndPermissionsAsync`
+  relies on (with an explicit `IgnoreQueryFilters()` for the one case —
+  login — where the filter would otherwise hide a legitimate result).
+  Confirmed safe by `TenantIsolationTests` and the full existing suite.
+
+## Production-critical gaps / next implementation
+
+Carried forward, unresolved, and deliberately **not** touched by Phase 9
+(multi-tenancy is orthogonal to these — they apply equally inside a
+single tenant and were not hidden, removed, or worked around while making
+the product multi-tenant):
+
+1. **The portal is designed to run on a separate VM from the
+   TargetServers it deploys to, but no secure remote-execution mechanism
+   exists yet.** `IRemoteExecutionProvider`'s only implementation is
+   `NotConfiguredRemoteExecutionProvider` (Phase 5), which honestly
+   reports every target server unreachable rather than pretending to
+   operate one. **`DeploymentExecutor` (Phase 3) still runs `docker
+   compose` locally, on whatever host the portal API process itself runs
+   on** — it does not reach out to a `TargetServer` over any remote
+   channel. This was true before Phase 9 and remains true after it; Phase
+   9 added tenant-context threading to `DeploymentWorker`/
+   `DeploymentExecutor` (see above) without touching this gap.
+2. **No fake/local implementation has been substituted for real remote
+   execution**, and none should be — `NotConfiguredRemoteExecutionProvider`
+   staying honest about "unreachable" is the correct behavior until a real
+   mechanism (SSH, a remote Docker API over TLS, an agent process on each
+   TargetServer, etc.) is built and wired through the *same*
+   `IRemoteExecutionProvider`/`IContainerRuntimeProvider` abstraction
+   Phase 5 already defined for this purpose.
+3. **The same remote-execution abstraction is meant to eventually serve**
+   deployment execution (`DeploymentExecutor`), container monitoring
+   (`ContainerOperationsService.GetStatusAsync`), restart/start/stop
+   (`ContainerOperationsService`), and `docker compose down -v`/`up -d`
+   recreate — all four already call through `IContainerRuntimeProvider`
+   today (Phase 5), so wiring a real provider implementation is the only
+   remaining step for all four at once; no per-operation redesign needed.
+4. **Phase 6's Jenkins build pipeline produces real, immutable `Release`
+   rows, but nothing deploys from one yet.** `IDeploymentService` has no
+   "deploy from Release" request path — only Legacy (prebuilt publish
+   directory) and the original commit-SHA-based Modern-path requests
+   exist. A `Release`'s `ImageReference` is never consumed by
+   `DeploymentExecutor`.
+5. **Phase 7's secret resolution integrates with the existing (local,
+   Legacy-path) deployment execution flow, but a ContainerImage/`Release`
+   deployment's environment-specific secret injection at execution time
+   is unbuilt** — `SecretReferenceService.ResolveForDeploymentAsync` is
+   wired into `DeploymentExecutor`'s current compose-based execution path
+   only; once (4) exists, image-based deployments will need the same
+   secure, redacted, process-env-var-only injection Legacy deployments
+   already get.
+6. **Session storage remains sessionStorage-based** (flagged since Phase
+   4), not an httpOnly cookie — unrelated to multi-tenancy, still open.
+7. **No backfill tooling for pre-Phase-9 single-tenant data** (see Phase
+   9's own "Known limitations" above) — relevant specifically because any
+   future work that assumes production data already exists needs this
+   solved first.
+
+None of the above was implemented, hidden, or silently worked around in
+Phase 9 — this section exists so the gap stays visible and explicit
+rather than getting lost once multi-tenancy makes the codebase look more
+"finished" than the actual deployment-execution path is.
+
 ## Next phase
 
-Not yet assigned — Phase 8 (Notifications & Approval Workflow) is
+Not yet assigned — Phase 9 (Productization & Multi-Tenant Architecture) is
 complete; awaiting explicit approval before starting further work.
-Strongest candidates per this phase's own "Known limitations": broader
-notification distribution (CC approvers on production outcomes, an
-"approval decided" notification back to the requester), or a second
-`INotificationProvider` (Slack/Teams/webhook). Other candidates, unchanged
-from before: a Phase 4 UI page for managing secret/build-server
-references, wiring `Repository`/`BuildServer` credentials through
-`SecretReference`, wiring `IDeploymentService`/`DeploymentExecutor` to
-deploy from a `Release` (Phase 6), a real secure remote-execution
-mechanism for Phase 5's `IRemoteExecutionProvider`, or hardening session
-storage to an httpOnly cookie (flagged since Phase 4). Do not assume which
-without asking.
+Strongest candidate, per the "Production-critical gaps" section directly
+above: a real secure remote-execution mechanism for
+`IRemoteExecutionProvider`, since it blocks the portal's own stated
+target architecture (Portal VM → secure remote execution → Target Server
+→ Docker Compose) and would immediately benefit deployment execution,
+container monitoring, and container control all at once. Other
+candidates, unchanged from before: wiring `IDeploymentService`/
+`DeploymentExecutor` to deploy from a `Release` (Phase 6) and secret
+injection for that path (Phase 7), broader notification distribution or a
+second `INotificationProvider` (Phase 8), a platform-admin
+view-into-a-tenant capability (Phase 9, deliberately deferred), backfill
+tooling for pre-Phase-9 data, or hardening session storage to an httpOnly
+cookie (flagged since Phase 4). Do not assume which without asking.

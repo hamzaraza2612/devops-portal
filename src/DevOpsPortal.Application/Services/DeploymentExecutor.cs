@@ -44,7 +44,7 @@ public class DeploymentExecutor(
             return;
         }
 
-        var log = new DeploymentLogWriter(db, deployment.Id);
+        var log = new DeploymentLogWriter(db, deployment.Id, deployment.TenantId);
 
         deployment.Status = DeploymentStatus.Running;
         deployment.StartedAt = DateTimeOffset.UtcNow;
@@ -196,7 +196,7 @@ public class DeploymentExecutor(
 
     /// <summary>Small stateful helper so log entries get a correctly incrementing
     /// Sequence without needing a `ref` parameter (not allowed across `await`).</summary>
-    private sealed class DeploymentLogWriter(IAppDbContext db, Guid deploymentId)
+    private sealed class DeploymentLogWriter(IAppDbContext db, Guid deploymentId, Guid tenantId)
     {
         private int _sequence;
 
@@ -204,6 +204,7 @@ public class DeploymentExecutor(
         {
             db.DeploymentLogEntries.Add(new DeploymentLogEntry
             {
+                TenantId = tenantId,
                 DeploymentId = deploymentId,
                 Sequence = ++_sequence,
                 Level = level,

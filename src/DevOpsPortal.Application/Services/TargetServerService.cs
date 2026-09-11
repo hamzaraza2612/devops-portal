@@ -1,3 +1,4 @@
+using DevOpsPortal.Application.Abstractions;
 using DevOpsPortal.Application.Common;
 using DevOpsPortal.Application.Dtos.TargetServers;
 using DevOpsPortal.Application.Exceptions;
@@ -6,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DevOpsPortal.Application.Services;
 
-public class TargetServerService(IAppDbContext db, IAuditService auditService) : ITargetServerService
+public class TargetServerService(IAppDbContext db, IAuditService auditService, ICurrentTenantService currentTenantService) : ITargetServerService
 {
     public async Task<IReadOnlyList<TargetServerDto>> GetAllAsync(CancellationToken cancellationToken = default)
     {
@@ -34,6 +35,7 @@ public class TargetServerService(IAppDbContext db, IAuditService auditService) :
 
         var server = new TargetServer
         {
+            TenantId = currentTenantService.RequireTenantId(),
             Name = name,
             Description = request.Description?.Trim(),
             Hostname = request.Hostname?.Trim(),
@@ -86,6 +88,7 @@ public class TargetServerService(IAppDbContext db, IAuditService auditService) :
 
         var root = new AllowedDeploymentRoot
         {
+            TenantId = currentTenantService.RequireTenantId(),
             TargetServerId = targetServerId,
             RootPath = normalizedPath,
             Description = request.Description?.Trim(),

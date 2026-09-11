@@ -1,5 +1,5 @@
-using System.Security.Cryptography;
 using DevOpsPortal.Application.Abstractions;
+using DevOpsPortal.Application.Common;
 using DevOpsPortal.Domain.Constants;
 using DevOpsPortal.Domain.Entities;
 using DevOpsPortal.Infrastructure.Persistence;
@@ -10,8 +10,17 @@ using Microsoft.Extensions.Logging;
 namespace DevOpsPortal.Infrastructure.Seed;
 
 /// <summary>
-/// Idempotent startup seeding: system roles, the permission catalog, role→permission
-/// grants, and a bootstrap admin account when no users exist yet.
+/// Idempotent startup seeding of GLOBAL, platform-level data only: the
+/// permission catalog, the single system-wide PLATFORM_ADMIN role, and a
+/// bootstrap platform-administrator account when none exists yet. Runs with
+/// no tenant ambient (the app has just started — there is no HTTP request),
+/// so every query here is naturally scoped to TenantId == null by AppDbContext's
+/// global query filters, exactly matching "global/platform-level only".
+///
+/// Per-tenant defaults (the ADMIN/DEVOPS/DEVELOPER/QA/UAT/CTO role set, pipeline
+/// EnvironmentDefinitions, and their default permission grants) are NOT seeded
+/// here — they're provisioned once per tenant, at tenant-creation time, by
+/// TenantService. See DefaultRolePermissions for the shared default grants.
 /// </summary>
 public static class DataSeeder
 {
@@ -26,38 +35,19 @@ public static class DataSeeder
         }
         await db.SaveChangesAsync();
 
-        foreach (var name in RoleNames.All)
-        {
-            if (!await db.Roles.AnyAsync(r => r.Name == name))
-                db.Roles.Add(new Role { Name = name, Description = $"{name} role", IsSystem = true });
-        }
+        if (!await db.Roles.AnyAsync(r => r.Name == RoleNames.PlatformAdmin))
+            db.Roles.Add(new Role { Name = RoleNames.PlatformAdmin, Description = "Platform administrator", IsSystem = true });
         await db.SaveChangesAsync();
 
-        foreach (var (name, sortOrder, isProductionLike) in EnvironmentNames.All)
-        {
-            if (!await db.EnvironmentDefinitions.AnyAsync(e => e.Name == name))
-            {
-                db.EnvironmentDefinitions.Add(new EnvironmentDefinition
-                {
-                    Name = name,
-                    SortOrder = sortOrder,
-                    IsProductionLike = isProductionLike,
-                });
-            }
-        }
-        await db.SaveChangesAsync();
-
-        var adminRole = await db.Roles.FirstAsync(r => r.Name == RoleNames.Admin);
+        var platformAdminRole = await db.Roles.FirstAsync(r => r.Name == RoleNames.PlatformAdmin);
         var allPermissions = await db.Permissions.ToListAsync();
         foreach (var permission in allPermissions)
         {
-            var hasGrant = await db.RolePermissions.AnyAsync(rp => rp.RoleId == adminRole.Id && rp.PermissionId == permission.Id);
+            var hasGrant = await db.RolePermissions.AnyAsync(rp => rp.RoleId == platformAdminRole.Id && rp.PermissionId == permission.Id);
             if (!hasGrant)
-                db.RolePermissions.Add(new RolePermission { RoleId = adminRole.Id, PermissionId = permission.Id });
+                db.RolePermissions.Add(new RolePermission { RoleId = platformAdminRole.Id, PermissionId = permission.Id });
         }
         await db.SaveChangesAsync();
-
-        await GrantDefaultRolePermissionsAsync(db);
 
         if (!await db.Users.AnyAsync())
         {
@@ -68,19 +58,20 @@ public static class DataSeeder
             var generated = false;
             if (string.IsNullOrWhiteSpace(password))
             {
-                password = GenerateRandomPassword();
+                password = RandomPasswordGenerator.Generate();
                 generated = true;
             }
 
             var admin = new User
             {
+                TenantId = null,
                 Username = username,
                 Email = email,
-                FullName = "Portal Administrator",
+                FullName = "Platform Administrator",
                 PasswordHash = hasher.Hash(password),
                 IsActive = true,
             };
-            admin.UserRoles.Add(new UserRole { UserId = admin.Id, RoleId = adminRole.Id });
+            admin.UserRoles.Add(new UserRole { UserId = admin.Id, RoleId = platformAdminRole.Id });
 
             db.Users.Add(admin);
             await db.SaveChangesAsync();
@@ -89,120 +80,13 @@ public static class DataSeeder
             {
                 logger.LogWarning(
                     "No admin password configured (Seed:AdminPassword / ADMIN_INITIAL_PASSWORD). " +
-                    "Generated bootstrap credentials — username '{Username}', password '{Password}'. " +
+                    "Generated bootstrap platform-administrator credentials — username '{Username}', password '{Password}'. " +
                     "Log in and change this password immediately.", username, password);
             }
             else
             {
-                logger.LogInformation("Bootstrap admin user '{Username}' created.", username);
+                logger.LogInformation("Bootstrap platform-administrator user '{Username}' created.", username);
             }
         }
-    }
-
-    /// <summary>
-    /// Default, idempotent role→permission grants for the non-admin roles, per
-    /// master requirements §9. Additive only — never removes a grant, so any
-    /// future manual customization (once role-permission mutation ships) is
-    /// preserved; re-running this just fills in anything still missing.
-    /// </summary>
-    private static async Task GrantDefaultRolePermissionsAsync(AppDbContext db)
-    {
-        var defaults = new Dictionary<string, string[]>
-        {
-            [RoleNames.Developer] =
-            [
-                PermissionCodes.ApplicationsView,
-                PermissionCodes.EnvironmentsView,
-                PermissionCodes.DeploymentsView,
-                PermissionCodes.DeploymentsDeployDev,
-                PermissionCodes.DeploymentsPromoteQa,
-                PermissionCodes.ContainersView,
-                PermissionCodes.BuildsView,
-                PermissionCodes.BuildsRequest,
-            ],
-            [RoleNames.Qa] =
-            [
-                PermissionCodes.ApplicationsView,
-                PermissionCodes.EnvironmentsView,
-                PermissionCodes.DeploymentsView,
-                PermissionCodes.DeploymentsApproveQa,
-                PermissionCodes.DeploymentsDeployQa,
-                PermissionCodes.ContainersView,
-                PermissionCodes.BuildsView,
-            ],
-            [RoleNames.Uat] =
-            [
-                PermissionCodes.ApplicationsView,
-                PermissionCodes.EnvironmentsView,
-                PermissionCodes.DeploymentsView,
-                PermissionCodes.DeploymentsApproveUat,
-                PermissionCodes.DeploymentsDeployUat,
-                PermissionCodes.ContainersView,
-                PermissionCodes.BuildsView,
-            ],
-            [RoleNames.DevOps] =
-            [
-                PermissionCodes.ApplicationsView,
-                PermissionCodes.RepositoriesView,
-                PermissionCodes.TargetServersView,
-                PermissionCodes.EnvironmentsView,
-                PermissionCodes.DeploymentsView,
-                PermissionCodes.DeploymentsDeployDev,
-                PermissionCodes.DeploymentsPromoteQa,
-                PermissionCodes.DeploymentsApproveQa,
-                PermissionCodes.DeploymentsDeployQa,
-                PermissionCodes.DeploymentsPromoteUat,
-                PermissionCodes.DeploymentsApproveUat,
-                PermissionCodes.DeploymentsDeployUat,
-                PermissionCodes.DeploymentsPromoteProduction,
-                PermissionCodes.DeploymentsDeployProduction,
-                PermissionCodes.DeploymentsRollback,
-                PermissionCodes.ContainersView,
-                PermissionCodes.ContainersControl,
-                PermissionCodes.ContainersRecreate,
-                PermissionCodes.BuildServersView,
-                PermissionCodes.BuildServersManage,
-                PermissionCodes.BuildsView,
-                PermissionCodes.BuildsRequest,
-                PermissionCodes.SecretsView,
-                PermissionCodes.SecretsManage,
-            ],
-            [RoleNames.Cto] =
-            [
-                PermissionCodes.ApplicationsView,
-                PermissionCodes.EnvironmentsView,
-                PermissionCodes.DeploymentsView,
-                PermissionCodes.DeploymentsApproveProduction,
-                PermissionCodes.ContainersView,
-                PermissionCodes.BuildsView,
-            ],
-        };
-
-        foreach (var (roleName, codes) in defaults)
-        {
-            var role = await db.Roles.FirstOrDefaultAsync(r => r.Name == roleName);
-            if (role is null)
-                continue;
-
-            foreach (var code in codes)
-            {
-                var permission = await db.Permissions.FirstOrDefaultAsync(p => p.Code == code);
-                if (permission is null)
-                    continue;
-
-                var hasGrant = await db.RolePermissions.AnyAsync(rp => rp.RoleId == role.Id && rp.PermissionId == permission.Id);
-                if (!hasGrant)
-                    db.RolePermissions.Add(new RolePermission { RoleId = role.Id, PermissionId = permission.Id });
-            }
-        }
-
-        await db.SaveChangesAsync();
-    }
-
-    private static string GenerateRandomPassword()
-    {
-        const string chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
-        var bytes = RandomNumberGenerator.GetBytes(20);
-        return new string(bytes.Select(b => chars[b % chars.Length]).ToArray());
     }
 }

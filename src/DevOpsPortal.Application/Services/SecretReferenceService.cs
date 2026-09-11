@@ -19,7 +19,8 @@ namespace DevOpsPortal.Application.Services;
 /// ResolveForDeploymentAsync returns one, and it is never wired to any API
 /// endpoint (see ISecretReferenceService's doc comment).
 /// </summary>
-public class SecretReferenceService(IAppDbContext db, ICurrentUserService currentUser, IAuditService auditService, ISecretProvider secretProvider)
+public class SecretReferenceService(
+    IAppDbContext db, ICurrentUserService currentUser, ICurrentTenantService currentTenantService, IAuditService auditService, ISecretProvider secretProvider)
     : ISecretReferenceService
 {
     public async Task<IReadOnlyList<SecretReferenceDto>> ListAsync(
@@ -78,6 +79,7 @@ public class SecretReferenceService(IAppDbContext db, ICurrentUserService curren
 
         var secret = new SecretReference
         {
+            TenantId = currentTenantService.RequireTenantId(),
             Name = name,
             Category = request.Category,
             Scope = request.Scope,

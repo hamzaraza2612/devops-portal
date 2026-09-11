@@ -59,7 +59,7 @@ public class DeploymentExecutorTests
         db.Deployments.Add(deployment);
         await db.SaveChangesAsync();
 
-        var audit = new AuditService(db, new FakeCurrentUserService());
+        var audit = new AuditService(db, new FakeCurrentUserService(), new FakeCurrentTenantService());
         var notifications = notificationService ?? new FakeNotificationService();
         var sut = new DeploymentExecutor(
             db, composeExecutor, healthProbe, audit, secretReferenceService ?? new FakeSecretReferenceService(), notifications,

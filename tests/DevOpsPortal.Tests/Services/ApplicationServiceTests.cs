@@ -12,8 +12,9 @@ public class ApplicationServiceTests
     private static ApplicationService CreateSut(out Infrastructure.Persistence.AppDbContext db)
     {
         db = TestDb.CreateInMemory();
-        var audit = new AuditService(db, new FakeCurrentUserService());
-        return new ApplicationService(db, audit);
+        var currentTenant = new FakeCurrentTenantService();
+        var audit = new AuditService(db, new FakeCurrentUserService(), currentTenant);
+        return new ApplicationService(db, audit, currentTenant);
     }
 
     [Fact]

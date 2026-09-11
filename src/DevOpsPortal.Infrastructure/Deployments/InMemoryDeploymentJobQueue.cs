@@ -8,14 +8,14 @@ namespace DevOpsPortal.Infrastructure.Deployments;
 /// queued right before a restart is lost; a real broker is a Phase 4 concern).</summary>
 public class InMemoryDeploymentJobQueue : IDeploymentJobQueue
 {
-    private readonly Channel<Guid> _channel = Channel.CreateUnbounded<Guid>(new UnboundedChannelOptions
+    private readonly Channel<DeploymentJob> _channel = Channel.CreateUnbounded<DeploymentJob>(new UnboundedChannelOptions
     {
         SingleReader = false,
         SingleWriter = false,
     });
 
-    public void Enqueue(Guid deploymentId) => _channel.Writer.TryWrite(deploymentId);
+    public void Enqueue(DeploymentJob job) => _channel.Writer.TryWrite(job);
 
-    public async Task<Guid> DequeueAsync(CancellationToken cancellationToken) =>
+    public async Task<DeploymentJob> DequeueAsync(CancellationToken cancellationToken) =>
         await _channel.Reader.ReadAsync(cancellationToken);
 }

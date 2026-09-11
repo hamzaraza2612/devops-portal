@@ -11,11 +11,22 @@ const navItems = [
   { to: '/deployments', label: 'Deployment History', permission: Permissions.DeploymentsView },
 ];
 
+const adminNavItems = [
+  { to: '/admin/tenants', label: 'Tenants', permission: Permissions.TenantsView },
+  { to: '/admin/users', label: 'Users', permission: Permissions.UsersView },
+  { to: '/admin/roles', label: 'Roles', permission: Permissions.RolesView },
+  { to: '/admin/repositories', label: 'Repositories', permission: Permissions.RepositoriesView },
+  { to: '/admin/target-servers', label: 'Deployment Targets', permission: Permissions.TargetServersView },
+  { to: '/admin/integrations', label: 'Integrations', permission: Permissions.BuildServersView },
+];
+
 export function Layout() {
   const { user, logout, can } = useAuth();
   const [isNavOpen, setIsNavOpen] = useState(false);
+  const [isAdminMenuOpen, setIsAdminMenuOpen] = useState(false);
 
   const visibleItems = navItems.filter((item) => !item.permission || can(item.permission));
+  const visibleAdminItems = adminNavItems.filter((item) => can(item.permission));
 
   return (
     <div className="min-h-full">
@@ -60,6 +71,36 @@ export function Layout() {
                 {item.label}
               </NavLink>
             ))}
+            {visibleAdminItems.length > 0 && (
+              <div className="relative md:ml-auto">
+                <button
+                  type="button"
+                  onClick={() => setIsAdminMenuOpen((v) => !v)}
+                  className="w-full rounded-md px-3 py-1.5 text-left text-sm font-medium text-slate-600 hover:bg-slate-100 md:w-auto"
+                >
+                  Admin ▾
+                </button>
+                {isAdminMenuOpen && (
+                  <div className="mt-0.5 flex flex-col gap-0.5 rounded-md border border-slate-200 bg-white py-1 shadow-lg md:absolute md:right-0 md:w-48 md:border">
+                    {visibleAdminItems.map((item) => (
+                      <NavLink
+                        key={item.to}
+                        to={item.to}
+                        onClick={() => {
+                          setIsNavOpen(false);
+                          setIsAdminMenuOpen(false);
+                        }}
+                        className={({ isActive }) =>
+                          `px-3 py-1.5 text-sm font-medium ${isActive ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`
+                        }
+                      >
+                        {item.label}
+                      </NavLink>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </nav>
       </header>

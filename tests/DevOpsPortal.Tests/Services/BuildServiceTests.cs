@@ -52,9 +52,10 @@ public class BuildServiceTests
         }
 
         var currentUser = new FakeCurrentUserService();
-        var audit = new AuditService(db, currentUser);
+        var currentTenant = new FakeCurrentTenantService();
+        var audit = new AuditService(db, currentUser, currentTenant);
         var providers = new List<IBuildProvider> { provider ?? new FakeBuildProvider(BuildProviderType.Jenkins) };
-        var sut = new BuildService(db, currentUser, audit, providers);
+        var sut = new BuildService(db, currentUser, currentTenant, audit, providers);
 
         var requestUserId = await TestDb.CreateUserWithPermissionsAsync(db, "builder", PermissionCodes.BuildsView, PermissionCodes.BuildsRequest);
         var viewOnlyUserId = await TestDb.CreateUserWithPermissionsAsync(db, "viewer", PermissionCodes.BuildsView);
@@ -233,9 +234,10 @@ public class BuildServiceTests
         await db.SaveChangesAsync();
 
         var currentUser = new FakeCurrentUserService();
+        var currentTenant = new FakeCurrentTenantService();
         // No IBuildProvider registered at all — simulates a BuildServer whose
         // ProviderType has no matching implementation (invalid provider).
-        var sut = new BuildService(db, currentUser, new AuditService(db, currentUser), []);
+        var sut = new BuildService(db, currentUser, currentTenant, new AuditService(db, currentUser, currentTenant), []);
         currentUser.UserId = await TestDb.CreateUserWithPermissionsAsync(db, "builder", PermissionCodes.BuildsView, PermissionCodes.BuildsRequest);
 
         var dto = await sut.RequestBuildAsync(app.Id, new RequestBuildRequest(null, null, null));

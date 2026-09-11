@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using DevOpsPortal.Application.Abstractions;
 using DevOpsPortal.Application.Common;
 using DevOpsPortal.Application.Dtos.Applications;
 using DevOpsPortal.Application.Exceptions;
@@ -7,7 +8,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DevOpsPortal.Application.Services;
 
-public partial class ApplicationService(IAppDbContext db, IAuditService auditService) : IApplicationService
+public partial class ApplicationService(IAppDbContext db, IAuditService auditService, ICurrentTenantService currentTenantService) : IApplicationService
 {
     public async Task<IReadOnlyList<ApplicationDto>> GetAllAsync(CancellationToken cancellationToken = default)
     {
@@ -42,6 +43,7 @@ public partial class ApplicationService(IAppDbContext db, IAuditService auditSer
 
         var app = new ManagedApplication
         {
+            TenantId = currentTenantService.RequireTenantId(),
             Name = name,
             Slug = slug,
             Description = request.Description?.Trim(),

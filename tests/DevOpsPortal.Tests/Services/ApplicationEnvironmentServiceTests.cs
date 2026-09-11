@@ -28,7 +28,8 @@ public class ApplicationEnvironmentServiceTests
         await db.SaveChangesAsync();
         var envDef = db.EnvironmentDefinitions.Single(e => e.Name == EnvironmentNames.Dev);
 
-        var sut = new ApplicationEnvironmentService(db, new AuditService(db, new FakeCurrentUserService()), new FakeGitProviderClient());
+        var currentTenant = new FakeCurrentTenantService();
+        var sut = new ApplicationEnvironmentService(db, new AuditService(db, new FakeCurrentUserService(), currentTenant), new FakeGitProviderClient(), currentTenant);
         return (sut, db, app, envDef, server);
     }
 

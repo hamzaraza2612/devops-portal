@@ -27,6 +27,15 @@ public static class DependencyInjection
         services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
         services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
 
+        // One AmbientTenantContext instance per scope, exposed as both the read-only
+        // ICurrentTenantService (consumed by AppDbContext's global query filters and
+        // every service) and the settable IMutableTenantContext (consumed by
+        // TenantResolutionMiddleware for HTTP requests and DeploymentWorker for
+        // background jobs — see AmbientTenantContext's doc comment).
+        services.AddScoped<AmbientTenantContext>();
+        services.AddScoped<ICurrentTenantService>(sp => sp.GetRequiredService<AmbientTenantContext>());
+        services.AddScoped<IMutableTenantContext>(sp => sp.GetRequiredService<AmbientTenantContext>());
+
         services.Configure<JwtSettings>(configuration.GetSection(JwtSettings.SectionName));
         services.AddSingleton<IPasswordHasher, PasswordHasher>();
         services.AddSingleton<IJwtTokenService, JwtTokenService>();

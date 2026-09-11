@@ -73,13 +73,14 @@ public class DeploymentServiceTests
         var noPermUserId = await TestDb.CreateUserWithPermissionsAsync(db, "noperm1", PermissionCodes.DeploymentsView);
 
         var currentUser = new FakeCurrentUserService { UserId = devUserId, Username = "dev1" };
+        var currentTenant = new FakeCurrentTenantService();
         var jobQueue = new FakeDeploymentJobQueue();
         var notificationProvider = new FakeNotificationProvider();
-        var audit = new AuditService(db, currentUser);
+        var audit = new AuditService(db, currentUser, currentTenant);
         var notificationService = new NotificationService(
             db, [notificationProvider], audit, new FakeConfiguration(), NullLogger<NotificationService>.Instance);
 
-        var sut = new DeploymentService(db, currentUser, audit, jobQueue, notificationService);
+        var sut = new DeploymentService(db, currentUser, currentTenant, audit, jobQueue, notificationService);
 
         return new Fixture(db, sut, currentUser, jobQueue, notificationProvider, app, envs, devUserId, qaUserId, uatUserId, devopsUserId, ctoUserId, noPermUserId);
     }
@@ -755,8 +756,8 @@ public class DeploymentServiceTests
     private sealed class FakeDeploymentJobQueue : IDeploymentJobQueue
     {
         public List<Guid> Enqueued { get; } = [];
-        public void Enqueue(Guid deploymentId) => Enqueued.Add(deploymentId);
-        public Task<Guid> DequeueAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+        public void Enqueue(DeploymentJob job) => Enqueued.Add(job.DeploymentId);
+        public Task<DeploymentJob> DequeueAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
     private sealed class FakeNotificationProvider : INotificationProvider

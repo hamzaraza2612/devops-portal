@@ -1,12 +1,22 @@
 import { api } from './client';
 import type {
+  AllowedDeploymentRootDto,
   ApplicationDto,
   ApplicationEnvironmentDto,
   AuditLogDto,
   BuildConfigurationDto,
+  BuildServerDto,
+  CreateAllowedDeploymentRootRequest,
   CreateApplicationRequest,
+  CreateBuildServerRequest,
   CreateDevDeploymentRequest,
   CreatePromotionRequest,
+  CreateRepositoryRequest,
+  CreateRoleRequest,
+  CreateTargetServerRequest,
+  CreateTenantRequest,
+  CreateTenantResponse,
+  CreateUserRequest,
   DecidePromotionRequest,
   DeploymentDto,
   DeploymentLogEntryDto,
@@ -18,12 +28,20 @@ import type {
   LoginRequest,
   LoginResponse,
   PagedResult,
+  PermissionDto,
   PromotionRequestDto,
   RepositoryDto,
   RoleDto,
   RollbackRequest,
   TargetServerDto,
+  TenantDto,
   UpdateApplicationRequest,
+  UpdateBuildServerRequest,
+  UpdateRepositoryRequest,
+  UpdateRoleRequest,
+  UpdateTargetServerRequest,
+  UpdateTenantRequest,
+  UpdateUserRequest,
   UpsertApplicationEnvironmentRequest,
   UserDto,
 } from '../types/api';
@@ -107,20 +125,48 @@ export const EnvironmentsApi = {
   list: () => api.get<EnvironmentDefinitionDto[]>('/environments'),
 };
 
+export const TenantsApi = {
+  list: () => api.get<TenantDto[]>('/tenants'),
+  get: (id: string) => api.get<TenantDto>(`/tenants/${id}`),
+  create: (body: CreateTenantRequest) => api.post<CreateTenantResponse>('/tenants', body),
+  update: (id: string, body: UpdateTenantRequest) => api.put<TenantDto>(`/tenants/${id}`, body),
+};
+
 export const RolesApi = {
   list: () => api.get<RoleDto[]>('/roles'),
+  permissions: () => api.get<PermissionDto[]>('/roles/permissions'),
+  create: (body: CreateRoleRequest) => api.post<RoleDto>('/roles', body),
+  update: (id: string, body: UpdateRoleRequest) => api.put<RoleDto>(`/roles/${id}`, body),
 };
 
 export const UsersApi = {
   list: () => api.get<UserDto[]>('/users'),
+  get: (id: string) => api.get<UserDto>(`/users/${id}`),
+  create: (body: CreateUserRequest) => api.post<UserDto>('/users', body),
+  update: (id: string, body: UpdateUserRequest) => api.put<UserDto>(`/users/${id}`, body),
 };
 
 export const RepositoriesApi = {
   list: () => api.get<RepositoryDto[]>('/repositories'),
+  get: (id: string) => api.get<RepositoryDto>(`/repositories/${id}`),
+  create: (body: CreateRepositoryRequest) => api.post<RepositoryDto>('/repositories', body),
+  update: (id: string, body: UpdateRepositoryRequest) => api.put<RepositoryDto>(`/repositories/${id}`, body),
 };
 
 export const TargetServersApi = {
   list: () => api.get<TargetServerDto[]>('/target-servers'),
+  get: (id: string) => api.get<TargetServerDto>(`/target-servers/${id}`),
+  create: (body: CreateTargetServerRequest) => api.post<TargetServerDto>('/target-servers', body),
+  update: (id: string, body: UpdateTargetServerRequest) => api.put<TargetServerDto>(`/target-servers/${id}`, body),
+  addAllowedRoot: (targetServerId: string, body: CreateAllowedDeploymentRootRequest) =>
+    api.post<AllowedDeploymentRootDto>(`/target-servers/${targetServerId}/allowed-roots`, body),
+};
+
+export const BuildServersApi = {
+  list: () => api.get<BuildServerDto[]>('/build-servers'),
+  get: (id: string) => api.get<BuildServerDto>(`/build-servers/${id}`),
+  create: (body: CreateBuildServerRequest) => api.post<BuildServerDto>('/build-servers', body),
+  update: (id: string, body: UpdateBuildServerRequest) => api.put<BuildServerDto>(`/build-servers/${id}`, body),
 };
 
 export const AuditApi = {

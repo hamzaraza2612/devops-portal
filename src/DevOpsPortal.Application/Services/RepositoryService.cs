@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using DevOpsPortal.Application.Abstractions;
 using DevOpsPortal.Application.Common;
 using DevOpsPortal.Application.Dtos.Repositories;
 using DevOpsPortal.Application.Exceptions;
@@ -7,7 +8,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DevOpsPortal.Application.Services;
 
-public partial class RepositoryService(IAppDbContext db, IAuditService auditService) : IRepositoryService
+public partial class RepositoryService(IAppDbContext db, IAuditService auditService, ICurrentTenantService currentTenantService) : IRepositoryService
 {
     public async Task<IReadOnlyList<RepositoryDto>> GetAllAsync(CancellationToken cancellationToken = default) =>
         await db.Repositories.OrderBy(r => r.Name)
@@ -32,6 +33,7 @@ public partial class RepositoryService(IAppDbContext db, IAuditService auditServ
 
         var repo = new Repository
         {
+            TenantId = currentTenantService.RequireTenantId(),
             Name = name,
             Url = request.Url.Trim(),
             Provider = request.Provider,

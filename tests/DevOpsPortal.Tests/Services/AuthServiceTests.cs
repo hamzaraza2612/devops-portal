@@ -20,13 +20,16 @@ public class AuthServiceTests
             Issuer = "test", Audience = "test", SigningKey = "unit-test-signing-key-at-least-32-bytes-long",
         }));
         var currentUser = new FakeCurrentUserService();
-        var audit = new AuditService(db, currentUser);
+        var audit = new AuditService(db, currentUser, new FakeCurrentTenantService());
         return (new AuthService(db, hasher, jwt, audit), db);
     }
 
     private static async Task<User> SeedUserAsync(Infrastructure.Persistence.AppDbContext db, string username, string password, bool isActive = true)
     {
         var adminRole = await TestDb.SeedRolesAndPermissionsAsync(db);
+        // TenantId intentionally left null (platform administrator) — this test is
+        // about the login mechanics themselves, not tenant scoping; see
+        // TenantIsolationTests for the multi-tenant login/isolation coverage.
         var user = new User
         {
             Username = username,

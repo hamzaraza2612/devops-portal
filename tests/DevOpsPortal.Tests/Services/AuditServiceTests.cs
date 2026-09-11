@@ -14,7 +14,7 @@ public class AuditServiceTests
         var db = TestDb.CreateInMemory();
         var userId = Guid.NewGuid();
         var currentUser = new FakeCurrentUserService { UserId = userId, Username = "kate", IpAddress = "10.0.0.5" };
-        var sut = new AuditService(db, currentUser);
+        var sut = new AuditService(db, currentUser, new FakeCurrentTenantService());
 
         await sut.LogAsync("application.create", AuditResult.Success, "Application", "app-1");
 
@@ -28,7 +28,7 @@ public class AuditServiceTests
     public async Task QueryAsync_FiltersByActionAndPagesResults()
     {
         var db = TestDb.CreateInMemory();
-        var sut = new AuditService(db, new FakeCurrentUserService());
+        var sut = new AuditService(db, new FakeCurrentUserService(), new FakeCurrentTenantService());
 
         for (var i = 0; i < 3; i++)
             await sut.LogAsync("auth.login", AuditResult.Success);
