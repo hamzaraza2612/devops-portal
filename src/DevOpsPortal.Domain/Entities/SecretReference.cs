@@ -36,6 +36,17 @@ public class SecretReference
 
     public string? Description { get; set; }
 
+    /// <summary>Structured, non-secret display fields for the "Credentials" view (portal
+    /// operators frequently need "which username, which host/port/database" without
+    /// revealing the password itself) — deliberately plain columns, not behind
+    /// ISecretProvider, since none of these identify a secret on their own. The
+    /// actual secret (password/token/connection value) always stays in ProviderKey/
+    /// StoreKey, exactly as before; these are purely additive.</summary>
+    public string? Username { get; set; }
+    public string? Host { get; set; }
+    public int? Port { get; set; }
+    public string? DatabaseName { get; set; }
+
     /// <summary>Which ISecretProvider implementation holds the value — lets
     /// multiple backends (server-side encryption today; Vault/cloud/K8s later)
     /// coexist without any schema change.</summary>

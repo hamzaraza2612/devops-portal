@@ -13,6 +13,7 @@ import type {
   CreatePromotionRequest,
   CreateRepositoryRequest,
   CreateRoleRequest,
+  CreateSecretReferenceRequest,
   CreateTargetServerRequest,
   CreateTenantRequest,
   CreateTenantResponse,
@@ -31,14 +32,18 @@ import type {
   PermissionDto,
   PromotionRequestDto,
   RepositoryDto,
+  RevealedSecretDto,
   RoleDto,
   RollbackRequest,
+  SecretCategory,
+  SecretReferenceDto,
   TargetServerDto,
   TenantDto,
   UpdateApplicationRequest,
   UpdateBuildServerRequest,
   UpdateRepositoryRequest,
   UpdateRoleRequest,
+  UpdateSecretReferenceRequest,
   UpdateTargetServerRequest,
   UpdateTenantRequest,
   UpdateUserRequest,
@@ -167,6 +172,23 @@ export const BuildServersApi = {
   get: (id: string) => api.get<BuildServerDto>(`/build-servers/${id}`),
   create: (body: CreateBuildServerRequest) => api.post<BuildServerDto>('/build-servers', body),
   update: (id: string, body: UpdateBuildServerRequest) => api.put<BuildServerDto>(`/build-servers/${id}`, body),
+};
+
+export const SecretsApi = {
+  list: (filter?: { applicationId?: string; environmentDefinitionId?: string; category?: SecretCategory }) => {
+    const params = new URLSearchParams();
+    if (filter?.applicationId) params.set('applicationId', filter.applicationId);
+    if (filter?.environmentDefinitionId) params.set('environmentDefinitionId', filter.environmentDefinitionId);
+    if (filter?.category !== undefined) params.set('category', String(filter.category));
+    const qs = params.toString();
+    return api.get<SecretReferenceDto[]>(`/secrets${qs ? `?${qs}` : ''}`);
+  },
+  get: (id: string) => api.get<SecretReferenceDto>(`/secrets/${id}`),
+  create: (body: CreateSecretReferenceRequest) => api.post<SecretReferenceDto>('/secrets', body),
+  update: (id: string, body: UpdateSecretReferenceRequest) => api.put<SecretReferenceDto>(`/secrets/${id}`, body),
+  delete: (id: string) => api.del<void>(`/secrets/${id}`),
+  /** The controlled "Show password" action — only called when the user explicitly clicks it. */
+  reveal: (id: string) => api.post<RevealedSecretDto>(`/secrets/${id}/reveal`),
 };
 
 export const AuditApi = {

@@ -35,6 +35,7 @@ services:
       Seed__AdminEmail: ${ADMIN_EMAIL:-admin@example.local}
       Seed__AdminPassword: ${ADMIN_INITIAL_PASSWORD:-}
       Portal__BaseUrl: ${PORTAL_BASE_URL:-}
+      Deployment__ExecutionTimeoutMinutes: ${DEPLOYMENT_EXECUTION_TIMEOUT_MINUTES:-20}
       Smtp__Host: ${SMTP_HOST:-}
       Smtp__Port: ${SMTP_PORT:-587}
       Smtp__EnableSsl: ${SMTP_ENABLE_SSL:-true}

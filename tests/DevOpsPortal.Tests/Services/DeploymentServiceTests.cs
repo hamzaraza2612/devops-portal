@@ -80,7 +80,7 @@ public class DeploymentServiceTests
         var notificationService = new NotificationService(
             db, [notificationProvider], audit, new FakeConfiguration(), NullLogger<NotificationService>.Instance);
 
-        var sut = new DeploymentService(db, currentUser, currentTenant, audit, jobQueue, notificationService);
+        var sut = new DeploymentService(db, currentUser, currentTenant, audit, jobQueue, notificationService, new FakeGitProviderClient());
 
         return new Fixture(db, sut, currentUser, jobQueue, notificationProvider, app, envs, devUserId, qaUserId, uatUserId, devopsUserId, ctoUserId, noPermUserId);
     }
@@ -103,6 +103,22 @@ public class DeploymentServiceTests
         f.Db.Deployments.Add(deployment);
         await f.Db.SaveChangesAsync();
         return deployment;
+    }
+
+    // --------------------------------------------------------------- listing
+
+    [Fact]
+    public async Task ListAsync_WhenHistoryExceedsTheCap_ReturnsOnlyTheMostRecentResults()
+    {
+        var f = await CreateFixtureAsync();
+        const int seeded = 505;
+        for (var i = 0; i < seeded; i++)
+            await InsertSucceededDeploymentAsync(f, EnvironmentNames.Dev, $"commit{i:D4}");
+
+        var result = await f.Sut.ListAsync(null, null, null, CancellationToken.None);
+
+        Assert.True(result.Count < seeded, "ListAsync should cap unbounded history instead of returning every row ever created.");
+        Assert.Equal(500, result.Count);
     }
 
     // ------------------------------------------------------------- DEV deploy

@@ -2680,6 +2680,389 @@ creation).
   login — where the filter would otherwise hide a legitimate result).
   Confirmed safe by `TenantIsolationTests` and the full existing suite.
 
+### Phase 9 addendum — branch promotion, credentials, environment-focused UI
+
+Done, same branch/PR as Phase 9 above (not a new phase). Clarifies and
+extends the promotion workflow, adds a "Credentials" capability, and
+reworks the frontend into a sidebar-navigated, environment-focused SaaS
+layout, per explicit follow-up instruction.
+
+**Promote vs. deploy — confirmed, not changed.** The exact workflow asked
+for (developer deploys DEV explicitly; "Go Ahead to QA/UAT/Production"
+only promotes, never deploys; QA/UAT/Production each require their own
+explicit Deploy click; Production additionally needs CTO approval before
+its Deploy click is enabled) was already exactly what
+`IDeploymentService`/`DeploymentService` implemented since Phase 3
+(`RequestPromotionAsync` → `ApprovePromotionAsync` → separate
+`DeployApprovedPromotionAsync`, `DeployToDevAsync` as DEV's only direct
+entry point). Verified by re-reading the state machine and interface doc
+comments; only the frontend button label changed ("Request {tier}
+promotion" → "Go Ahead to {tier}") to match the requested terminology
+exactly — no backend behavior changed.
+
+**Git branch promotion** is now a first-class, traceable part of
+`RequestPromotionAsync`, built on top of `ApplicationEnvironment.BranchName`
+(already configurable per application/environment — no new configuration
+surface needed) rather than inventing a parallel branch model:
+`PromotionRequest` gained `FromBranch`/`ToBranch` (a snapshot, at request
+time, of both environments' configured branch names) and
+`BranchPromotionSucceeded`/`BranchPromotionDetail`. `IGitProviderClient`
+gained `PromoteBranchAsync(repository, sourceBranch, targetBranch)`;
+`GitLabProviderClient` implements it via GitLab's merge-request API
+(create — or reuse an already-open one on 409 — then accept), requiring
+the same `AccessTokenEnvVarName` write-capable token pattern
+`GetLatestCommitAsync` already uses for auth. Never blocks the DB-level
+workflow: a missing repository/branch config or a real Git failure (no
+token, merge conflict, GitLab unreachable) is recorded on the
+`PromotionRequest` and surfaced in the UI (`PromotionCard`), but the
+promotion request itself still succeeds — same "external integration
+failure never gates the workflow" principle Phase 3 established for
+notifications and commit lookup. `BranchPromotionDetail` is
+`LogSanitizer.Sanitize`d before storage, same as deployment log output.
+
+**Credentials** ("Developers and QA frequently ask DevOps for
+credentials") reuses `SecretReference`/`ISecretProvider` entirely rather
+than adding a parallel entity — `SecretReference` gained four plain,
+non-secret display columns (`Username`, `Host`, `Port`, `DatabaseName`);
+the actual secret value still only ever lives behind `ISecretProvider`,
+addressed by the existing `ProviderKey`/`StoreKey`. The one deliberate,
+narrow exception to "no method returns a plaintext value to a
+controller": `ISecretReferenceService.RevealAsync` / `POST
+/api/secrets/{id}/reveal`, gated by a new `secrets.reveal` permission
+**distinct from** `secrets.view` (view sees metadata only; reveal sees
+the actual value — an org can grant one without the other), and audited
+as `secret.revealed` with the same scope-description detail
+`secret.referenced` already uses — never the value itself, never
+`AuditLog`. `secrets.reveal` was added to the Developer/QA/UAT/DevOps
+default role grants (alongside `secrets.view`) so the exact pain point
+described ("frequently ask DevOps") is addressed by default, not just
+made theoretically possible; an org can tighten this via the Roles UI.
+The frontend's `CredentialsPage` never fetches a value until the viewer
+explicitly clicks "Show password" (one credential at a time, via
+`ActionButton`, never preloaded or cached).
+
+**Environment-focused UI.** `EnvironmentsPage` (all four tiers at a
+glance) is unchanged and remains the landing overview; a new
+`EnvironmentDashboardPage` (`/environments/:tier`) gives each environment
+its own fully separated view — applications currently deployed there,
+their commit/status/requester, and (reusing `PromotionCard`, not a
+duplicate) anything pending that environment's action — exactly the
+per-environment example format specified (application → release/commit →
+status → requested by → action). `Layout` was rewritten from a top nav
+bar to a fixed, collapsible-on-mobile sidebar (dark `slate-900`, blue-600
+active-item accent, grouped into primary nav / Environments (color-dot
+per tier) / Administration), a closer professional-SaaS-dashboard
+treatment per the Techbey-inspired direction requested — content area
+(white cards on `slate-50`) is unchanged, so this was a navigation
+restructuring, not a full component-library rewrite.
+
+**A real, pre-existing CSS bug was caught by live Playwright verification
+and fixed**, not merely reported: `index.css` had `a { color: inherit; }`
+as plain, unlayered CSS. Tailwind v4 puts its utility classes in
+`@layer utilities`; per the CSS Cascade Layers spec, *unlayered* rules
+always beat *layered* ones regardless of selector specificity — so that
+one line silently overrode every `text-*` color utility ever applied to
+an `<a>`/`NavLink` anywhere in the app. It had been invisible because the
+old top nav's white background happened to make the inherited near-black
+body text readable by accident; the new dark sidebar made every nav
+link's text render in the same color as its own background. Fixed by
+moving the rule into `@layer base`, restoring the intended cascade
+(utilities > base) everywhere in the app, not just the sidebar. Caught by
+taking an actual screenshot during smoke verification, not just checking
+HTTP status codes — worth calling out since it would not have surfaced
+from either backend tests or a build/typecheck pass.
+
+**New migration**: `Phase9b_BranchPromotionAndCredentials` (additive
+only — four nullable columns on `PromotionRequests`, four nullable
+columns on `SecretReferences`, three new global permission codes seeded
+by the existing generic `PermissionCodes.All` loop). Verified with a live
+`dotnet ef database update` against a fresh Postgres 16 instance and
+`dotnet ef migrations has-pending-model-changes` (none).
+
+**New tests**: `BranchPromotionTests` (4 — success/failure/no-repository/
+no-branches-configured, all confirming the DB-level workflow is never
+blocked) and four new cases in `SecretReferenceServiceTests` (reveal
+requires `secrets.reveal` even with `secrets.view`; reveal returns the
+correct value; reveal audits without the value; structured fields
+round-trip through Create/Get). 333/333 backend tests pass (325 prior +
+8 new), 38/38 frontend tests pass (2 existing `PromotionRequestDto` test
+fixtures updated for the new fields).
+
+**Known limitations (this addendum):**
+- Branch promotion's merge-request-based approach means a genuine merge
+  conflict is surfaced as a failure (`BranchPromotionSucceeded = false`,
+  detail names the conflict) rather than auto-resolved — this is
+  intentional (an automatic conflict resolution would be far riskier than
+  reporting it), but there is no in-portal conflict-resolution UI; an
+  operator resolves it directly in GitLab, same as they would today.
+- `RevealAsync` reveals to anyone holding the (org-configurable)
+  `secrets.reveal` permission platform-wide within their tenant — it is
+  not further scoped per-environment/per-application the way deployment
+  permissions are (matches the pre-existing `secrets.view`/`secrets.manage`
+  model exactly; not a new limitation, just inherited).
+- The sidebar redesign restructured navigation only; it did not touch
+  `ApplicationsListPage`'s "manage via the API/admin tooling" placeholder
+  or add inline create/edit forms to pages this addendum didn't otherwise
+  touch (Applications itself still has no inline create form — unchanged
+  from before this addendum, and out of the requested scope).
+
+## Phase 10 — Production Hardening, Security & Recovery
+
+A review pass across the whole platform (Phases 1–9 plus the addendum
+above), not a new feature phase: fixed confirmed gaps, left already-correct
+behavior untouched, and made deliberately-deferred gaps (remote execution,
+Release-based deployment, etc. — see "Production-critical gaps" below)
+more visible rather than papering over them. No domain/entity changes, so
+no new EF Core migration — `dotnet ef migrations has-pending-model-changes`
+reports none, confirmed live against a fresh Postgres 16 instance.
+
+**Branch note.** This phase's instructions said to branch from `main` on
+the premise that "Phase 1–9 are complete and merged." At the time this
+phase started, `main` contained Phase 1–9's multi-tenant work (PR #9,
+merge commit `b56f0b7`) but **not** the Phase 9 addendum above (branch
+promotion, Credentials, the sidebar redesign, the CSS layering fix) —
+that commit had been pushed to `claude/phase-9-multi-tenant` after PR #9
+was already merged, so it was never included in any pull request. Rather
+than silently dropping that work by branching cleanly from `main`, this
+phase's branch was built as `main` + that orphaned commit (cherry-picked
+cleanly, zero conflicts, full test suite green immediately after), so the
+addendum is finally included in a reviewable PR alongside Phase 10's
+hardening. Everything below assumes that combined base.
+
+### §1 Security review
+
+Read through authentication, authorization, IDOR, path traversal, command
+injection, SSRF, Docker operation safety, secret/log exposure, SQL
+injection, file/Git/background-job safety, race conditions, CSRF, CORS,
+and rate limiting. Most of this was already solid from earlier phases
+(parameterized EF Core queries everywhere — no raw SQL in the codebase;
+`ComposeCommandExecutor` uses `ArgumentList`, never a shell, so no command
+injection surface; every controller is `[Authorize]` with either a static
+`[RequirePermission]` or an equivalent in-service check — verified file by
+file; bearer-token auth means CSRF doesn't apply; the frontend's nginx
+reverse-proxies `/api/*` so the browser only ever sees one origin, which is
+why no CORS policy was ever needed — confirmed still accurate).
+
+**Fixed:**
+- **No rate limiting anywhere, on any endpoint — most exploitable as an
+  unlimited login brute-force/credential-stuffing surface.** Added
+  ASP.NET Core's built-in rate limiter (`Microsoft.AspNetCore.RateLimiting`,
+  already part of the shared framework — no new dependency): a global
+  per-IP fixed-window policy (300 req/min) as a general abuse/resource-
+  exhaustion guard, and a much stricter named `"auth"` policy (10 req/min
+  per IP) applied to `POST /api/auth/login` specifically, since it's the
+  highest-value automated-guessing target. Rejections return `429` with a
+  small JSON body, consistent with the existing error-shape convention.
+  Live-verified: 11th login attempt within a minute from the same IP
+  returns 429 regardless of the credentials supplied; a successful login
+  is throttled identically to a failed one (the bucket is per-IP, not
+  per-outcome, so it can't be bypassed by alternating usernames).
+- Everything else reviewed (IDOR via tenant-scoped global query filters +
+  by-id ownership checks, approval-link tokens — 256-bit random, hashed at
+  rest, constant-time-compared, never logged — GitLab token handling never
+  logged, YAML analysis is pure in-memory parsing with no filesystem
+  access, password hashing is PBKDF2-HMAC-SHA256 via ASP.NET Core
+  Identity with an 8-character minimum) was already correct; no changes
+  made there, per this phase's "no speculative rewrites" instruction.
+
+### §2 Deployment safety
+
+Verified: only a `TargetServer`/`ApplicationEnvironment` the application is
+actually configured for can be deployed to; every promote/approve/deploy
+action re-checks the environment-specific permission server-side (never
+trusts a UI-hidden button); a Postgres partial unique index
+(`WHERE "Status" IN (0,1,2)`, i.e. Pending/Queued/Running) plus an
+application-level pre-check together prevent two concurrent deployments to
+the same application/environment even under a check-then-insert race;
+rollback only accepts a previously-`Succeeded` deployment of the *same*
+application+environment as its target and goes through the identical
+queued/concurrency-guarded path as a normal deployment (no shortcut).
+
+**Fixed:**
+- **No execution timeout.** `DeploymentWorker` processes one job at a
+  time; a single stuck `docker compose up` (an image pull that hangs
+  forever, for example) would have blocked every subsequent deployment
+  indefinitely with no way to recover except restarting the process.
+  `DeploymentExecutor` now bounds the whole compose-command-plus-health-
+  check sequence with a linked, cancellable timeout — configurable via
+  `Deployment:ExecutionTimeoutMinutes` / `DEPLOYMENT_EXECUTION_TIMEOUT_MINUTES`
+  (default 20 minutes) — and on expiry marks the deployment `Failed` with
+  an explicit "Deployment timed out after N minute(s)." reason rather than
+  hanging the worker loop. Covered by a new test using a compose executor
+  that never completes on its own.
+
+### §3 Database review
+
+Reviewed indexes, foreign keys, cascade behavior, and uniqueness
+constraints across every entity in `AppDbContext`. Findings: FK
+`DeleteBehavior` is `Restrict` everywhere a delete could silently discard
+meaningful history (deployments, promotions, audit-adjacent data), and
+`Cascade` only where that's actually correct (a `Deployment`'s own log
+entries, a `PromotionRequest`'s own `ProductionApproval`) — no changes
+needed, this was already deliberate. Composite/filtered unique indexes
+(tenant-scoped names/slugs, the active-deployment concurrency guard, the
+approval-token-hash indexes) are all present and correctly scoped.
+`AuditLog`/`Deployment`/`DeploymentLogEntry` already carry the indexes
+their query patterns need (`Timestamp`, `UserId`, `Action`,
+`(ApplicationId, EnvironmentDefinitionId, Status)`, etc.).
+
+**Fixed:**
+- **Unbounded deployment-history growth with no query cap.**
+  `DeploymentService.ListAsync` had no `Take(...)` and no caller-supplied
+  paging — every deployment ever created for a heavily-deployed
+  application would be pulled and serialized on every unfiltered call
+  (the dashboard/environment views call this with no filters). Added a
+  `Take(500)` cap (most-recent-first, same ordering as before); callers
+  that need a narrower slice already have `applicationId`/
+  `environmentDefinitionId`/`status` filters available. Covered by a new
+  test seeding 505 deployments and asserting the result is capped at 500.
+  `AuditController`/`AuditService.QueryAsync` already had proper
+  page/pageSize paging (clamped 1–200) — no change needed there.
+- Added `EnableRetryOnFailure(maxRetryCount: 3)` to the Npgsql connection
+  (no manual `BeginTransaction` calls exist anywhere in the codebase, so
+  this is safe to enable with no execution-strategy conflicts) — a
+  transient network blip or a Postgres restart no longer takes the whole
+  API down with it.
+
+**Noted, not changed:** EF Core's model-validation pass emits a design-time
+warning that `Role`'s global query filter is the required end of a
+relationship with `RolePermission`/`UserRole`. This predates Phase 10 (it
+was already present after Phase 9's tenant-isolation work) and
+`TenantIsolationTests` plus the full 340-test suite already pass with it —
+changing global query filter wiring is exactly the kind of
+architecture-level change this phase's instructions said not to make
+speculatively. Left as a known, harmless-in-practice warning for a future
+phase to address if it ever proves to matter in practice.
+
+### §4 Backup & recovery
+
+No backup mechanism existed at all before this phase. Added
+`scripts/backup-database.sh` and `scripts/restore-database.sh` —
+deliberately infra-agnostic (every location/credential comes from standard
+libpq `PG*` environment variables plus `BACKUP_DIR`/
+`BACKUP_RETENTION_DAYS`; nothing hardcodes a host, container name, or
+filesystem path), so they work whatever's actually reaching the portal's
+Postgres instance in a given environment.
+
+- **Backup**: `pg_dump --format=custom` (compressed, supports selective/
+  parallel restore) to a timestamped file, immediately followed by
+  `pg_restore --list` against the new archive to verify it's structurally
+  readable before declaring success (a corrupt/truncated dump is deleted
+  and the script exits non-zero rather than leaving a false sense of
+  safety on disk). Prunes backups older than `BACKUP_RETENTION_DAYS`
+  (default 14) in its own directory.
+- **Restore**: `pg_restore --clean --if-exists --no-owner`, requires an
+  explicit `--yes` flag (a restore is destructive against whatever
+  database `PGDATABASE` currently names — this never guesses that a human
+  meant to overwrite production) and prints the follow-up verification
+  steps (`dotnet ef migrations has-pending-model-changes` + an application
+  smoke test) rather than declaring the restored database live on its own
+  say-so.
+- **Recommended schedule**: daily via cron/systemd timer (the doc comment
+  in `backup-database.sh` includes an example crontab line);
+  `BACKUP_RETENTION_DAYS=14` locally, with whatever longer-term/offsite
+  copy policy the surrounding infrastructure already uses for other
+  stateful services layered on top (this script manages its own local
+  directory's retention only — it is not a substitute for an offsite/3-2-1
+  policy).
+- **Restore verification procedure** (documented in the restore script's
+  own header, not just implied): run the restore script against a
+  throwaway/staging database after every backup rotation — not only when
+  an incident forces an actual restore — and confirm the application
+  starts against it with no pending migrations. This is the only way to
+  actually know a backup is restorable rather than merely present on disk.
+- Live-verified end-to-end against a real Postgres 16 instance in this
+  session: backup a database with real data → verify archive → restore
+  into a fresh target database → confirm the data round-trips exactly.
+
+### §5 Audit coverage
+
+Reviewed every `IAuditService.LogAsync` call site across every service.
+Coverage was already comprehensive — every create/update/delete on every
+security-sensitive entity (`User`, `Role`, `Tenant`, `SecretReference`,
+`TargetServer`, `Repository`, `Deployment`, `PromotionRequest`,
+`ProductionApproval`, container operations, builds), every auth outcome
+(success, invalid credentials, inactive account, inactive tenant),
+password reset/change, and the addendum's `secret.revealed` action are all
+audited today. No gaps found; no changes made.
+
+### §6 Observability & error handling
+
+`ExceptionHandlingMiddleware` already maps every exception type to the
+correct HTTP status and a clean `{ "error": "..." }` body, and only logs
+(never returns to the caller) the exception detail/stack trace for the
+unmapped-`500` case — confirmed this was already correct, no stack trace
+or internal detail is ever exposed to a client. `LogSanitizer` already
+redacts deployment log output; `DeploymentExecutor` additionally
+replaces every literal resolved-secret-value occurrence beyond
+pattern-based redaction. No changes made here — this was already
+production-safe.
+
+### §7 Health endpoints
+
+Only a single combined `/health` (API + DB) existed before this phase.
+Added granular endpoints, all still unauthenticated by design (component
+status strings only, nothing sensitive in the response) and all sharing a
+structured JSON response writer (`{ status, totalDurationMs, checks: [...] }`)
+instead of the framework's default plain-text body:
+
+- **`/health`** — everything, for a simple all-in-one probe (unchanged
+  route, now with the structured body and the two new checks below).
+- **`/health/live`** — zero dependencies (`Predicate = _ => false`),
+  answers "is the process up" for an orchestrator restart policy.
+- **`/health/ready`** — database + background worker: "can this instance
+  actually serve deployments" (deliberately excludes `integrations`, since
+  SMTP/remote-execution being unconfigured is a supported, non-blocking
+  state, not a readiness failure).
+- **`/health/db`**, **`/health/worker`**, **`/health/integrations`** —
+  each component in isolation, for targeted troubleshooting.
+- New `BackgroundWorkerHealthCheck` inspects `DeploymentWorker`'s
+  `BackgroundService.ExecuteTask` (public since .NET Core 3.0) rather than
+  a separate heartbeat mechanism — reports unhealthy if the worker isn't
+  registered, hasn't started, or its loop has completed/faulted.
+- New `IntegrationsHealthCheck` reports SMTP and remote-execution-provider
+  configuration state as `Degraded` (never `Unhealthy` — an unconfigured
+  optional integration is a documented, supported state, not an outage;
+  see `NotConfiguredRemoteExecutionProvider`'s own doc comment). Never
+  makes a live network call — that would make every health check
+  slow/flaky — just reports configuration presence.
+- Live-verified end-to-end (all six endpoints, correct status per
+  endpoint, `/health/ready` correctly excluding the degraded-but-non-
+  blocking integrations check) and covered by new unit tests for both new
+  `IHealthCheck` implementations.
+
+### §8 Performance review
+
+Reviewed database queries, dashboard/environment-view aggregation, log
+retrieval, and the background worker for obvious bottlenecks.
+`ApplicationService`/`ApplicationsController` already fetch with a single
+`Include`, no N+1; `AuditService.QueryAsync` already paginates; permission
+checks are a pure JWT-claim check with no DB round-trip per request. The
+two real findings — unbounded `DeploymentService.ListAsync` and no Npgsql
+retry policy — are fixed under §3 above (both are as much a performance
+concern as a database-hygiene one, so documented once rather than twice).
+
+### §9 Testing
+
+340/340 backend tests pass (334 prior + 6 new: 1 deployment-timeout test,
+1 deployment-history-cap test, 4 new health-check unit tests), 38/38
+frontend tests pass (untouched by this phase). `dotnet build` and
+`npm run build` both clean. `docker compose config` validates cleanly with
+the new `Deployment__ExecutionTimeoutMinutes` variable wired through
+end-to-end from `docker-compose.yml` → `appsettings.json` default. Live
+Postgres 16 verification covered: `dotnet ef migrations
+has-pending-model-changes` (none), full API smoke run (seed, health
+endpoints, rate-limited login), and a full backup/restore round-trip.
+
+**Known limitations (this phase):** no automated CI/scheduled execution of
+the backup script is wired up (it's provided as a script + documented
+schedule, not a running cron job — hosting environments differ too much to
+hardcode one); the `Role` query-filter design-time warning noted under §3
+is unresolved (deliberately, see that section); the rate limiter is
+in-process/per-instance (a future multi-instance API deployment would need
+a distributed limiter — out of scope until the portal is actually
+horizontally scaled, which nothing today requires).
+
 ## Production-critical gaps / next implementation
 
 Carried forward, unresolved, and deliberately **not** touched by Phase 9
@@ -2740,18 +3123,22 @@ rather than getting lost once multi-tenancy makes the codebase look more
 
 ## Next phase
 
-Not yet assigned — Phase 9 (Productization & Multi-Tenant Architecture) is
+Not yet assigned — Phase 10 (Production Hardening, Security & Recovery) is
 complete; awaiting explicit approval before starting further work.
 Strongest candidate, per the "Production-critical gaps" section directly
-above: a real secure remote-execution mechanism for
-`IRemoteExecutionProvider`, since it blocks the portal's own stated
-target architecture (Portal VM → secure remote execution → Target Server
-→ Docker Compose) and would immediately benefit deployment execution,
-container monitoring, and container control all at once. Other
-candidates, unchanged from before: wiring `IDeploymentService`/
+above (unchanged by Phase 10 — hardening the existing surface area
+deliberately did not touch these architecture-level gaps): a real secure
+remote-execution mechanism for `IRemoteExecutionProvider`, since it blocks
+the portal's own stated target architecture (Portal VM → secure remote
+execution → Target Server → Docker Compose) and would immediately benefit
+deployment execution, container monitoring, and container control all at
+once. Other candidates, unchanged from before: wiring `IDeploymentService`/
 `DeploymentExecutor` to deploy from a `Release` (Phase 6) and secret
 injection for that path (Phase 7), broader notification distribution or a
 second `INotificationProvider` (Phase 8), a platform-admin
 view-into-a-tenant capability (Phase 9, deliberately deferred), backfill
-tooling for pre-Phase-9 data, or hardening session storage to an httpOnly
-cookie (flagged since Phase 4). Do not assume which without asking.
+tooling for pre-Phase-9 data, hardening session storage to an httpOnly
+cookie (flagged since Phase 4), or wiring the new backup script into an
+actual scheduled job for a given hosting environment (Phase 10, provided
+as a script + documented procedure rather than a hardcoded schedule — see
+Phase 10 §4/§9). Do not assume which without asking.

@@ -16,6 +16,13 @@ public interface ISecretReferenceService
 
     Task DeleteAsync(Guid id, CancellationToken cancellationToken = default);
 
+    /// <summary>The controlled "Show password" action — gated by secrets.reveal
+    /// (distinct from secrets.view, which only ever sees metadata), and
+    /// audited as "secret.revealed" without the value itself (see
+    /// LogAsync's `details` there). Never called implicitly; only when a user
+    /// explicitly asks to see one specific secret's value.</summary>
+    Task<RevealedSecretDto> RevealAsync(Guid id, CancellationToken cancellationToken = default);
+
     /// <summary>Internal — for IDeploymentExecutor only, never called from a
     /// controller. Resolves every secret visible to (applicationId,
     /// environmentDefinitionId) — ApplicationEnvironment-scoped secrets for

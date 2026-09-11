@@ -8,7 +8,9 @@ using DevOpsPortal.Domain.Enums;
 using DevOpsPortal.Infrastructure.Persistence;
 using DevOpsPortal.Tests.Common;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Primitives;
 using Xunit;
 
 namespace DevOpsPortal.Tests.Deployments;
@@ -17,7 +19,8 @@ public class DeploymentExecutorTests
 {
     private static async Task<(DeploymentExecutor Sut, AppDbContext Db, Deployment Deployment, FakeNotificationService Notifications)> CreateSutAsync(
         IComposeCommandExecutor composeExecutor, IHealthCheckProbe healthProbe,
-        ISecretReferenceService? secretReferenceService = null, FakeNotificationService? notificationService = null)
+        ISecretReferenceService? secretReferenceService = null, FakeNotificationService? notificationService = null,
+        IConfiguration? configuration = null)
     {
         var db = TestDb.CreateInMemory();
         await TestDb.SeedEnvironmentDefinitionsAsync(db);
@@ -63,7 +66,7 @@ public class DeploymentExecutorTests
         var notifications = notificationService ?? new FakeNotificationService();
         var sut = new DeploymentExecutor(
             db, composeExecutor, healthProbe, audit, secretReferenceService ?? new FakeSecretReferenceService(), notifications,
-            NullLogger<DeploymentExecutor>.Instance);
+            configuration ?? new FakeConfiguration(), NullLogger<DeploymentExecutor>.Instance);
         return (sut, db, deployment, notifications);
     }
 
@@ -91,6 +94,20 @@ public class DeploymentExecutorTests
         var updated = await db.Deployments.FindAsync(deployment.Id);
         Assert.Equal(DeploymentStatus.Failed, updated!.Status);
         Assert.NotNull(updated.FailureReason);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenComposeCommandHangsPastTheConfiguredTimeout_MarksFailedWithTimeoutReason()
+    {
+        var (sut, db, deployment, _) = await CreateSutAsync(
+            new HangingComposeCommandExecutor(), new FakeHealthCheckProbe(true),
+            configuration: new FakeConfiguration(executionTimeoutMinutes: "0.0005")); // ~30ms
+
+        await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
+
+        var updated = await db.Deployments.FindAsync(deployment.Id);
+        Assert.Equal(DeploymentStatus.Failed, updated!.Status);
+        Assert.Contains("timed out", updated.FailureReason, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -241,6 +258,17 @@ public class DeploymentExecutorTests
         }
     }
 
+    /// <summary>Never completes on its own — only responds to cancellation. Used to
+    /// simulate a stuck `docker compose up` for the execution-timeout test.</summary>
+    private sealed class HangingComposeCommandExecutor : IComposeCommandExecutor
+    {
+        public async Task<ComposeCommandResult> RunAsync(ComposeCommandRequest request, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            throw new InvalidOperationException("Unreachable — Task.Delay(Infinite) only returns via cancellation.");
+        }
+    }
+
     private sealed class FakeHealthCheckProbe(bool passed) : IHealthCheckProbe
     {
         public Task<HealthCheckResult> ProbeAsync(
@@ -265,6 +293,9 @@ public class DeploymentExecutorTests
             throw new NotSupportedException();
 
         public Task DeleteAsync(Guid id, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<RevealedSecretDto> RevealAsync(Guid id, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
 
         public Task<IReadOnlyDictionary<string, string>> ResolveForDeploymentAsync(
             Guid applicationId, Guid environmentDefinitionId, Guid actorUserId, string? actorUsername, CancellationToken cancellationToken = default)
@@ -308,5 +339,18 @@ public class DeploymentExecutorTests
                 throw new InvalidOperationException("Simulated notification failure.");
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class FakeConfiguration(string? executionTimeoutMinutes = null) : IConfiguration
+    {
+        public string? this[string key]
+        {
+            get => key == "Deployment:ExecutionTimeoutMinutes" ? executionTimeoutMinutes : null;
+            set { }
+        }
+
+        public IEnumerable<IConfigurationSection> GetChildren() => [];
+        public IChangeToken GetReloadToken() => throw new NotSupportedException();
+        public IConfigurationSection GetSection(string key) => throw new NotSupportedException();
     }
 }

@@ -116,9 +116,11 @@ public class FakeCurrentUserService : ICurrentUserService
     public string? IpAddress { get; set; } = "127.0.0.1";
 }
 
-/// <summary>Always reports the provider as unreachable — exercises the "graceful
-/// failure" path without any real network access.</summary>
-public class FakeGitProviderClient : IGitProviderClient
+/// <summary>Defaults to reporting every method unreachable — exercises the
+/// "graceful failure" path without any real network access. Pass
+/// promoteBranchResult to configure PromoteBranchAsync's outcome for tests
+/// that specifically exercise branch promotion (success or a named failure).</summary>
+public class FakeGitProviderClient(GitProviderResult<string>? promoteBranchResult = null) : IGitProviderClient
 {
     public Task<GitProviderResult<GitCommitInfo>> GetLatestCommitAsync(
         Repository repository, string branch, CancellationToken cancellationToken = default) =>
@@ -127,4 +129,8 @@ public class FakeGitProviderClient : IGitProviderClient
     public Task<GitProviderResult<IReadOnlyList<GitCommitInfo>>> GetRecentCommitsAsync(
         Repository repository, string branch, int count, CancellationToken cancellationToken = default) =>
         Task.FromResult(GitProviderResult<IReadOnlyList<GitCommitInfo>>.Fail("Fake provider: not reachable in tests."));
+
+    public Task<GitProviderResult<string>> PromoteBranchAsync(
+        Repository repository, string sourceBranch, string targetBranch, CancellationToken cancellationToken = default) =>
+        Task.FromResult(promoteBranchResult ?? GitProviderResult<string>.Fail("Fake provider: not reachable in tests."));
 }
