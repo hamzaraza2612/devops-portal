@@ -8,6 +8,7 @@ namespace DevOpsPortal.Domain.Entities;
 public class EnvironmentDefinition
 {
     public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
     public string Name { get; set; } = string.Empty;
 
     /// <summary>Pipeline position (DEV &lt; QA &lt; UAT &lt; PRODUCTION); lower deploys first.</summary>

@@ -63,7 +63,7 @@ public class ContainerOperationsServiceTests
         await db.SaveChangesAsync();
 
         var currentUser = new FakeCurrentUserService();
-        var audit = new AuditService(db, currentUser);
+        var audit = new AuditService(db, currentUser, new FakeCurrentTenantService());
         var sut = new ContainerOperationsService(
             db, currentUser, audit,
             runtimeProvider ?? new FakeContainerRuntimeProvider(),

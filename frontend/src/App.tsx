@@ -13,6 +13,12 @@ import { EnvironmentsPage } from './pages/EnvironmentsPage';
 import { LoginPage } from './pages/LoginPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { PendingRequestsPage } from './pages/PendingRequestsPage';
+import { BuildServersPage } from './pages/admin/BuildServersPage';
+import { RepositoriesPage } from './pages/admin/RepositoriesPage';
+import { RolesPage } from './pages/admin/RolesPage';
+import { TargetServersPage } from './pages/admin/TargetServersPage';
+import { TenantsPage } from './pages/admin/TenantsPage';
+import { UsersPage } from './pages/admin/UsersPage';
 
 export default function App() {
   return (
@@ -74,6 +80,54 @@ export default function App() {
                 element={
                   <RequirePermission permission={Permissions.DeploymentsView}>
                     <DeploymentDetailsPage />
+                  </RequirePermission>
+                }
+              />
+              <Route
+                path="admin/tenants"
+                element={
+                  <RequirePermission permission={Permissions.TenantsView}>
+                    <TenantsPage />
+                  </RequirePermission>
+                }
+              />
+              <Route
+                path="admin/users"
+                element={
+                  <RequirePermission permission={Permissions.UsersView}>
+                    <UsersPage />
+                  </RequirePermission>
+                }
+              />
+              <Route
+                path="admin/roles"
+                element={
+                  <RequirePermission permission={Permissions.RolesView}>
+                    <RolesPage />
+                  </RequirePermission>
+                }
+              />
+              <Route
+                path="admin/repositories"
+                element={
+                  <RequirePermission permission={Permissions.RepositoriesView}>
+                    <RepositoriesPage />
+                  </RequirePermission>
+                }
+              />
+              <Route
+                path="admin/target-servers"
+                element={
+                  <RequirePermission permission={Permissions.TargetServersView}>
+                    <TargetServersPage />
+                  </RequirePermission>
+                }
+              />
+              <Route
+                path="admin/integrations"
+                element={
+                  <RequirePermission permission={Permissions.BuildServersView}>
+                    <BuildServersPage />
                   </RequirePermission>
                 }
               />

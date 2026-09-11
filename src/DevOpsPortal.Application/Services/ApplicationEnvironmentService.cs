@@ -8,7 +8,8 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DevOpsPortal.Application.Services;
 
-public class ApplicationEnvironmentService(IAppDbContext db, IAuditService auditService, IGitProviderClient gitProviderClient)
+public class ApplicationEnvironmentService(
+    IAppDbContext db, IAuditService auditService, IGitProviderClient gitProviderClient, ICurrentTenantService currentTenantService)
     : IApplicationEnvironmentService
 {
     public async Task<IReadOnlyList<ApplicationEnvironmentDto>> GetForApplicationAsync(
@@ -55,7 +56,12 @@ public class ApplicationEnvironmentService(IAppDbContext db, IAuditService audit
 
         var row = await LoadAsync(applicationId, environmentDefinitionId, cancellationToken);
         var isNew = row is null;
-        row ??= new ApplicationEnvironment { ApplicationId = applicationId, EnvironmentDefinitionId = environmentDefinitionId };
+        row ??= new ApplicationEnvironment
+        {
+            TenantId = currentTenantService.RequireTenantId(),
+            ApplicationId = applicationId,
+            EnvironmentDefinitionId = environmentDefinitionId,
+        };
 
         row.TargetServerId = request.TargetServerId;
         row.BranchName = string.IsNullOrWhiteSpace(request.BranchName) ? null : request.BranchName.Trim();

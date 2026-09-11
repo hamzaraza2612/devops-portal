@@ -14,6 +14,7 @@ namespace DevOpsPortal.Application.Services;
 public partial class DeploymentService(
     IAppDbContext db,
     ICurrentUserService currentUser,
+    ICurrentTenantService currentTenantService,
     IAuditService auditService,
     IDeploymentJobQueue jobQueue,
     INotificationService notificationService) : IDeploymentService
@@ -136,12 +137,16 @@ public partial class DeploymentService(
     public async Task<ApprovalPreviewDto> GetPromotionPreviewByTokenAsync(string token, CancellationToken cancellationToken = default)
     {
         var hash = ApprovalTokenHelper.Hash(token);
+        // IgnoreQueryFilters: this is the [AllowAnonymous] preview endpoint — there is no
+        // tenant context yet, and the 256-bit token itself (globally unique) is the sole,
+        // sufficient selector, so bypassing the tenant filter here leaks nothing.
         var promotion = await db.PromotionRequests
+            .IgnoreQueryFilters()
             .Include(p => p.Application).Include(p => p.FromEnvironmentDefinition).Include(p => p.ToEnvironmentDefinition)
             .FirstOrDefaultAsync(p => p.ApprovalTokenHash == hash, cancellationToken)
             ?? throw new NotFoundException("Approval", token);
 
-        var requestedByUsername = await db.Users.Where(u => u.Id == promotion.RequestedByUserId).Select(u => u.Username).FirstOrDefaultAsync(cancellationToken);
+        var requestedByUsername = await db.Users.IgnoreQueryFilters().Where(u => u.Id == promotion.RequestedByUserId).Select(u => u.Username).FirstOrDefaultAsync(cancellationToken);
 
         return new ApprovalPreviewDto(
             promotion.Id, promotion.Application.Name, promotion.FromEnvironmentDefinition.Name, promotion.ToEnvironmentDefinition.Name,
@@ -155,12 +160,13 @@ public partial class DeploymentService(
     {
         var hash = ApprovalTokenHelper.Hash(token);
         var approval = await db.ProductionApprovals
+            .IgnoreQueryFilters()
             .Include(a => a.PromotionRequest).ThenInclude(p => p.Application)
             .Include(a => a.PromotionRequest).ThenInclude(p => p.ToEnvironmentDefinition)
             .FirstOrDefaultAsync(a => a.ApprovalTokenHash == hash, cancellationToken)
             ?? throw new NotFoundException("Approval", token);
 
-        var requestedByUsername = await db.Users
+        var requestedByUsername = await db.Users.IgnoreQueryFilters()
             .Where(u => u.Id == approval.PromotionRequest.RequestedByUserId).Select(u => u.Username).FirstOrDefaultAsync(cancellationToken);
 
         return new ApprovalPreviewDto(
@@ -193,6 +199,7 @@ public partial class DeploymentService(
 
         var deployment = new Deployment
         {
+            TenantId = currentTenantService.RequireTenantId(),
             ApplicationId = applicationId,
             EnvironmentDefinitionId = devEnvDef.Id,
             ApplicationEnvironmentId = appEnv.Id,
@@ -245,6 +252,7 @@ public partial class DeploymentService(
         var (rawToken, tokenHash) = ApprovalTokenHelper.Generate();
         var promotion = new PromotionRequest
         {
+            TenantId = currentTenantService.RequireTenantId(),
             ApplicationId = applicationId,
             FromEnvironmentDefinitionId = fromEnv.Id,
             ToEnvironmentDefinitionId = toEnvironmentDefinitionId,
@@ -399,6 +407,7 @@ public partial class DeploymentService(
 
         var deployment = new Deployment
         {
+            TenantId = promotion.TenantId,
             ApplicationId = promotion.ApplicationId,
             EnvironmentDefinitionId = promotion.ToEnvironmentDefinitionId,
             ApplicationEnvironmentId = appEnv.Id,
@@ -446,6 +455,7 @@ public partial class DeploymentService(
 
         var deployment = new Deployment
         {
+            TenantId = currentTenantService.RequireTenantId(),
             ApplicationId = applicationId,
             EnvironmentDefinitionId = environmentDefinitionId,
             ApplicationEnvironmentId = appEnv.Id,
@@ -474,6 +484,7 @@ public partial class DeploymentService(
         var (rawToken, tokenHash) = ApprovalTokenHelper.Generate();
         var approval = new ProductionApproval
         {
+            TenantId = promotion.TenantId,
             PromotionRequestId = promotion.Id,
             ApprovalTokenHash = tokenHash,
             ExpiresAt = DateTimeOffset.UtcNow.AddHours(ApprovalTokenExpiryHours),
@@ -563,7 +574,7 @@ public partial class DeploymentService(
     {
         db.Deployments.Add(deployment);
         await db.SaveChangesAsync(cancellationToken);
-        jobQueue.Enqueue(deployment.Id);
+        jobQueue.Enqueue(new DeploymentJob(deployment.Id, deployment.TenantId));
     }
 
     private static string ValidateCommitSha(string? commitSha)

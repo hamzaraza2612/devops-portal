@@ -12,7 +12,8 @@ public class RepositoryServiceTests
     private static RepositoryService CreateSut()
     {
         var db = TestDb.CreateInMemory();
-        return new RepositoryService(db, new AuditService(db, new FakeCurrentUserService()));
+        var currentTenant = new FakeCurrentTenantService();
+        return new RepositoryService(db, new AuditService(db, new FakeCurrentUserService(), currentTenant), currentTenant);
     }
 
     [Fact]

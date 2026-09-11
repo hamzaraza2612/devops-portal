@@ -6,6 +6,11 @@ namespace DevOpsPortal.Domain.Constants;
 /// </summary>
 public static class PermissionCodes
 {
+    /// <summary>Platform-level: managing tenants/organizations themselves is a
+    /// platform-administrator action, never granted within a tenant's own roles.</summary>
+    public const string TenantsView = "tenants.view";
+    public const string TenantsManage = "tenants.manage";
+
     public const string UsersView = "users.view";
     public const string UsersManage = "users.manage";
     public const string RolesView = "roles.view";
@@ -46,6 +51,8 @@ public static class PermissionCodes
 
     public static readonly IReadOnlyList<(string Code, string Description)> All = new (string, string)[]
     {
+        (TenantsView, "View tenants/organizations (platform administrators only)"),
+        (TenantsManage, "Create and manage tenants/organizations (platform administrators only)"),
         (UsersView, "View users"),
         (UsersManage, "Create, update, deactivate users and assign roles"),
         (RolesView, "View roles and permissions"),

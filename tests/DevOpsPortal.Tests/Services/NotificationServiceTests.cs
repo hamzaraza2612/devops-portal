@@ -30,7 +30,7 @@ public class NotificationServiceTests
         var approverId = await TestDb.CreateUserWithPermissionsAsync(db, "qa-approver", PermissionCodes.DeploymentsApproveQa);
 
         var currentUser = new FakeCurrentUserService();
-        var audit = new AuditService(db, currentUser);
+        var audit = new AuditService(db, currentUser, new FakeCurrentTenantService());
         var sut = new NotificationService(db, providers, audit, new FakeConfiguration(), NullLogger<NotificationService>.Instance);
 
         return new Fixture(sut, db, app, env, approverId);

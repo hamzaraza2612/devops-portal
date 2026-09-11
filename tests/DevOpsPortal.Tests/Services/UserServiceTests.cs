@@ -16,8 +16,9 @@ public class UserServiceTests
         var db = TestDb.CreateInMemory();
         var adminRole = await TestDb.SeedRolesAndPermissionsAsync(db);
         var hasher = new PasswordHasher();
-        var audit = new AuditService(db, new FakeCurrentUserService());
-        return (new UserService(db, hasher, audit), db, adminRole);
+        var currentTenant = new FakeCurrentTenantService();
+        var audit = new AuditService(db, new FakeCurrentUserService(), currentTenant);
+        return (new UserService(db, hasher, audit, currentTenant), db, adminRole);
     }
 
     [Fact]

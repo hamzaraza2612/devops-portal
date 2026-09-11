@@ -10,7 +10,8 @@ namespace DevOpsPortal.Application.Services;
 public class UserService(
     IAppDbContext db,
     IPasswordHasher passwordHasher,
-    IAuditService auditService) : IUserService
+    IAuditService auditService,
+    ICurrentTenantService currentTenantService) : IUserService
 {
     public async Task<IReadOnlyList<UserDto>> GetAllAsync(CancellationToken cancellationToken = default)
     {
@@ -37,9 +38,12 @@ public class UserService(
         var username = request.Username.Trim();
         var email = request.Email.Trim();
 
-        if (await db.Users.AnyAsync(u => u.Username.ToLower() == username.ToLower(), cancellationToken))
+        // Username/Email are globally unique across every tenant (see AppDbContext) —
+        // IgnoreQueryFilters so this check catches a collision with any tenant's user,
+        // not just the current one.
+        if (await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Username.ToLower() == username.ToLower(), cancellationToken))
             throw new ConflictException($"Username '{username}' is already in use.");
-        if (await db.Users.AnyAsync(u => u.Email.ToLower() == email.ToLower(), cancellationToken))
+        if (await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Email.ToLower() == email.ToLower(), cancellationToken))
             throw new ConflictException($"Email '{email}' is already in use.");
 
         ValidatePassword(request.Password);
@@ -47,6 +51,7 @@ public class UserService(
 
         var user = new User
         {
+            TenantId = currentTenantService.RequireTenantId(),
             Username = username,
             Email = email,
             FullName = request.FullName.Trim(),
@@ -73,7 +78,7 @@ public class UserService(
             ?? throw new NotFoundException("User", id);
 
         var email = request.Email.Trim();
-        if (await db.Users.AnyAsync(u => u.Id != id && u.Email.ToLower() == email.ToLower(), cancellationToken))
+        if (await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Id != id && u.Email.ToLower() == email.ToLower(), cancellationToken))
             throw new ConflictException($"Email '{email}' is already in use.");
 
         var roles = await ResolveRolesAsync(request.RoleIds, cancellationToken);

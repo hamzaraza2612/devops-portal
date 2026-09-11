@@ -11,7 +11,8 @@ public class TargetServerServiceTests
     private static TargetServerService CreateSut()
     {
         var db = TestDb.CreateInMemory();
-        return new TargetServerService(db, new AuditService(db, new FakeCurrentUserService()));
+        var currentTenant = new FakeCurrentTenantService();
+        return new TargetServerService(db, new AuditService(db, new FakeCurrentUserService(), currentTenant), currentTenant);
     }
 
     [Fact]

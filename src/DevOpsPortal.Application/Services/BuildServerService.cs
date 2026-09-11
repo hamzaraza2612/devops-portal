@@ -1,3 +1,4 @@
+using DevOpsPortal.Application.Abstractions;
 using DevOpsPortal.Application.Common;
 using DevOpsPortal.Application.Dtos.Builds;
 using DevOpsPortal.Application.Exceptions;
@@ -13,7 +14,7 @@ namespace DevOpsPortal.Application.Services;
 /// environment-variable name only, mirroring RepositoryService's handling of
 /// Repository.AccessTokenEnvVarName.
 /// </summary>
-public class BuildServerService(IAppDbContext db, IAuditService auditService) : IBuildServerService
+public class BuildServerService(IAppDbContext db, IAuditService auditService, ICurrentTenantService currentTenantService) : IBuildServerService
 {
     private static readonly System.Text.RegularExpressions.Regex EnvVarNamePattern =
         new(@"^[A-Z][A-Z0-9_]{2,99}$", System.Text.RegularExpressions.RegexOptions.Compiled);
@@ -39,6 +40,7 @@ public class BuildServerService(IAppDbContext db, IAuditService auditService) : 
 
         var server = new BuildServer
         {
+            TenantId = currentTenantService.RequireTenantId(),
             Name = name,
             Description = request.Description?.Trim(),
             ProviderType = request.ProviderType,

@@ -82,6 +82,39 @@ export interface LoginResponse {
   user: UserDto;
 }
 
+// --- Tenants (Phase 9 — platform-administrator only) ---
+
+export interface TenantDto {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
+export interface CreateTenantRequest {
+  name: string;
+  slug: string;
+  description: string | null;
+  initialAdminUsername: string;
+  initialAdminEmail: string;
+  initialAdminPassword: string | null;
+}
+
+export interface CreateTenantResponse {
+  tenant: TenantDto;
+  initialAdminUsername: string;
+  generatedPassword: string | null;
+}
+
+export interface UpdateTenantRequest {
+  name: string;
+  description: string | null;
+  isActive: boolean;
+}
+
 // --- Roles ---
 
 export interface RoleDto {
@@ -96,6 +129,71 @@ export interface PermissionDto {
   id: string;
   code: string;
   description: string;
+}
+
+export interface CreateRoleRequest {
+  name: string;
+  description: string;
+  permissionIds: string[];
+}
+
+export interface UpdateRoleRequest {
+  description: string;
+  permissionIds: string[];
+}
+
+// --- Users (admin management) ---
+
+export interface CreateUserRequest {
+  username: string;
+  email: string;
+  fullName: string;
+  password: string;
+  roleIds: string[];
+}
+
+export interface UpdateUserRequest {
+  email: string;
+  fullName: string;
+  isActive: boolean;
+  roleIds: string[];
+}
+
+// --- Build servers (integrations) ---
+
+export const BuildProviderType = {
+  Jenkins: 0,
+} as const;
+export type BuildProviderType = (typeof BuildProviderType)[keyof typeof BuildProviderType];
+
+export interface BuildServerDto {
+  id: string;
+  name: string;
+  description: string | null;
+  providerType: BuildProviderType;
+  baseUrl: string;
+  username: string | null;
+  apiTokenEnvVarName: string | null;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface CreateBuildServerRequest {
+  name: string;
+  description: string | null;
+  providerType: BuildProviderType;
+  baseUrl: string;
+  username: string | null;
+  apiTokenEnvVarName: string | null;
+}
+
+export interface UpdateBuildServerRequest {
+  name: string;
+  description: string | null;
+  baseUrl: string;
+  username: string | null;
+  apiTokenEnvVarName: string | null;
+  isActive: boolean;
 }
 
 // --- Environments (reference data) ---
@@ -204,13 +302,57 @@ export interface RepositoryDto {
   createdAt: string;
 }
 
+export interface CreateRepositoryRequest {
+  name: string;
+  url: string;
+  provider: RepositoryProvider;
+  description: string | null;
+  accessTokenEnvVarName: string | null;
+}
+
+export interface UpdateRepositoryRequest {
+  name: string;
+  url: string;
+  provider: RepositoryProvider;
+  description: string | null;
+  accessTokenEnvVarName: string | null;
+  isActive: boolean;
+}
+
+export interface AllowedDeploymentRootDto {
+  id: string;
+  targetServerId: string;
+  rootPath: string;
+  description: string | null;
+  isActive: boolean;
+}
+
 export interface TargetServerDto {
   id: string;
   name: string;
   description: string | null;
-  hostname: string;
+  hostname: string | null;
   isActive: boolean;
   createdAt: string;
+  allowedDeploymentRoots: AllowedDeploymentRootDto[];
+}
+
+export interface CreateTargetServerRequest {
+  name: string;
+  description: string | null;
+  hostname: string | null;
+}
+
+export interface UpdateTargetServerRequest {
+  name: string;
+  description: string | null;
+  hostname: string | null;
+  isActive: boolean;
+}
+
+export interface CreateAllowedDeploymentRootRequest {
+  rootPath: string;
+  description: string | null;
 }
 
 // --- Deployments ---

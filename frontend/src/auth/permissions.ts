@@ -4,6 +4,8 @@
 // *allows*: every action a button here triggers is re-checked server-side.
 
 export const Permissions = {
+  TenantsView: 'tenants.view',
+  TenantsManage: 'tenants.manage',
   UsersView: 'users.view',
   UsersManage: 'users.manage',
   RolesView: 'roles.view',
@@ -16,6 +18,8 @@ export const Permissions = {
   TargetServersView: 'targetservers.view',
   TargetServersManage: 'targetservers.manage',
   EnvironmentsView: 'environments.view',
+  BuildServersView: 'buildservers.view',
+  BuildServersManage: 'buildservers.manage',
 
   DeploymentsView: 'deployments.view',
   DeploymentsDeployDev: 'deployments.deploy.dev',

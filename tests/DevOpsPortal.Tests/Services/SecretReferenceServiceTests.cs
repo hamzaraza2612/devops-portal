@@ -41,10 +41,11 @@ public class SecretReferenceServiceTests
         var qaEnv = db.EnvironmentDefinitions.Single(e => e.Name == EnvironmentNames.Qa);
 
         var currentUser = new FakeCurrentUserService();
-        var audit = new AuditService(db, currentUser);
+        var currentTenant = new FakeCurrentTenantService();
+        var audit = new AuditService(db, currentUser, currentTenant);
         var secretProvider = new EncryptedSecretProvider(
             db, Options.Create(new SecretEncryptionSettings { EncryptionKey = "0123456789abcdef0123456789abcdef" }), NullLogger<EncryptedSecretProvider>.Instance);
-        var sut = new SecretReferenceService(db, currentUser, audit, secretProvider);
+        var sut = new SecretReferenceService(db, currentUser, currentTenant, audit, secretProvider);
 
         var manageUserId = await TestDb.CreateUserWithPermissionsAsync(db, "devops", PermissionCodes.SecretsView, PermissionCodes.SecretsManage);
         var viewOnlyUserId = await TestDb.CreateUserWithPermissionsAsync(db, "viewer", PermissionCodes.SecretsView);

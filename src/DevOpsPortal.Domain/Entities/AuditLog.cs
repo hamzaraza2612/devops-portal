@@ -9,6 +9,9 @@ public enum AuditResult
 public class AuditLog
 {
     public Guid Id { get; set; } = Guid.NewGuid();
+
+    /// <summary>Null for platform-level audit events (e.g. tenant creation, platform-admin actions).</summary>
+    public Guid? TenantId { get; set; }
     public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.UtcNow;
 
     /// <summary>"who" — null when the actor could not be identified (e.g. failed login).</summary>

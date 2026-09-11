@@ -23,6 +23,7 @@ namespace DevOpsPortal.Application.Services;
 public class BuildService(
     IAppDbContext db,
     ICurrentUserService currentUser,
+    ICurrentTenantService currentTenantService,
     IAuditService auditService,
     IEnumerable<IBuildProvider> buildProviders) : IBuildService
 {
@@ -55,6 +56,7 @@ public class BuildService(
 
         var buildRequest = new BuildRequest
         {
+            TenantId = currentTenantService.RequireTenantId(),
             ApplicationId = applicationId,
             BuildServerId = buildServer.Id,
             JobName = buildConfig.JobName!,
@@ -229,6 +231,7 @@ public class BuildService(
 
         var release = new Release
         {
+            TenantId = buildRequest.TenantId,
             ApplicationId = buildRequest.ApplicationId,
             BuildRequestId = buildRequest.Id,
             CommitSha = buildRequest.CommitSha ?? string.Empty,

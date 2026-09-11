@@ -25,6 +25,8 @@ public class JwtTokenService(IOptions<JwtSettings> options) : IJwtTokenService
         };
         claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
         claims.AddRange(permissions.Select(p => new Claim(PortalClaimTypes.Permission, p)));
+        if (user.TenantId is { } tenantId)
+            claims.Add(new Claim(PortalClaimTypes.TenantId, tenantId.ToString()));
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_settings.SigningKey));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
