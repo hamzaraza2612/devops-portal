@@ -23,7 +23,6 @@ namespace DevOpsPortal.Application.Services;
 public class BuildService(
     IAppDbContext db,
     ICurrentUserService currentUser,
-    ICurrentTenantService currentTenantService,
     IAuditService auditService,
     IEnumerable<IBuildProvider> buildProviders) : IBuildService
 {
@@ -56,7 +55,6 @@ public class BuildService(
 
         var buildRequest = new BuildRequest
         {
-            TenantId = currentTenantService.RequireTenantId(),
             ApplicationId = applicationId,
             BuildServerId = buildServer.Id,
             JobName = buildConfig.JobName!,
@@ -163,6 +161,18 @@ public class BuildService(
             : new BuildLogDto(false, null, false, result.ErrorMessage);
     }
 
+    public async Task<IReadOnlyList<ReleaseDto>> ListReleasesAsync(Guid applicationId, CancellationToken cancellationToken = default)
+    {
+        var userId = RequireUserId();
+        await EnsurePermissionAsync(userId, PermissionCodes.BuildsView, cancellationToken);
+
+        return await db.Releases
+            .Where(r => r.ApplicationId == applicationId)
+            .OrderByDescending(r => r.CreatedAt)
+            .Select(r => new ReleaseDto(r.Id, r.ApplicationId, r.BuildRequestId, r.CommitSha, r.Branch, r.BuildNumber, r.ImageReference, r.BuildStatus, r.CreatedAt))
+            .ToListAsync(cancellationToken);
+    }
+
     // ------------------------------------------------------------- internals
 
     private async Task RefreshStatusAsync(BuildRequest buildRequest, CancellationToken cancellationToken)
@@ -231,7 +241,6 @@ public class BuildService(
 
         var release = new Release
         {
-            TenantId = buildRequest.TenantId,
             ApplicationId = buildRequest.ApplicationId,
             BuildRequestId = buildRequest.Id,
             CommitSha = buildRequest.CommitSha ?? string.Empty,

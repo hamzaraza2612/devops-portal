@@ -12,7 +12,6 @@ namespace DevOpsPortal.Domain.Entities;
 public class DeploymentLogEntry
 {
     public Guid Id { get; set; } = Guid.NewGuid();
-    public Guid TenantId { get; set; }
 
     public Guid DeploymentId { get; set; }
     public Deployment Deployment { get; set; } = null!;

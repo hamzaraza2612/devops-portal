@@ -14,7 +14,6 @@ namespace DevOpsPortal.Application.Services;
 public partial class DeploymentService(
     IAppDbContext db,
     ICurrentUserService currentUser,
-    ICurrentTenantService currentTenantService,
     IAuditService auditService,
     IDeploymentJobQueue jobQueue,
     INotificationService notificationService,
@@ -48,6 +47,15 @@ public partial class DeploymentService(
         [EnvironmentNames.Production] = PermissionCodes.DeploymentsDeployProduction,
     };
 
+    /// <summary>Same as <see cref="DeployPermissionByEnvironment"/> plus DEV — used
+    /// by RollbackAsync, which (unlike promotion-based deploys) can target any
+    /// pipeline environment including DEV, so it needs the full map rather than
+    /// the promotion-only QA/UAT/Production subset.</summary>
+    private static readonly Dictionary<string, string> DeployPermissionByEnvironmentIncludingDev = new(DeployPermissionByEnvironment)
+    {
+        [EnvironmentNames.Dev] = PermissionCodes.DeploymentsDeployDev,
+    };
+
     // ----------------------------------------------------------------- reads
 
     // Deployment history only ever grows (every deploy/promote/rollback adds a row) and
@@ -61,22 +69,35 @@ public partial class DeploymentService(
     public async Task<IReadOnlyList<DeploymentDto>> ListAsync(
         Guid? applicationId, Guid? environmentDefinitionId, DeploymentStatus? status, CancellationToken cancellationToken = default)
     {
+        var userId = RequireUserId();
+        var accessibleEnvIds = await db.GetAccessibleEnvironmentIdsAsync(userId, cancellationToken);
+        if (environmentDefinitionId is not null)
+            await EnsureEnvironmentAccessAsync(userId, environmentDefinitionId.Value, cancellationToken);
+
         var query = db.Deployments.AsQueryable();
         if (applicationId is not null) query = query.Where(d => d.ApplicationId == applicationId);
         if (environmentDefinitionId is not null) query = query.Where(d => d.EnvironmentDefinitionId == environmentDefinitionId);
+        if (accessibleEnvIds is not null) query = query.Where(d => accessibleEnvIds.Contains(d.EnvironmentDefinitionId));
         if (status is not null) query = query.Where(d => d.Status == status);
 
         return await query.OrderByDescending(d => d.RequestedAt).Take(MaxListResults).Select(DeploymentProjection()).ToListAsync(cancellationToken);
     }
 
-    public async Task<DeploymentDto> GetAsync(Guid id, CancellationToken cancellationToken = default) =>
-        await db.Deployments.Where(d => d.Id == id).Select(DeploymentProjection()).FirstOrDefaultAsync(cancellationToken)
+    public async Task<DeploymentDto> GetAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var userId = RequireUserId();
+        var deployment = await db.Deployments.Where(d => d.Id == id).Select(DeploymentProjection()).FirstOrDefaultAsync(cancellationToken)
             ?? throw new NotFoundException("Deployment", id);
+        await EnsureEnvironmentAccessAsync(userId, deployment.EnvironmentDefinitionId, cancellationToken);
+        return deployment;
+    }
 
     public async Task<IReadOnlyList<DeploymentLogEntryDto>> GetLogsAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        if (!await db.Deployments.AnyAsync(d => d.Id == id, cancellationToken))
-            throw new NotFoundException("Deployment", id);
+        var userId = RequireUserId();
+        var environmentDefinitionId = await db.Deployments.Where(d => d.Id == id).Select(d => (Guid?)d.EnvironmentDefinitionId).FirstOrDefaultAsync(cancellationToken)
+            ?? throw new NotFoundException("Deployment", id);
+        await EnsureEnvironmentAccessAsync(userId, environmentDefinitionId, cancellationToken);
 
         return await db.DeploymentLogEntries
             .Where(l => l.DeploymentId == id)
@@ -88,6 +109,9 @@ public partial class DeploymentService(
     public async Task<DeploymentStatusSummaryDto> GetStatusAsync(
         Guid applicationId, Guid environmentDefinitionId, CancellationToken cancellationToken = default)
     {
+        var userId = RequireUserId();
+        await EnsureEnvironmentAccessAsync(userId, environmentDefinitionId, cancellationToken);
+
         var envDef = await db.EnvironmentDefinitions.FirstOrDefaultAsync(e => e.Id == environmentDefinitionId, cancellationToken)
             ?? throw new NotFoundException("EnvironmentDefinition", environmentDefinitionId);
         if (!await db.Applications.AnyAsync(a => a.Id == applicationId, cancellationToken))
@@ -117,6 +141,11 @@ public partial class DeploymentService(
     public async Task<IReadOnlyList<PromotionRequestDto>> ListPendingPromotionsAsync(
         Guid? applicationId, Guid? toEnvironmentDefinitionId, bool includeApprovedAwaitingDeploy = false, CancellationToken cancellationToken = default)
     {
+        var userId = RequireUserId();
+        var accessibleEnvIds = await db.GetAccessibleEnvironmentIdsAsync(userId, cancellationToken);
+        if (toEnvironmentDefinitionId is not null)
+            await EnsureEnvironmentAccessAsync(userId, toEnvironmentDefinitionId.Value, cancellationToken);
+
         var query = includeApprovedAwaitingDeploy
             ? db.PromotionRequests.Where(p =>
                 p.Status == ApprovalStatus.PendingApproval ||
@@ -125,13 +154,19 @@ public partial class DeploymentService(
 
         if (applicationId is not null) query = query.Where(p => p.ApplicationId == applicationId);
         if (toEnvironmentDefinitionId is not null) query = query.Where(p => p.ToEnvironmentDefinitionId == toEnvironmentDefinitionId);
+        if (accessibleEnvIds is not null) query = query.Where(p => accessibleEnvIds.Contains(p.ToEnvironmentDefinitionId));
 
         return await query.OrderBy(p => p.RequestedAt).Select(PromotionProjection()).ToListAsync(cancellationToken);
     }
 
-    public async Task<PromotionRequestDto> GetPromotionAsync(Guid promotionRequestId, CancellationToken cancellationToken = default) =>
-        await db.PromotionRequests.Where(p => p.Id == promotionRequestId).Select(PromotionProjection()).FirstOrDefaultAsync(cancellationToken)
+    public async Task<PromotionRequestDto> GetPromotionAsync(Guid promotionRequestId, CancellationToken cancellationToken = default)
+    {
+        var userId = RequireUserId();
+        var promotion = await db.PromotionRequests.Where(p => p.Id == promotionRequestId).Select(PromotionProjection()).FirstOrDefaultAsync(cancellationToken)
             ?? throw new NotFoundException("PromotionRequest", promotionRequestId);
+        await EnsureEnvironmentAccessAsync(userId, promotion.ToEnvironmentDefinitionId, cancellationToken);
+        return promotion;
+    }
 
     /// <summary>Unauthenticated, read-only — resolves an approval-requested
     /// notification's deep-link token to a preview with no secrets (master
@@ -146,16 +181,12 @@ public partial class DeploymentService(
     public async Task<ApprovalPreviewDto> GetPromotionPreviewByTokenAsync(string token, CancellationToken cancellationToken = default)
     {
         var hash = ApprovalTokenHelper.Hash(token);
-        // IgnoreQueryFilters: this is the [AllowAnonymous] preview endpoint — there is no
-        // tenant context yet, and the 256-bit token itself (globally unique) is the sole,
-        // sufficient selector, so bypassing the tenant filter here leaks nothing.
         var promotion = await db.PromotionRequests
-            .IgnoreQueryFilters()
             .Include(p => p.Application).Include(p => p.FromEnvironmentDefinition).Include(p => p.ToEnvironmentDefinition)
             .FirstOrDefaultAsync(p => p.ApprovalTokenHash == hash, cancellationToken)
             ?? throw new NotFoundException("Approval", token);
 
-        var requestedByUsername = await db.Users.IgnoreQueryFilters().Where(u => u.Id == promotion.RequestedByUserId).Select(u => u.Username).FirstOrDefaultAsync(cancellationToken);
+        var requestedByUsername = await db.Users.Where(u => u.Id == promotion.RequestedByUserId).Select(u => u.Username).FirstOrDefaultAsync(cancellationToken);
 
         return new ApprovalPreviewDto(
             promotion.Id, promotion.Application.Name, promotion.FromEnvironmentDefinition.Name, promotion.ToEnvironmentDefinition.Name,
@@ -169,13 +200,12 @@ public partial class DeploymentService(
     {
         var hash = ApprovalTokenHelper.Hash(token);
         var approval = await db.ProductionApprovals
-            .IgnoreQueryFilters()
             .Include(a => a.PromotionRequest).ThenInclude(p => p.Application)
             .Include(a => a.PromotionRequest).ThenInclude(p => p.ToEnvironmentDefinition)
             .FirstOrDefaultAsync(a => a.ApprovalTokenHash == hash, cancellationToken)
             ?? throw new NotFoundException("Approval", token);
 
-        var requestedByUsername = await db.Users.IgnoreQueryFilters()
+        var requestedByUsername = await db.Users
             .Where(u => u.Id == approval.PromotionRequest.RequestedByUserId).Select(u => u.Username).FirstOrDefaultAsync(cancellationToken);
 
         return new ApprovalPreviewDto(
@@ -203,29 +233,61 @@ public partial class DeploymentService(
         var appEnv = await LoadActiveEnvironmentAsync(applicationId, devEnvDef.Id, cancellationToken)
             ?? throw new ValidationException("DEV is not configured for this application.");
 
-        var commitSha = ValidateCommitSha(request.CommitSha);
-        await EnsureNoActiveDeploymentAsync(applicationId, devEnvDef.Id, commitSha, cancellationToken);
+        var fields = await ResolveDeploymentFieldsAsync(application, request.ReleaseId, request.CommitSha, request.CommitMessage, request.CommitAuthor, request.Branch, cancellationToken);
+        await EnsureNoActiveDeploymentAsync(applicationId, devEnvDef.Id, fields.CommitSha, cancellationToken);
 
         var deployment = new Deployment
         {
-            TenantId = currentTenantService.RequireTenantId(),
             ApplicationId = applicationId,
             EnvironmentDefinitionId = devEnvDef.Id,
             ApplicationEnvironmentId = appEnv.Id,
-            CommitSha = commitSha,
-            CommitMessage = string.IsNullOrWhiteSpace(request.CommitMessage) ? null : request.CommitMessage.Trim(),
-            CommitAuthor = string.IsNullOrWhiteSpace(request.CommitAuthor) ? null : request.CommitAuthor.Trim(),
-            Branch = string.IsNullOrWhiteSpace(request.Branch) ? appEnv.BranchName : request.Branch.Trim(),
+            CommitSha = fields.CommitSha,
+            CommitMessage = fields.CommitMessage,
+            CommitAuthor = fields.CommitAuthor,
+            Branch = fields.Branch ?? appEnv.BranchName,
+            ImageReference = fields.ImageReference,
+            VersionLabel = fields.VersionLabel,
             RequestedByUserId = userId,
         };
 
         await SaveAndEnqueueAsync(deployment, cancellationToken);
 
         await auditService.LogAsync("deployment.requested", AuditResult.Success, "Deployment", deployment.Id.ToString(),
-            details: $"{application.Name}/DEV commit {commitSha}", cancellationToken: cancellationToken);
+            details: $"{application.Name}/DEV commit {fields.CommitSha}" + (fields.ImageReference is null ? "" : $" image {fields.ImageReference}"),
+            cancellationToken: cancellationToken);
 
         return await GetAsync(deployment.Id, cancellationToken);
     }
+
+    /// <summary>Resolves the fields a new Deployment row should carry, branching on
+    /// ManagedApplication.DeploymentMode (master requirements §16/§17):
+    /// LegacyFilesystem takes CommitSha/CommitMessage/CommitAuthor/Branch straight from
+    /// the caller (unchanged since Phase 3); ContainerImage instead requires a ReleaseId
+    /// referencing one of this application's own immutable Releases and derives every
+    /// field from that row server-side — a caller can never invent an ImageReference.</summary>
+    private async Task<(string CommitSha, string? CommitMessage, string? CommitAuthor, string? Branch, string? ImageReference, string? VersionLabel)>
+        ResolveDeploymentFieldsAsync(
+            ManagedApplication application, Guid? releaseId, string? commitSha, string? commitMessage, string? commitAuthor, string? branch,
+            CancellationToken cancellationToken)
+    {
+        if (application.DeploymentMode == DeploymentMode.ContainerImage)
+        {
+            if (releaseId is null)
+                throw new ValidationException("ReleaseId is required to deploy a ContainerImage-mode application.");
+
+            var release = await db.Releases.FirstOrDefaultAsync(r => r.Id == releaseId && r.ApplicationId == application.Id, cancellationToken)
+                ?? throw new ValidationException("ReleaseId does not reference a release of this application.");
+
+            return (release.CommitSha, $"Release build #{release.BuildNumber}", null, release.Branch, release.ImageReference, $"build #{release.BuildNumber}");
+        }
+
+        if (releaseId is not null)
+            throw new ValidationException("ReleaseId is only valid for a ContainerImage-mode application.");
+
+        return (ValidateCommitSha(commitSha), NormalizeOrNull(commitMessage), NormalizeOrNull(commitAuthor), NormalizeOrNull(branch), null, null);
+    }
+
+    private static string? NormalizeOrNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     // ------------------------------------------------------------ promotion
 
@@ -263,7 +325,6 @@ public partial class DeploymentService(
 
         var promotion = new PromotionRequest
         {
-            TenantId = currentTenantService.RequireTenantId(),
             ApplicationId = applicationId,
             FromEnvironmentDefinitionId = fromEnv.Id,
             ToEnvironmentDefinitionId = toEnvironmentDefinitionId,
@@ -441,7 +502,6 @@ public partial class DeploymentService(
 
         var deployment = new Deployment
         {
-            TenantId = promotion.TenantId,
             ApplicationId = promotion.ApplicationId,
             EnvironmentDefinitionId = promotion.ToEnvironmentDefinitionId,
             ApplicationEnvironmentId = appEnv.Id,
@@ -449,6 +509,8 @@ public partial class DeploymentService(
             CommitMessage = promotion.SourceDeployment.CommitMessage,
             CommitAuthor = promotion.SourceDeployment.CommitAuthor,
             Branch = appEnv.BranchName ?? promotion.SourceDeployment.Branch,
+            ImageReference = promotion.SourceDeployment.ImageReference,
+            VersionLabel = promotion.SourceDeployment.VersionLabel,
             PromotionRequestId = promotion.Id,
             RequestedByUserId = userId,
         };
@@ -468,13 +530,19 @@ public partial class DeploymentService(
         Guid applicationId, Guid environmentDefinitionId, RollbackRequest request, CancellationToken cancellationToken = default)
     {
         var userId = RequireUserId();
-        await EnsurePermissionAsync(userId, PermissionCodes.DeploymentsRollback, cancellationToken);
 
         var application = await db.Applications.FirstOrDefaultAsync(a => a.Id == applicationId, cancellationToken)
             ?? throw new NotFoundException("Application", applicationId);
 
         var envDef = await db.EnvironmentDefinitions.FirstOrDefaultAsync(e => e.Id == environmentDefinitionId, cancellationToken)
             ?? throw new NotFoundException("EnvironmentDefinition", environmentDefinitionId);
+
+        // Rollback requires the same deploy permission as a normal deploy to this
+        // specific environment — PermissionCodes.DeploymentsRollback was removed in
+        // Phase 12 (see PROJECT_STATE.md); this re-derives the same effective check.
+        if (!DeployPermissionByEnvironmentIncludingDev.TryGetValue(envDef.Name, out var rollbackPermissionCode))
+            throw new ValidationException($"Cannot roll back an unknown environment '{envDef.Name}'.");
+        await EnsurePermissionAsync(userId, rollbackPermissionCode, cancellationToken);
 
         var target = await db.Deployments.FirstOrDefaultAsync(d =>
                 d.Id == request.TargetDeploymentId && d.ApplicationId == applicationId &&
@@ -489,7 +557,6 @@ public partial class DeploymentService(
 
         var deployment = new Deployment
         {
-            TenantId = currentTenantService.RequireTenantId(),
             ApplicationId = applicationId,
             EnvironmentDefinitionId = environmentDefinitionId,
             ApplicationEnvironmentId = appEnv.Id,
@@ -497,6 +564,8 @@ public partial class DeploymentService(
             CommitMessage = target.CommitMessage,
             CommitAuthor = target.CommitAuthor,
             Branch = target.Branch,
+            ImageReference = target.ImageReference,
+            VersionLabel = target.VersionLabel,
             IsRollback = true,
             RollbackOfDeploymentId = target.Id,
             RequestedByUserId = userId,
@@ -518,7 +587,6 @@ public partial class DeploymentService(
         var (rawToken, tokenHash) = ApprovalTokenHelper.Generate();
         var approval = new ProductionApproval
         {
-            TenantId = promotion.TenantId,
             PromotionRequestId = promotion.Id,
             ApprovalTokenHash = tokenHash,
             ExpiresAt = DateTimeOffset.UtcNow.AddHours(ApprovalTokenExpiryHours),
@@ -542,6 +610,16 @@ public partial class DeploymentService(
         var (_, permissions) = await db.GetRolesAndPermissionsAsync(userId, cancellationToken);
         if (!permissions.Contains(permissionCode))
             throw new ForbiddenException($"Missing required permission '{permissionCode}'.");
+    }
+
+    /// <summary>DeploymentsView is granted to anyone with access to ANY
+    /// environment (see AppDbContextExtensions) — this confirms the user is
+    /// specifically allowed to see THIS environment's deployments/promotions
+    /// (master requirements §2/§12).</summary>
+    private async Task EnsureEnvironmentAccessAsync(Guid userId, Guid environmentDefinitionId, CancellationToken cancellationToken)
+    {
+        if (!await db.HasEnvironmentAccessAsync(userId, environmentDefinitionId, cancellationToken))
+            throw new ForbiddenException("You do not have access to this environment.");
     }
 
     /// <summary>Re-checks the current status immediately before mutating and returns
@@ -643,7 +721,7 @@ public partial class DeploymentService(
             throw new ConflictException("A different deployment is already in progress for this application and environment.");
         }
 
-        jobQueue.Enqueue(new DeploymentJob(deployment.Id, deployment.TenantId));
+        jobQueue.Enqueue(new DeploymentJob(deployment.Id));
     }
 
     private static string ValidateCommitSha(string? commitSha)

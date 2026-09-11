@@ -1,9 +1,6 @@
 namespace DevOpsPortal.Application.Abstractions;
 
-/// <summary>Carries the tenant alongside the deployment id — the background worker's
-/// DI scope has no HTTP context to resolve a tenant claim from, so it must be threaded
-/// through explicitly (see DeploymentWorker).</summary>
-public record DeploymentJob(Guid DeploymentId, Guid TenantId);
+public record DeploymentJob(Guid DeploymentId);
 
 /// <summary>
 /// Hands a deployment job off to the background worker so the HTTP request that

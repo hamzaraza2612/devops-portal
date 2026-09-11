@@ -9,12 +9,8 @@ namespace DevOpsPortal.Application.Common;
 /// </summary>
 public interface IAppDbContext
 {
-    DbSet<Tenant> Tenants { get; }
     DbSet<User> Users { get; }
-    DbSet<Role> Roles { get; }
-    DbSet<Permission> Permissions { get; }
-    DbSet<UserRole> UserRoles { get; }
-    DbSet<RolePermission> RolePermissions { get; }
+    DbSet<UserEnvironmentAccess> UserEnvironmentAccess { get; }
     DbSet<AuditLog> AuditLogs { get; }
     DbSet<ManagedApplication> Applications { get; }
     DbSet<Repository> Repositories { get; }

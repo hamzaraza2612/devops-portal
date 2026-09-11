@@ -134,6 +134,12 @@ public class ApplicationsController(
     public async Task<IActionResult> GetBuilds(Guid id, CancellationToken cancellationToken) =>
         Ok(await buildService.ListAsync(id, cancellationToken));
 
+    /// <summary>Immutable releases available to deploy for this (ContainerImage-mode)
+    /// application — see DeployToDevAsync's ReleaseId parameter.</summary>
+    [HttpGet("{id:guid}/releases")]
+    public async Task<IActionResult> GetReleases(Guid id, CancellationToken cancellationToken) =>
+        Ok(await buildService.ListReleasesAsync(id, cancellationToken));
+
     /// <summary>docker compose down -v / up -d — destroys volumes. Requires
     /// containers.recreate, an explicit Confirm:true body, and that this
     /// application environment has UseDownWithVolumesOnDeploy explicitly enabled

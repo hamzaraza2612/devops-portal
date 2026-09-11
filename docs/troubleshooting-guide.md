@@ -58,9 +58,10 @@ History shows it), then retry.
 
 ## Can't approve/deploy/promote — HTTP 403 "Missing required permission"
 
-The message names the exact permission missing. Ask a tenant admin to
-grant it via Admin → Roles, either to your existing role or a new custom
-one — see the [Administrator Guide](administrator-guide.md).
+The message names the exact permission missing. Ask an administrator to
+grant you access to the relevant environment (or the `canApproveProduction`
+flag, for a Production-approval permission) via Admin → Users — see the
+[Administrator Guide](administrator-guide.md).
 
 ## Health endpoint reports Unhealthy or Degraded
 

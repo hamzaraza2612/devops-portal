@@ -1,4 +1,4 @@
-import { ApprovalStatus, DeploymentStatus } from '../types/api';
+import { ApprovalStatus, ContainerState, DeploymentStatus } from '../types/api';
 
 export const DeploymentStatusLabel: Record<DeploymentStatus, string> = {
   [DeploymentStatus.Pending]: 'Pending',
@@ -35,3 +35,25 @@ export const ApprovalStatusColor: Record<ApprovalStatus, string> = {
 export function isActiveDeployment(status: DeploymentStatus): boolean {
   return status === DeploymentStatus.Pending || status === DeploymentStatus.Queued || status === DeploymentStatus.Running;
 }
+
+/** GREEN=healthy/running, WARNING=degraded/restarting, RED=stopped/unhealthy/unreachable
+ * (master requirements §11) — same three-color scheme DeploymentStatusColor uses. */
+export const ContainerStateLabel: Record<ContainerState, string> = {
+  [ContainerState.Unknown]: 'Unknown',
+  [ContainerState.Running]: 'Running',
+  [ContainerState.Exited]: 'Exited',
+  [ContainerState.Restarting]: 'Restarting',
+  [ContainerState.Paused]: 'Paused',
+  [ContainerState.Created]: 'Created',
+  [ContainerState.Unhealthy]: 'Unhealthy',
+};
+
+export const ContainerStateColor: Record<ContainerState, string> = {
+  [ContainerState.Unknown]: 'bg-slate-100 text-slate-700',
+  [ContainerState.Running]: 'bg-emerald-100 text-emerald-700',
+  [ContainerState.Exited]: 'bg-red-100 text-red-700',
+  [ContainerState.Restarting]: 'bg-amber-100 text-amber-700',
+  [ContainerState.Paused]: 'bg-amber-100 text-amber-700',
+  [ContainerState.Created]: 'bg-slate-100 text-slate-700',
+  [ContainerState.Unhealthy]: 'bg-red-100 text-red-700',
+};

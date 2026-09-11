@@ -15,10 +15,18 @@ namespace DevOpsPortal.Application.Services;
 /// operations, health-checks, and finalizes status. Every step is logged
 /// (sanitized) to DeploymentLogEntry. Never invoked from an HTTP request —
 /// only from DeploymentWorker in its own DI scope.
+///
+/// <para>LegacyFilesystem execution runs `docker compose` on the deployment's
+/// configured TargetServer via <see cref="IRemoteExecutionProvider"/> — never
+/// locally (master requirements §5/§14: the portal VM is separate from every
+/// target server). Resolved secrets are passed through as
+/// ComposeCommandRequest.EnvironmentVariables, exactly as the local-execution
+/// path did before Phase 12; only how that command actually reaches the
+/// target server changed.</para>
 /// </summary>
 public class DeploymentExecutor(
     IAppDbContext db,
-    IComposeCommandExecutor composeExecutor,
+    IRemoteExecutionProvider remoteExecutionProvider,
     IHealthCheckProbe healthCheckProbe,
     IAuditService auditService,
     ISecretReferenceService secretReferenceService,
@@ -33,6 +41,11 @@ public class DeploymentExecutor(
     // double, so tests can configure a sub-second value; operators only ever set whole
     // minutes).
     private double TimeoutMinutes => double.TryParse(configuration["Deployment:ExecutionTimeoutMinutes"], out var minutes) && minutes > 0 ? minutes : 20;
+
+    /// <summary>The env var name a ContainerImage-mode compose file must reference
+    /// (e.g. `image: ${IMAGE_REFERENCE}`) to receive the deployment's resolved
+    /// Release.ImageReference — see ExecuteContainerImageAsync.</summary>
+    private const string ImageReferenceEnvVarName = "IMAGE_REFERENCE";
 
     public async Task ExecuteAsync(Guid deploymentId, CancellationToken cancellationToken)
     {
@@ -54,7 +67,7 @@ public class DeploymentExecutor(
             return;
         }
 
-        var log = new DeploymentLogWriter(db, deployment.Id, deployment.TenantId);
+        var log = new DeploymentLogWriter(db, deployment.Id);
 
         deployment.Status = DeploymentStatus.Running;
         deployment.StartedAt = DateTimeOffset.UtcNow;
@@ -84,9 +97,7 @@ public class DeploymentExecutor(
             }
             else
             {
-                throw new DeploymentExecutionException(
-                    "Container-image deployment execution is not implemented yet (no build/registry pipeline exists in this phase). " +
-                    "Switch this application to LegacyFilesystem mode, or wait for the build-engine phase.");
+                await ExecuteContainerImageAsync(deployment, appEnv, log, executionToken);
             }
 
             await log.WriteAsync(DeploymentLogLevel.Info, "Running post-deployment health check.", cancellationToken);
@@ -160,6 +171,13 @@ public class DeploymentExecutor(
         if (!DeploymentPathValidator.IsUnderAllowedRoot(appEnv.DeploymentRootPath, activeRoots))
             throw new DeploymentExecutionException("DeploymentRootPath is no longer under an allowed deployment root for its target server.");
 
+        if (!remoteExecutionProvider.IsConfigured(appEnv.TargetServer))
+        {
+            throw new DeploymentExecutionException(
+                $"Target server '{appEnv.TargetServer.Name}' has no SSH connection configured (Hostname, SshUsername, and a stored " +
+                "credential are all required) — see the Servers page to configure and test connectivity before deploying.");
+        }
+
         // Resolved only here, at execution time (master requirements §4) — never
         // persisted, never logged by value, and structurally environment-aware
         // (see SecretReferenceService.ResolveForDeploymentAsync): a secret scoped
@@ -178,7 +196,8 @@ public class DeploymentExecutor(
             $"Restarting compose stack at '{appEnv.DeploymentRootPath}' ({appEnv.ComposeFilePath}), " +
             $"down={(downOperation == ComposeOperation.DownWithVolumes ? "down -v" : "down")}.", cancellationToken);
 
-        var downResult = await composeExecutor.RunAsync(
+        var downResult = await remoteExecutionProvider.RunComposeAsync(
+            appEnv.TargetServer,
             new ComposeCommandRequest(appEnv.DeploymentRootPath, appEnv.ComposeFilePath, appEnv.ComposeProjectName, downOperation, secrets), cancellationToken);
         await log.WriteAsync(
             downResult.Success ? DeploymentLogLevel.Info : DeploymentLogLevel.Warning,
@@ -186,8 +205,74 @@ public class DeploymentExecutor(
             cancellationToken);
         // A failing "down" (e.g. the stack wasn't running yet) is not fatal — proceed to "up".
 
-        var upResult = await composeExecutor.RunAsync(
+        var upResult = await remoteExecutionProvider.RunComposeAsync(
+            appEnv.TargetServer,
             new ComposeCommandRequest(appEnv.DeploymentRootPath, appEnv.ComposeFilePath, appEnv.ComposeProjectName, ComposeOperation.Up, secrets), cancellationToken);
+        await log.WriteAsync(
+            upResult.Success ? DeploymentLogLevel.Info : DeploymentLogLevel.Error,
+            $"compose up -d: exit {upResult.ExitCode}\n{Truncate(RedactSecretValues(upResult.StandardOutput, secrets))}\n{Truncate(RedactSecretValues(upResult.StandardError, secrets))}",
+            cancellationToken);
+
+        if (!upResult.Success)
+            throw new DeploymentExecutionException($"docker compose up failed (exit code {upResult.ExitCode}).");
+    }
+
+    /// <summary>ContainerImage-mode deployment (master requirements §16/§17):
+    /// pulls the deployment's immutable Release.ImageReference on the target
+    /// server, then recreates the compose stack from it. The same
+    /// DeploymentRootPath/ComposeFilePath/ComposeProjectName ApplicationEnvironment
+    /// config LegacyFilesystem uses already points at a docker-compose.yml on the
+    /// target server — for ContainerImage mode that file is expected to reference
+    /// the image via <c>${IMAGE_REFERENCE}</c> interpolation (e.g. <c>image:
+    /// ${IMAGE_REFERENCE}</c>), which is passed through exactly like a resolved
+    /// secret, never written to any file, never logged by value. Registry
+    /// authentication on the target server (`docker login`, or a registry
+    /// credential helper) is expected to already be configured out-of-band — no
+    /// registry-credential entity exists in this phase (see PROJECT_STATE.md).</summary>
+    private async Task ExecuteContainerImageAsync(Deployment deployment, ApplicationEnvironment appEnv, DeploymentLogWriter log, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(deployment.ImageReference))
+            throw new DeploymentExecutionException("This deployment has no ImageReference — ContainerImage deployments must be created from a Release.");
+
+        if (string.IsNullOrWhiteSpace(appEnv.DeploymentRootPath))
+            throw new DeploymentExecutionException("DeploymentRootPath is not configured.");
+
+        var activeRoots = appEnv.TargetServer.AllowedDeploymentRoots.Where(r => r.IsActive).Select(r => r.RootPath);
+        if (!DeploymentPathValidator.IsUnderAllowedRoot(appEnv.DeploymentRootPath, activeRoots))
+            throw new DeploymentExecutionException("DeploymentRootPath is no longer under an allowed deployment root for its target server.");
+
+        if (!remoteExecutionProvider.IsConfigured(appEnv.TargetServer))
+        {
+            throw new DeploymentExecutionException(
+                $"Target server '{appEnv.TargetServer.Name}' has no SSH connection configured (Hostname, SshUsername, and a stored " +
+                "credential are all required) — see the Servers page to configure and test connectivity before deploying.");
+        }
+
+        var secretUsername = await db.Users.Where(u => u.Id == deployment.RequestedByUserId).Select(u => u.Username).FirstOrDefaultAsync(cancellationToken);
+        var secrets = await secretReferenceService.ResolveForDeploymentAsync(
+            deployment.ApplicationId, deployment.EnvironmentDefinitionId, deployment.RequestedByUserId, secretUsername, cancellationToken);
+
+        var envVars = new Dictionary<string, string>(secrets) { [ImageReferenceEnvVarName] = deployment.ImageReference };
+        await log.WriteAsync(DeploymentLogLevel.Info, $"Deploying image '{deployment.ImageReference}' to '{appEnv.DeploymentRootPath}' ({appEnv.ComposeFilePath}).", cancellationToken);
+
+        var pullResult = await remoteExecutionProvider.RunComposeAsync(
+            appEnv.TargetServer,
+            new ComposeCommandRequest(appEnv.DeploymentRootPath, appEnv.ComposeFilePath, appEnv.ComposeProjectName, ComposeOperation.Pull, envVars), cancellationToken);
+        await log.WriteAsync(
+            pullResult.Success ? DeploymentLogLevel.Info : DeploymentLogLevel.Error,
+            $"compose pull: exit {pullResult.ExitCode}\n{Truncate(RedactSecretValues(pullResult.StandardOutput, secrets))}\n{Truncate(RedactSecretValues(pullResult.StandardError, secrets))}",
+            cancellationToken);
+
+        if (!pullResult.Success)
+        {
+            throw new DeploymentExecutionException(
+                $"docker compose pull failed (exit code {pullResult.ExitCode}) — the image '{deployment.ImageReference}' may not exist in the registry, " +
+                "or the target server is not authenticated to pull it.");
+        }
+
+        var upResult = await remoteExecutionProvider.RunComposeAsync(
+            appEnv.TargetServer,
+            new ComposeCommandRequest(appEnv.DeploymentRootPath, appEnv.ComposeFilePath, appEnv.ComposeProjectName, ComposeOperation.Up, envVars), cancellationToken);
         await log.WriteAsync(
             upResult.Success ? DeploymentLogLevel.Info : DeploymentLogLevel.Error,
             $"compose up -d: exit {upResult.ExitCode}\n{Truncate(RedactSecretValues(upResult.StandardOutput, secrets))}\n{Truncate(RedactSecretValues(upResult.StandardError, secrets))}",
@@ -217,7 +302,7 @@ public class DeploymentExecutor(
 
     /// <summary>Small stateful helper so log entries get a correctly incrementing
     /// Sequence without needing a `ref` parameter (not allowed across `await`).</summary>
-    private sealed class DeploymentLogWriter(IAppDbContext db, Guid deploymentId, Guid tenantId)
+    private sealed class DeploymentLogWriter(IAppDbContext db, Guid deploymentId)
     {
         private int _sequence;
 
@@ -225,7 +310,6 @@ public class DeploymentExecutor(
         {
             db.DeploymentLogEntries.Add(new DeploymentLogEntry
             {
-                TenantId = tenantId,
                 DeploymentId = deploymentId,
                 Sequence = ++_sequence,
                 Level = level,

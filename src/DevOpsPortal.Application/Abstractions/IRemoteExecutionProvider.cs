@@ -10,6 +10,21 @@ namespace DevOpsPortal.Application.Abstractions;
 /// knowing anything about *how* it got there.</summary>
 public record RemoteContainerInspectResult(bool Success, string RawJson, string? Error);
 
+/// <summary>Result of a "Test Connection" check against a TargetServer (master
+/// requirements §6): verifies SSH connectivity, the authenticated remote user,
+/// basic OS identification, and Docker/Compose availability + versions. Never
+/// fakes a successful result — when SshConnected is false every other field is
+/// meaningless and ErrorMessage explains why.</summary>
+public record RemoteConnectionTestResult(
+    bool SshConnected,
+    string? AuthenticatedUser,
+    string? OsInfo,
+    bool DockerAvailable,
+    string? DockerVersion,
+    bool ComposeAvailable,
+    string? ComposeVersion,
+    string? ErrorMessage);
+
 /// <summary>
 /// The portal's ONLY boundary for reaching a specific TargetServer's Docker
 /// engine. This interface exists because master requirements for Phase 5
@@ -48,4 +63,9 @@ public interface IRemoteExecutionProvider
 
     Task<RemoteContainerInspectResult> InspectContainerAsync(
         TargetServer targetServer, string containerName, CancellationToken cancellationToken = default);
+
+    /// <summary>Master requirements §6 "Test Connection": actually connects and
+    /// verifies SSH connectivity, the authenticated user, and Docker/Compose
+    /// availability — never fabricates a successful result.</summary>
+    Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default);
 }

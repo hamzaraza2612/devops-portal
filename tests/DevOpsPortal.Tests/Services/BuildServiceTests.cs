@@ -21,14 +21,13 @@ public class BuildServiceTests
         ManagedApplication App,
         BuildServer BuildServer,
         Guid RequestUserId,
-        Guid ViewOnlyUserId,
         Guid NoPermissionUserId);
 
     private static async Task<Fixture> CreateFixtureAsync(
         IBuildProvider? provider = null, bool configureBuildConfig = true, ImageTagStrategy tagStrategy = ImageTagStrategy.CommitSha)
     {
         var db = TestDb.CreateInMemory();
-        await TestDb.SeedRolesAndPermissionsAsync(db);
+        await TestDb.SeedEnvironmentDefinitionsAsync(db);
 
         var app = new ManagedApplication { Name = "Sample", Slug = "sample", DeploymentMode = DeploymentMode.ContainerImage, IsActive = true };
         db.Applications.Add(app);
@@ -52,16 +51,17 @@ public class BuildServiceTests
         }
 
         var currentUser = new FakeCurrentUserService();
-        var currentTenant = new FakeCurrentTenantService();
-        var audit = new AuditService(db, currentUser, currentTenant);
+        var audit = new AuditService(db, currentUser);
         var providers = new List<IBuildProvider> { provider ?? new FakeBuildProvider(BuildProviderType.Jenkins) };
-        var sut = new BuildService(db, currentUser, currentTenant, audit, providers);
+        var sut = new BuildService(db, currentUser, audit, providers);
 
-        var requestUserId = await TestDb.CreateUserWithPermissionsAsync(db, "builder", PermissionCodes.BuildsView, PermissionCodes.BuildsRequest);
-        var viewOnlyUserId = await TestDb.CreateUserWithPermissionsAsync(db, "viewer", PermissionCodes.BuildsView);
-        var noPermissionUserId = await TestDb.CreateUserWithPermissionsAsync(db, "nobody", PermissionCodes.UsersView);
+        // BuildsView/BuildsRequest are both granted together to anyone with access
+        // to at least one environment (see AppDbContextExtensions) — there is no
+        // "view but not request" distinction under the Phase 12 model.
+        var requestUserId = await TestDb.CreateUserWithEnvironmentAccessAsync(db, "builder", EnvironmentNames.Dev);
+        var noPermissionUserId = await TestDb.CreateUserWithNoAccessAsync(db, "nobody");
 
-        return new Fixture(sut, db, currentUser, app, buildServer, requestUserId, viewOnlyUserId, noPermissionUserId);
+        return new Fixture(sut, db, currentUser, app, buildServer, requestUserId, noPermissionUserId);
     }
 
     // -------------------------------------------------------------- authorization
@@ -71,16 +71,6 @@ public class BuildServiceTests
     {
         var f = await CreateFixtureAsync();
         f.CurrentUser.UserId = f.NoPermissionUserId;
-
-        await Assert.ThrowsAsync<ForbiddenException>(() =>
-            f.Sut.RequestBuildAsync(f.App.Id, new RequestBuildRequest("main", "abc123", null)));
-    }
-
-    [Fact]
-    public async Task RequestBuildAsync_ViewOnlyPermission_ThrowsForbidden_UnauthorizedApplication()
-    {
-        var f = await CreateFixtureAsync();
-        f.CurrentUser.UserId = f.ViewOnlyUserId;
 
         await Assert.ThrowsAsync<ForbiddenException>(() =>
             f.Sut.RequestBuildAsync(f.App.Id, new RequestBuildRequest("main", "abc123", null)));
@@ -223,7 +213,7 @@ public class BuildServiceTests
     public async Task RequestBuildAsync_WhenNoProviderRegisteredForType_PersistsFailedRequest_NeverThrows()
     {
         var db = TestDb.CreateInMemory();
-        await TestDb.SeedRolesAndPermissionsAsync(db);
+        await TestDb.SeedEnvironmentDefinitionsAsync(db);
 
         var app = new ManagedApplication { Name = "Sample", Slug = "sample", DeploymentMode = DeploymentMode.ContainerImage, IsActive = true };
         db.Applications.Add(app);
@@ -234,11 +224,10 @@ public class BuildServiceTests
         await db.SaveChangesAsync();
 
         var currentUser = new FakeCurrentUserService();
-        var currentTenant = new FakeCurrentTenantService();
         // No IBuildProvider registered at all — simulates a BuildServer whose
         // ProviderType has no matching implementation (invalid provider).
-        var sut = new BuildService(db, currentUser, currentTenant, new AuditService(db, currentUser, currentTenant), []);
-        currentUser.UserId = await TestDb.CreateUserWithPermissionsAsync(db, "builder", PermissionCodes.BuildsView, PermissionCodes.BuildsRequest);
+        var sut = new BuildService(db, currentUser, new AuditService(db, currentUser), []);
+        currentUser.UserId = await TestDb.CreateUserWithEnvironmentAccessAsync(db, "builder", EnvironmentNames.Dev);
 
         var dto = await sut.RequestBuildAsync(app.Id, new RequestBuildRequest(null, null, null));
 

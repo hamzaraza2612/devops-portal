@@ -15,7 +15,19 @@ import {
 } from '../types/api';
 
 vi.mock('../api/endpoints', () => ({
-  ApplicationsApi: { get: vi.fn(), environments: vi.fn(), deployToDev: vi.fn(), requestPromotion: vi.fn(), rollback: vi.fn() },
+  ApplicationsApi: {
+    get: vi.fn(),
+    environments: vi.fn(),
+    deployToDev: vi.fn(),
+    requestPromotion: vi.fn(),
+    rollback: vi.fn(),
+    releases: vi.fn(),
+    containerStatus: vi.fn(),
+    restartContainers: vi.fn(),
+    startContainers: vi.fn(),
+    stopContainers: vi.fn(),
+    recreateContainers: vi.fn(),
+  },
   EnvironmentsApi: { list: vi.fn() },
   DeploymentsApi: { list: vi.fn() },
   PromotionsApi: { listPending: vi.fn() },
@@ -23,7 +35,20 @@ vi.mock('../api/endpoints', () => ({
 
 function authValue(permissions: string[]): AuthContextValue {
   return {
-    user: { id: '1', username: 'u', email: 'u@example.local', fullName: 'U', isActive: true, createdAt: '', lastLoginAt: null, roles: [], permissions },
+    user: {
+      id: '1',
+      username: 'u',
+      email: 'u@example.local',
+      fullName: 'U',
+      isActive: true,
+      isAdmin: false,
+      canApproveProduction: false,
+      environmentAccess: [],
+      createdAt: '',
+      lastLoginAt: null,
+      roles: [],
+      permissions,
+    },
     isLoading: false,
     error: null,
     login: async () => {},
@@ -100,6 +125,23 @@ describe('ApplicationDetailsPage', () => {
     vi.mocked(ApplicationsApi.environments).mockResolvedValue([devEnvironment]);
     vi.mocked(DeploymentsApi.list).mockResolvedValue([]);
     vi.mocked(PromotionsApi.listPending).mockResolvedValue([]);
+    vi.mocked(ApplicationsApi.containerStatus).mockResolvedValue({
+      applicationId: 'app-1',
+      environmentDefinitionId: 'dev',
+      environmentName: 'DEV',
+      isConfigured: false,
+      isReachable: false,
+      unreachableReason: null,
+      targetServerName: null,
+      expectedServiceName: null,
+      expectedContainerName: null,
+      containers: [],
+      healthCheck: null,
+      currentImageOrVersion: null,
+      lastRestartAt: null,
+      latestDeploymentId: null,
+      latestDeploymentStatus: null,
+    });
   });
 
   it('renders the configured application URL as a link that opens in a new tab', async () => {
@@ -134,6 +176,7 @@ describe('ApplicationDetailsPage', () => {
       commitMessage: null,
       commitAuthor: null,
       branch: null,
+      releaseId: null,
     });
   });
 

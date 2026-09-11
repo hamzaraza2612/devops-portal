@@ -20,16 +20,12 @@ public class AuthServiceTests
             Issuer = "test", Audience = "test", SigningKey = "unit-test-signing-key-at-least-32-bytes-long",
         }));
         var currentUser = new FakeCurrentUserService();
-        var audit = new AuditService(db, currentUser, new FakeCurrentTenantService());
+        var audit = new AuditService(db, currentUser);
         return (new AuthService(db, hasher, jwt, audit), db);
     }
 
     private static async Task<User> SeedUserAsync(Infrastructure.Persistence.AppDbContext db, string username, string password, bool isActive = true)
     {
-        var adminRole = await TestDb.SeedRolesAndPermissionsAsync(db);
-        // TenantId intentionally left null (platform administrator) — this test is
-        // about the login mechanics themselves, not tenant scoping; see
-        // TenantIsolationTests for the multi-tenant login/isolation coverage.
         var user = new User
         {
             Username = username,
@@ -37,8 +33,8 @@ public class AuthServiceTests
             FullName = username,
             PasswordHash = new PasswordHasher().Hash(password),
             IsActive = isActive,
+            IsAdmin = true,
         };
-        user.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = adminRole.Id });
         db.Users.Add(user);
         await db.SaveChangesAsync();
         return user;
@@ -54,7 +50,7 @@ public class AuthServiceTests
 
         Assert.False(string.IsNullOrWhiteSpace(result.Token));
         Assert.Equal("alice", result.User.Username);
-        Assert.Contains("ADMIN", result.User.Roles);
+        Assert.Contains("Admin", result.User.Roles);
         Assert.NotNull((await db.Users.FindAsync(result.User.Id))!.LastLoginAt);
     }
 
@@ -72,8 +68,7 @@ public class AuthServiceTests
     [Fact]
     public async Task LoginAsync_WithUnknownUsername_ThrowsAuthenticationFailed()
     {
-        var (sut, db) = CreateSut();
-        await TestDb.SeedRolesAndPermissionsAsync(db);
+        var (sut, _) = CreateSut();
 
         await Assert.ThrowsAsync<AuthenticationFailedException>(() => sut.LoginAsync(new LoginRequest("nobody", "whatever1")));
     }

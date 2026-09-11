@@ -1,20 +1,17 @@
 namespace DevOpsPortal.Domain.Constants;
 
 /// <summary>
-/// Well-known permission codes. New phases add new codes here rather than
-/// hard-coding role checks — authorization always goes through permissions.
+/// Well-known permission codes checked via [RequirePermission] / EnsurePermissionAsync.
+/// Phase 12 replaced the underlying Role/Permission catalog with a simplified
+/// User.IsAdmin / User.CanApproveProduction / UserEnvironmentAccess model (see
+/// PROJECT_STATE.md and AppDbContextExtensions.GetRolesAndPermissionsAsync), but
+/// every enforcement point below is unchanged — these codes are still exactly
+/// what gets checked, just synthesized differently at login time.
 /// </summary>
 public static class PermissionCodes
 {
-    /// <summary>Platform-level: managing tenants/organizations themselves is a
-    /// platform-administrator action, never granted within a tenant's own roles.</summary>
-    public const string TenantsView = "tenants.view";
-    public const string TenantsManage = "tenants.manage";
-
     public const string UsersView = "users.view";
     public const string UsersManage = "users.manage";
-    public const string RolesView = "roles.view";
-    public const string RolesManage = "roles.manage";
     public const string AuditView = "audit.view";
     public const string ApplicationsView = "applications.view";
     public const string ApplicationsManage = "applications.manage";
@@ -35,7 +32,6 @@ public static class PermissionCodes
     public const string DeploymentsPromoteProduction = "deployments.promote.production";
     public const string DeploymentsApproveProduction = "deployments.approve.production";
     public const string DeploymentsDeployProduction = "deployments.deploy.production";
-    public const string DeploymentsRollback = "deployments.rollback";
 
     public const string ContainersView = "containers.view";
     public const string ContainersControl = "containers.control";
@@ -52,12 +48,8 @@ public static class PermissionCodes
 
     public static readonly IReadOnlyList<(string Code, string Description)> All = new (string, string)[]
     {
-        (TenantsView, "View tenants/organizations (platform administrators only)"),
-        (TenantsManage, "Create and manage tenants/organizations (platform administrators only)"),
         (UsersView, "View users"),
-        (UsersManage, "Create, update, deactivate users and assign roles"),
-        (RolesView, "View roles and permissions"),
-        (RolesManage, "Manage roles and role-permission assignments"),
+        (UsersManage, "Create, update, deactivate users and manage their environment access"),
         (AuditView, "View audit logs"),
         (ApplicationsView, "View applications and their environment configuration"),
         (ApplicationsManage, "Create and configure applications and their environments"),
@@ -77,7 +69,6 @@ public static class PermissionCodes
         (DeploymentsPromoteProduction, "Request promotion of a successful UAT deployment to Production"),
         (DeploymentsApproveProduction, "Grant CTO approval for a Production promotion request"),
         (DeploymentsDeployProduction, "Deploy an approved, CTO-approved promotion to Production"),
-        (DeploymentsRollback, "Roll an environment back to a previous successful deployment"),
         (ContainersView, "View live container status and health for configured application environments"),
         (ContainersControl, "Restart, start, or stop the containers of a configured application environment"),
         (ContainersRecreate, "Recreate a configured application environment's containers with docker compose down -v / up -d (destroys volumes)"),

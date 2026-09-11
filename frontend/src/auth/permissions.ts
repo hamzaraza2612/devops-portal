@@ -4,12 +4,8 @@
 // *allows*: every action a button here triggers is re-checked server-side.
 
 export const Permissions = {
-  TenantsView: 'tenants.view',
-  TenantsManage: 'tenants.manage',
   UsersView: 'users.view',
   UsersManage: 'users.manage',
-  RolesView: 'roles.view',
-  RolesManage: 'roles.manage',
   AuditView: 'audit.view',
   ApplicationsView: 'applications.view',
   ApplicationsManage: 'applications.manage',
@@ -20,6 +16,11 @@ export const Permissions = {
   EnvironmentsView: 'environments.view',
   BuildServersView: 'buildservers.view',
   BuildServersManage: 'buildservers.manage',
+  BuildsView: 'builds.view',
+  BuildsRequest: 'builds.request',
+  ContainersView: 'containers.view',
+  ContainersControl: 'containers.control',
+  ContainersRecreate: 'containers.recreate',
   SecretsView: 'secrets.view',
   SecretsReveal: 'secrets.reveal',
   SecretsManage: 'secrets.manage',
@@ -35,7 +36,6 @@ export const Permissions = {
   DeploymentsPromoteProduction: 'deployments.promote.production',
   DeploymentsApproveProduction: 'deployments.approve.production',
   DeploymentsDeployProduction: 'deployments.deploy.production',
-  DeploymentsRollback: 'deployments.rollback',
 } as const;
 
 export type Permission = (typeof Permissions)[keyof typeof Permissions];

@@ -32,6 +32,7 @@ public class ContainerOperationsService(
     {
         var userId = RequireUserId();
         await EnsurePermissionAsync(userId, PermissionCodes.ContainersView, cancellationToken);
+        await EnsureEnvironmentAccessAsync(userId, environmentDefinitionId, cancellationToken);
 
         var (application, environmentDefinition, appEnv) = await LoadAsync(applicationId, environmentDefinitionId, cancellationToken);
 
@@ -89,6 +90,7 @@ public class ContainerOperationsService(
     {
         var userId = RequireUserId();
         await EnsurePermissionAsync(userId, PermissionCodes.ContainersControl, cancellationToken);
+        await EnsureEnvironmentAccessAsync(userId, environmentDefinitionId, cancellationToken);
 
         var (application, environmentDefinition, appEnv) = await LoadAsync(applicationId, environmentDefinitionId, cancellationToken);
         RequireConfigured(application, appEnv);
@@ -116,6 +118,7 @@ public class ContainerOperationsService(
     {
         var userId = RequireUserId();
         await EnsurePermissionAsync(userId, PermissionCodes.ContainersRecreate, cancellationToken);
+        await EnsureEnvironmentAccessAsync(userId, environmentDefinitionId, cancellationToken);
 
         var (application, environmentDefinition, appEnv) = await LoadAsync(applicationId, environmentDefinitionId, cancellationToken);
         RequireConfigured(application, appEnv);
@@ -237,5 +240,15 @@ public class ContainerOperationsService(
         var (_, permissions) = await db.GetRolesAndPermissionsAsync(userId, cancellationToken);
         if (!permissions.Contains(permissionCode))
             throw new ForbiddenException($"Missing required permission '{permissionCode}'.");
+    }
+
+    /// <summary>ContainersView/Control/Recreate are granted to anyone with access
+    /// to ANY environment (see AppDbContextExtensions) — this confirms the user
+    /// is specifically allowed to act on THIS environment (master requirements
+    /// §2/§12).</summary>
+    private async Task EnsureEnvironmentAccessAsync(Guid userId, Guid environmentDefinitionId, CancellationToken cancellationToken)
+    {
+        if (!await db.HasEnvironmentAccessAsync(userId, environmentDefinitionId, cancellationToken))
+            throw new ForbiddenException("You do not have access to this environment.");
     }
 }

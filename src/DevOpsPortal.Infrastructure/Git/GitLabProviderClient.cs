@@ -9,14 +9,18 @@ namespace DevOpsPortal.Infrastructure.Git;
 
 /// <summary>
 /// Calls the GitLab REST API (v4) for read-only commit lookup. Authentication
-/// is optional: if Repository.AccessTokenEnvVarName is set, the token is read
-/// from that environment variable at call time (never stored in the DB, never
-/// logged, never returned to a caller). Without a token, only public projects
-/// are reachable. All failure modes (network, auth, 404, unsupported
-/// provider) are returned as a Fail result — this never throws for expected
-/// failures, so a GitLab outage can't break deployment request creation.
+/// is optional: Repository.AccessTokenStoreKey (set via the portal's GitLab
+/// configuration UI, resolved through the same ISecretProvider every other
+/// credential in the portal uses) is preferred when set; Repository.
+/// AccessTokenEnvVarName is the legacy fallback for repositories configured
+/// before the encrypted-store option existed — never stored in the DB as
+/// plaintext, never logged, never returned to a caller. Without a token, only
+/// public projects are reachable. All failure modes (network, auth, 404,
+/// unsupported provider) are returned as a Fail result — this never throws for
+/// expected failures, so a GitLab outage can't break deployment request
+/// creation.
 /// </summary>
-public class GitLabProviderClient(HttpClient httpClient, ILogger<GitLabProviderClient> logger) : IGitProviderClient
+public class GitLabProviderClient(HttpClient httpClient, ISecretProvider secretProvider, ILogger<GitLabProviderClient> logger) : IGitProviderClient
 {
     public async Task<GitProviderResult<GitCommitInfo>> GetLatestCommitAsync(
         Repository repository, string branch, CancellationToken cancellationToken = default)
@@ -38,7 +42,7 @@ public class GitLabProviderClient(HttpClient httpClient, ILogger<GitLabProviderC
             return GitProviderResult<IReadOnlyList<GitCommitInfo>>.Fail(buildError!);
 
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        ApplyAuth(repository, request);
+        await ApplyAuthAsync(repository, request, cancellationToken);
 
         try
         {
@@ -78,13 +82,11 @@ public class GitLabProviderClient(HttpClient httpClient, ILogger<GitLabProviderC
         if (string.IsNullOrWhiteSpace(sourceBranch) || string.IsNullOrWhiteSpace(targetBranch))
             return GitProviderResult<string>.Fail("Both a source and target branch are required for branch promotion.");
 
-        var token = string.IsNullOrWhiteSpace(repository.AccessTokenEnvVarName)
-            ? null
-            : Environment.GetEnvironmentVariable(repository.AccessTokenEnvVarName);
+        var token = await ResolveAccessTokenAsync(repository, cancellationToken);
         if (string.IsNullOrWhiteSpace(token))
         {
             return GitProviderResult<string>.Fail(
-                "Branch promotion requires a write-capable AccessTokenEnvVarName configured on this repository — none is set.");
+                "Branch promotion requires a write-capable access token configured on this repository (via the GitLab configuration UI, or legacy AccessTokenEnvVarName) — none is set.");
         }
 
         try
@@ -205,14 +207,77 @@ public class GitLabProviderClient(HttpClient httpClient, ILogger<GitLabProviderC
         return true;
     }
 
-    private static void ApplyAuth(Repository repository, HttpRequestMessage request)
+    /// <summary>AccessTokenStoreKey (the encrypted-store reference, set via the
+    /// portal's GitLab configuration UI) takes precedence when set; falls back to
+    /// the legacy AccessTokenEnvVarName for repositories configured before that
+    /// option existed.</summary>
+    private async Task<string?> ResolveAccessTokenAsync(Repository repository, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(repository.AccessTokenEnvVarName))
-            return;
+        if (!string.IsNullOrWhiteSpace(repository.AccessTokenStoreKey))
+        {
+            var result = await secretProvider.RetrieveAsync(repository.AccessTokenStoreKey, cancellationToken);
+            if (result.Success && !string.IsNullOrEmpty(result.Value))
+                return result.Value;
+        }
 
-        var token = Environment.GetEnvironmentVariable(repository.AccessTokenEnvVarName);
+        return string.IsNullOrWhiteSpace(repository.AccessTokenEnvVarName)
+            ? null
+            : Environment.GetEnvironmentVariable(repository.AccessTokenEnvVarName);
+    }
+
+    private async Task ApplyAuthAsync(Repository repository, HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var token = await ResolveAccessTokenAsync(repository, cancellationToken);
         if (!string.IsNullOrWhiteSpace(token))
             request.Headers.Add("PRIVATE-TOKEN", token);
+    }
+
+    /// <summary>GETs the project itself (validates the URL/project path, and —
+    /// if a token is configured — that it authenticates for at least read
+    /// access), then GETs /user with the same token to report who it belongs to.
+    /// Never fabricates CONNECTED — any failure at either step is reported as-is.</summary>
+    public async Task<GitConnectionTestResult> TestConnectionAsync(Repository repository, CancellationToken cancellationToken = default)
+    {
+        if (!TryBuildProjectApiBase(repository, out var apiBase, out var buildError))
+            return new GitConnectionTestResult(false, null, null, buildError);
+
+        using var projectRequest = new HttpRequestMessage(HttpMethod.Get, apiBase);
+        await ApplyAuthAsync(repository, projectRequest, cancellationToken);
+
+        try
+        {
+            using var projectResponse = await httpClient.SendAsync(projectRequest, cancellationToken);
+            if (!projectResponse.IsSuccessStatusCode)
+            {
+                logger.LogWarning(
+                    "GitLab connection test for repository {RepositoryName} returned {StatusCode}", repository.Name, projectResponse.StatusCode);
+                return new GitConnectionTestResult(false, null, null,
+                    $"GitLab returned {(int)projectResponse.StatusCode} {projectResponse.ReasonPhrase} — check the URL and, for private projects, the access token.");
+            }
+
+            var project = await projectResponse.Content.ReadFromJsonAsync<GitLabProjectDto>(cancellationToken);
+
+            string? authenticatedAs = null;
+            var token = await ResolveAccessTokenAsync(repository, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(token) && Uri.TryCreate(repository.Url, UriKind.Absolute, out var repoUri))
+            {
+                using var userRequest = new HttpRequestMessage(HttpMethod.Get, $"{repoUri.Scheme}://{repoUri.Authority}/api/v4/user");
+                userRequest.Headers.Add("PRIVATE-TOKEN", token);
+                using var userResponse = await httpClient.SendAsync(userRequest, cancellationToken);
+                if (userResponse.IsSuccessStatusCode)
+                {
+                    var user = await userResponse.Content.ReadFromJsonAsync<GitLabUserDto>(cancellationToken);
+                    authenticatedAs = user?.Username;
+                }
+            }
+
+            return new GitConnectionTestResult(true, authenticatedAs, project?.PathWithNamespace ?? project?.Name, null);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            logger.LogWarning(ex, "GitLab connection test failed for repository {RepositoryName}", repository.Name);
+            return new GitConnectionTestResult(false, null, null, "Could not reach the configured GitLab instance.");
+        }
     }
 
     private sealed class GitLabCommitDto
@@ -246,5 +311,20 @@ public class GitLabProviderClient(HttpClient httpClient, ILogger<GitLabProviderC
 
         [JsonPropertyName("sha")]
         public string? Sha { get; set; }
+    }
+
+    private sealed class GitLabProjectDto
+    {
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
+
+        [JsonPropertyName("path_with_namespace")]
+        public string? PathWithNamespace { get; set; }
+    }
+
+    private sealed class GitLabUserDto
+    {
+        [JsonPropertyName("username")]
+        public string? Username { get; set; }
     }
 }

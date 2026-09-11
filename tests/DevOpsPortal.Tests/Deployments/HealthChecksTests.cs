@@ -91,5 +91,8 @@ public class IntegrationsHealthCheckTests
         public Task<RemoteContainerInspectResult> InspectContainerAsync(
             TargetServer targetServer, string containerName, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

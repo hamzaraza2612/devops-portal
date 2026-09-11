@@ -11,7 +11,6 @@ namespace DevOpsPortal.Domain.Entities;
 public class ManagedApplication
 {
     public Guid Id { get; set; } = Guid.NewGuid();
-    public Guid TenantId { get; set; }
     public string Name { get; set; } = string.Empty;
 
     /// <summary>Stable, URL-safe identifier (e.g. "dms-api"), independent of Name.</summary>

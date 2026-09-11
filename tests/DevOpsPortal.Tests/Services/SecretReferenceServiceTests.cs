@@ -26,12 +26,12 @@ public class SecretReferenceServiceTests
         Guid ManageUserId,
         Guid ViewOnlyUserId,
         Guid RevealUserId,
+        Guid OtherEnvironmentUserId,
         Guid NoPermissionUserId);
 
     private static async Task<Fixture> CreateFixtureAsync()
     {
         var db = TestDb.CreateInMemory();
-        await TestDb.SeedRolesAndPermissionsAsync(db);
         await TestDb.SeedEnvironmentDefinitionsAsync(db);
 
         var app = new ManagedApplication { Name = "Sample", Slug = "sample", DeploymentMode = DeploymentMode.LegacyFilesystem };
@@ -42,18 +42,22 @@ public class SecretReferenceServiceTests
         var qaEnv = db.EnvironmentDefinitions.Single(e => e.Name == EnvironmentNames.Qa);
 
         var currentUser = new FakeCurrentUserService();
-        var currentTenant = new FakeCurrentTenantService();
-        var audit = new AuditService(db, currentUser, currentTenant);
+        var audit = new AuditService(db, currentUser);
         var secretProvider = new EncryptedSecretProvider(
             db, Options.Create(new SecretEncryptionSettings { EncryptionKey = "0123456789abcdef0123456789abcdef" }), NullLogger<EncryptedSecretProvider>.Instance);
-        var sut = new SecretReferenceService(db, currentUser, currentTenant, audit, secretProvider);
+        var sut = new SecretReferenceService(db, currentUser, audit, secretProvider);
 
-        var manageUserId = await TestDb.CreateUserWithPermissionsAsync(db, "devops", PermissionCodes.SecretsView, PermissionCodes.SecretsReveal, PermissionCodes.SecretsManage);
-        var viewOnlyUserId = await TestDb.CreateUserWithPermissionsAsync(db, "viewer", PermissionCodes.SecretsView);
-        var revealUserId = await TestDb.CreateUserWithPermissionsAsync(db, "revealer", PermissionCodes.SecretsView, PermissionCodes.SecretsReveal);
-        var noPermissionUserId = await TestDb.CreateUserWithPermissionsAsync(db, "developer", PermissionCodes.ApplicationsView);
+        // SecretsManage is admin-only; SecretsView/SecretsReveal always come
+        // bundled together for anyone with access to at least one environment
+        // (see AppDbContextExtensions) — the real remaining view/reveal
+        // boundary is per-specific-environment (EnsureEnvironmentAccessAsync),
+        // covered by otherEnvironmentUserId below.
+        var manageUserId = await TestDb.CreateAdminAsync(db, "devops");
+        var viewOnlyUserId = await TestDb.CreateUserWithEnvironmentAccessAsync(db, "viewer", EnvironmentNames.Dev, EnvironmentNames.Qa);
+        var otherEnvironmentUserId = await TestDb.CreateUserWithEnvironmentAccessAsync(db, "qa-only", EnvironmentNames.Qa);
+        var noPermissionUserId = await TestDb.CreateUserWithNoAccessAsync(db, "developer");
 
-        return new Fixture(sut, db, currentUser, app, devEnv, qaEnv, manageUserId, viewOnlyUserId, revealUserId, noPermissionUserId);
+        return new Fixture(sut, db, currentUser, app, devEnv, qaEnv, manageUserId, viewOnlyUserId, viewOnlyUserId, otherEnvironmentUserId, noPermissionUserId);
     }
 
     // -------------------------------------------------------------- authorization / unauthorized access
@@ -400,14 +404,14 @@ public class SecretReferenceServiceTests
     // -------------------------------------------------------------- reveal ("Show password")
 
     [Fact]
-    public async Task RevealAsync_WithoutSecretsRevealPermission_ThrowsForbidden_EvenWithSecretsView()
+    public async Task RevealAsync_ForEnvironmentScopedSecret_UserWithoutThatEnvironmentAccess_ThrowsForbidden()
     {
         var f = await CreateFixtureAsync();
         f.CurrentUser.UserId = f.ManageUserId;
         var created = await f.Sut.CreateAsync(new CreateSecretReferenceRequest(
-            "db-password", SecretCategory.Database, SecretScope.Global, null, null, null, "hunter2-secret"));
+            "db-password", SecretCategory.Database, SecretScope.ApplicationEnvironment, f.App.Id, f.DevEnv.Id, null, "hunter2-secret"));
 
-        f.CurrentUser.UserId = f.ViewOnlyUserId; // holds secrets.view only, not secrets.reveal
+        f.CurrentUser.UserId = f.OtherEnvironmentUserId; // has QA access, not DEV
         await Assert.ThrowsAsync<ForbiddenException>(() => f.Sut.RevealAsync(created.Id));
     }
 

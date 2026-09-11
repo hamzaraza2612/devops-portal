@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DevOpsPortal.Application.Services;
 
-public class AuditService(IAppDbContext db, ICurrentUserService currentUser, ICurrentTenantService currentTenantService) : IAuditService
+public class AuditService(IAppDbContext db, ICurrentUserService currentUser) : IAuditService
 {
     public async Task LogAsync(
         string action,
@@ -20,7 +20,6 @@ public class AuditService(IAppDbContext db, ICurrentUserService currentUser, ICu
     {
         var entry = new AuditLog
         {
-            TenantId = currentTenantService.TenantId,
             Action = action,
             Result = result,
             EntityType = entityType,

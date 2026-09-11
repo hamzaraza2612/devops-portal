@@ -95,11 +95,10 @@ being created (see below), then `Now listening on: http://+:8080`.
 account, or ask another admin to reset it) — it may have transited your
 shell history or a log aggregator depending on how you set it.
 
-This bootstrap account is a **platform administrator** — it can create
-Tenants (organizations) but holds no application/deployment permissions of
-its own within a tenant. See the
-[Administrator Guide](administrator-guide.md#platform-vs-tenant-administration)
-for why, and create your first real tenant next.
+This bootstrap account is a full administrator (`isAdmin = true`,
+`canApproveProduction = true`) — it can do everything, including creating
+every other user. See the [Administrator Guide](administrator-guide.md)
+for the full authorization model before creating additional users.
 
 ## 6. Verify the install
 
@@ -116,8 +115,9 @@ blocks startup.
 
 ## 7. Next steps
 
-Configure your first tenant, Git repository, application, and deployment
-target — see the [Configuration Guide](configuration-guide.md).
+Configure your first Git repository, target server (including its SSH
+connection), and application — see the
+[Configuration Guide](configuration-guide.md).
 
 ---
 

@@ -20,7 +20,7 @@ namespace DevOpsPortal.Application.Services;
 /// deliberate, secrets.reveal-gated exception (see its doc comment).
 /// </summary>
 public class SecretReferenceService(
-    IAppDbContext db, ICurrentUserService currentUser, ICurrentTenantService currentTenantService, IAuditService auditService, ISecretProvider secretProvider)
+    IAppDbContext db, ICurrentUserService currentUser, IAuditService auditService, ISecretProvider secretProvider)
     : ISecretReferenceService
 {
     public async Task<IReadOnlyList<SecretReferenceDto>> ListAsync(
@@ -28,10 +28,20 @@ public class SecretReferenceService(
     {
         var userId = RequireUserId();
         await EnsurePermissionAsync(userId, PermissionCodes.SecretsView, cancellationToken);
+        if (environmentDefinitionId is not null)
+            await EnsureEnvironmentAccessAsync(userId, environmentDefinitionId.Value, cancellationToken);
+
+        // Environment-scoped credentials must stay separated even when no explicit
+        // environmentDefinitionId filter is supplied (master requirements §12/§19) —
+        // Global/Application-scoped secrets aren't tied to a specific environment,
+        // so they stay visible to anyone holding SecretsView.
+        var accessibleEnvIds = await db.GetAccessibleEnvironmentIdsAsync(userId, cancellationToken);
 
         var query = db.SecretReferences.AsQueryable();
         if (applicationId is not null) query = query.Where(s => s.ApplicationId == applicationId);
         if (environmentDefinitionId is not null) query = query.Where(s => s.EnvironmentDefinitionId == environmentDefinitionId);
+        if (accessibleEnvIds is not null)
+            query = query.Where(s => s.EnvironmentDefinitionId == null || accessibleEnvIds.Contains(s.EnvironmentDefinitionId.Value));
         if (category is not null) query = query.Where(s => s.Category == category);
 
         var secrets = await query.OrderBy(s => s.Name).ToListAsync(cancellationToken);
@@ -48,6 +58,8 @@ public class SecretReferenceService(
 
         var secret = await db.SecretReferences.FirstOrDefaultAsync(s => s.Id == id, cancellationToken)
             ?? throw new NotFoundException("SecretReference", id);
+        if (secret.EnvironmentDefinitionId is { } secretEnvId)
+            await EnsureEnvironmentAccessAsync(userId, secretEnvId, cancellationToken);
         return await ToDtoAsync(secret, cancellationToken);
     }
 
@@ -79,7 +91,6 @@ public class SecretReferenceService(
 
         var secret = new SecretReference
         {
-            TenantId = currentTenantService.RequireTenantId(),
             Name = name,
             Category = request.Category,
             Scope = request.Scope,
@@ -110,6 +121,8 @@ public class SecretReferenceService(
 
         var secret = await db.SecretReferences.FirstOrDefaultAsync(s => s.Id == id, cancellationToken)
             ?? throw new NotFoundException("SecretReference", id);
+        if (secret.EnvironmentDefinitionId is { } secretEnvId)
+            await EnsureEnvironmentAccessAsync(userId, secretEnvId, cancellationToken);
 
         secret.Description = NormalizeOrNull(request.Description);
         secret.Username = NormalizeOrNull(request.Username);
@@ -141,6 +154,8 @@ public class SecretReferenceService(
 
         var secret = await db.SecretReferences.FirstOrDefaultAsync(s => s.Id == id, cancellationToken)
             ?? throw new NotFoundException("SecretReference", id);
+        if (secret.EnvironmentDefinitionId is { } secretEnvId)
+            await EnsureEnvironmentAccessAsync(userId, secretEnvId, cancellationToken);
 
         await secretProvider.DeleteAsync(secret.StoreKey, cancellationToken);
 
@@ -158,6 +173,8 @@ public class SecretReferenceService(
 
         var secret = await db.SecretReferences.FirstOrDefaultAsync(s => s.Id == id, cancellationToken)
             ?? throw new NotFoundException("SecretReference", id);
+        if (secret.EnvironmentDefinitionId is { } secretEnvId)
+            await EnsureEnvironmentAccessAsync(userId, secretEnvId, cancellationToken);
 
         var value = await secretProvider.RetrieveAsync(secret.StoreKey, cancellationToken);
         if (!value.Success || value.Value is null)
@@ -272,5 +289,15 @@ public class SecretReferenceService(
         var (_, permissions) = await db.GetRolesAndPermissionsAsync(userId, cancellationToken);
         if (!permissions.Contains(permissionCode))
             throw new ForbiddenException($"Missing required permission '{permissionCode}'.");
+    }
+
+    /// <summary>SecretsView/SecretsReveal are granted to anyone with access to
+    /// ANY environment (see AppDbContextExtensions) — this confirms the user is
+    /// specifically allowed to see/reveal THIS environment's credentials
+    /// (master requirements §2/§12/§19).</summary>
+    private async Task EnsureEnvironmentAccessAsync(Guid userId, Guid environmentDefinitionId, CancellationToken cancellationToken)
+    {
+        if (!await db.HasEnvironmentAccessAsync(userId, environmentDefinitionId, cancellationToken))
+            throw new ForbiddenException("You do not have access to this environment.");
     }
 }

@@ -13,7 +13,20 @@ vi.mock('../api/endpoints', () => ({
 
 function authValue(permissions: string[]): AuthContextValue {
   return {
-    user: { id: '1', username: 'u', email: 'u@example.local', fullName: 'U', isActive: true, createdAt: '', lastLoginAt: null, roles: [], permissions },
+    user: {
+      id: '1',
+      username: 'u',
+      email: 'u@example.local',
+      fullName: 'U',
+      isActive: true,
+      isAdmin: false,
+      canApproveProduction: false,
+      environmentAccess: [],
+      createdAt: '',
+      lastLoginAt: null,
+      roles: [],
+      permissions,
+    },
     isLoading: false,
     error: null,
     login: async () => {},

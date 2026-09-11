@@ -8,7 +8,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DevOpsPortal.Application.Services;
 
-public partial class ApplicationService(IAppDbContext db, IAuditService auditService, ICurrentTenantService currentTenantService) : IApplicationService
+public partial class ApplicationService(IAppDbContext db, IAuditService auditService) : IApplicationService
 {
     public async Task<IReadOnlyList<ApplicationDto>> GetAllAsync(CancellationToken cancellationToken = default)
     {
@@ -43,7 +43,6 @@ public partial class ApplicationService(IAppDbContext db, IAuditService auditSer
 
         var app = new ManagedApplication
         {
-            TenantId = currentTenantService.RequireTenantId(),
             Name = name,
             Slug = slug,
             Description = request.Description?.Trim(),

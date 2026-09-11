@@ -25,6 +25,7 @@ public class ContainerOperationsServiceTests
         Guid ViewUserId,
         Guid ControlUserId,
         Guid RecreateUserId,
+        Guid OtherEnvironmentUserId,
         Guid NoPermissionUserId);
 
     private static async Task<Fixture> CreateFixtureAsync(
@@ -34,7 +35,6 @@ public class ContainerOperationsServiceTests
         bool appEnvActive = true)
     {
         var db = TestDb.CreateInMemory();
-        await TestDb.SeedRolesAndPermissionsAsync(db);
         await TestDb.SeedEnvironmentDefinitionsAsync(db);
 
         var app = new ManagedApplication { Name = "Sample", Slug = "sample", DeploymentMode = DeploymentMode.LegacyFilesystem };
@@ -63,20 +63,27 @@ public class ContainerOperationsServiceTests
         await db.SaveChangesAsync();
 
         var currentUser = new FakeCurrentUserService();
-        var audit = new AuditService(db, currentUser, new FakeCurrentTenantService());
+        var audit = new AuditService(db, currentUser);
         var sut = new ContainerOperationsService(
             db, currentUser, audit,
             runtimeProvider ?? new FakeContainerRuntimeProvider(),
             healthProbe ?? new FakeHealthCheckProbe(true));
 
-        var viewUserId = await TestDb.CreateUserWithPermissionsAsync(db, "viewer", PermissionCodes.ContainersView);
-        var controlUserId = await TestDb.CreateUserWithPermissionsAsync(
-            db, "controller", PermissionCodes.ContainersView, PermissionCodes.ContainersControl);
-        var recreateUserId = await TestDb.CreateUserWithPermissionsAsync(
-            db, "recreator", PermissionCodes.ContainersView, PermissionCodes.ContainersControl, PermissionCodes.ContainersRecreate);
-        var noPermissionUserId = await TestDb.CreateUserWithPermissionsAsync(db, "nobody", PermissionCodes.UsersView);
+        // ContainersView/Control/Recreate are all granted together to anyone with
+        // access to at least one environment (see AppDbContextExtensions) — the
+        // real remaining authorization boundary is per-specific-environment (see
+        // EnsureEnvironmentAccessAsync), covered by otherEnvironmentUserId below.
+        // Also granted Production access (not just DEV) since a couple of tests
+        // exercise "environment not configured for this application" against
+        // PRODUCTION specifically and need to get past the access check first.
+        var authorizedUserId = await TestDb.CreateUserWithEnvironmentAccessAsync(
+            db, "authorized", EnvironmentNames.Dev, EnvironmentNames.Production);
+        var otherEnvironmentUserId = await TestDb.CreateUserWithEnvironmentAccessAsync(db, "qa-only", EnvironmentNames.Qa);
+        var noPermissionUserId = await TestDb.CreateUserWithNoAccessAsync(db, "nobody");
 
-        return new Fixture(sut, db, currentUser, app, devEnv, appEnv, server, viewUserId, controlUserId, recreateUserId, noPermissionUserId);
+        return new Fixture(
+            sut, db, currentUser, app, devEnv, appEnv, server,
+            authorizedUserId, authorizedUserId, authorizedUserId, otherEnvironmentUserId, noPermissionUserId);
     }
 
     // ---------------------------------------------------- reachability (default provider)
@@ -184,7 +191,7 @@ public class ContainerOperationsServiceTests
     {
         var provider = new FakeContainerRuntimeProvider(operationResult: new ContainerRuntimeOperationResult(true, true, "ok"));
         var f = await CreateFixtureAsync(runtimeProvider: provider);
-        f.CurrentUser.UserId = f.ViewUserId; // holds View but not Control
+        f.CurrentUser.UserId = f.OtherEnvironmentUserId; // has QA access, not DEV
 
         await Assert.ThrowsAsync<ForbiddenException>(() => f.Sut.RestartAsync(f.App.Id, f.DevEnv.Id));
         Assert.Equal(0, provider.OperationInvocationCount);
@@ -285,7 +292,7 @@ public class ContainerOperationsServiceTests
     public async Task RecreateWithVolumesAsync_WithoutRecreatePermission_ThrowsForbidden()
     {
         var f = await CreateFixtureAsync(useDownWithVolumesOnDeploy: true);
-        f.CurrentUser.UserId = f.ControlUserId; // holds Control but not Recreate
+        f.CurrentUser.UserId = f.OtherEnvironmentUserId; // has QA access, not DEV
 
         await Assert.ThrowsAsync<ForbiddenException>(() => f.Sut.RecreateWithVolumesAsync(f.App.Id, f.DevEnv.Id, new RecreateWithVolumesRequest(true)));
     }

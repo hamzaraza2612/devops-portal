@@ -16,9 +16,7 @@ public class BuildConfigurationServiceTests
         var app = new ManagedApplication { Name = "Sample", Slug = "sample", DeploymentMode = DeploymentMode.ContainerImage };
         db.Applications.Add(app);
         await db.SaveChangesAsync();
-
-        var currentTenant = new FakeCurrentTenantService();
-        var sut = new BuildConfigurationService(db, new AuditService(db, new FakeCurrentUserService(), currentTenant), currentTenant);
+        var sut = new BuildConfigurationService(db, new AuditService(db, new FakeCurrentUserService()));
         return (sut, app);
     }
 
@@ -83,8 +81,7 @@ public class BuildConfigurationServiceTests
         var buildServer = new BuildServer { Name = "jenkins-main", BaseUrl = "https://jenkins.example.com" };
         db.BuildServers.Add(buildServer);
         await db.SaveChangesAsync();
-        var currentTenant = new FakeCurrentTenantService();
-        var sut = new BuildConfigurationService(db, new AuditService(db, new FakeCurrentUserService(), currentTenant), currentTenant);
+        var sut = new BuildConfigurationService(db, new AuditService(db, new FakeCurrentUserService()));
 
         await Assert.ThrowsAsync<ValidationException>(() => sut.UpsertAsync(app.Id, new UpsertBuildConfigurationRequest(
             null, null, null, null, null, ImageTagStrategy.CommitSha, BuildServerId: buildServer.Id)));
@@ -99,8 +96,7 @@ public class BuildConfigurationServiceTests
         var buildServer = new BuildServer { Name = "jenkins-main", BaseUrl = "https://jenkins.example.com" };
         db.BuildServers.Add(buildServer);
         await db.SaveChangesAsync();
-        var currentTenant = new FakeCurrentTenantService();
-        var sut = new BuildConfigurationService(db, new AuditService(db, new FakeCurrentUserService(), currentTenant), currentTenant);
+        var sut = new BuildConfigurationService(db, new AuditService(db, new FakeCurrentUserService()));
 
         var result = await sut.UpsertAsync(app.Id, new UpsertBuildConfigurationRequest(
             "src/Api/Api.csproj", "Release", "src/Api/Dockerfile", "registry.example.com", "group/app", ImageTagStrategy.CommitSha,

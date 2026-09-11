@@ -13,11 +13,9 @@ const navItems = [
 ];
 
 const adminNavItems = [
-  { to: '/admin/tenants', label: 'Tenants', permission: Permissions.TenantsView },
   { to: '/admin/users', label: 'Users', permission: Permissions.UsersView },
-  { to: '/admin/roles', label: 'Roles', permission: Permissions.RolesView },
-  { to: '/admin/repositories', label: 'Repositories', permission: Permissions.RepositoriesView },
-  { to: '/admin/target-servers', label: 'Deployment Targets', permission: Permissions.TargetServersView },
+  { to: '/admin/repositories', label: 'Repositories / GitLab', permission: Permissions.RepositoriesView },
+  { to: '/admin/target-servers', label: 'Servers', permission: Permissions.TargetServersView },
   { to: '/admin/build-servers', label: 'Build Servers', permission: Permissions.BuildServersView },
 ];
 

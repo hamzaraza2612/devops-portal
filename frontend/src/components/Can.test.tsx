@@ -7,7 +7,20 @@ import { Permissions } from '../auth/permissions';
 
 function renderWithPermissions(permissions: string[], children: ReactNode) {
   const value: AuthContextValue = {
-    user: { id: '1', username: 'u', email: 'u@example.local', fullName: 'U', isActive: true, createdAt: '', lastLoginAt: null, roles: [], permissions },
+    user: {
+      id: '1',
+      username: 'u',
+      email: 'u@example.local',
+      fullName: 'U',
+      isActive: true,
+      isAdmin: false,
+      canApproveProduction: false,
+      environmentAccess: [],
+      createdAt: '',
+      lastLoginAt: null,
+      roles: [],
+      permissions,
+    },
     isLoading: false,
     error: null,
     login: async () => {},

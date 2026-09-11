@@ -25,28 +25,27 @@ public enum ComposeOperation
     /// first step of container inspection (see IContainerInspector). Never mutates
     /// anything.</summary>
     Ps,
+
+    /// <summary>`docker compose pull` — pulls the image(s) a compose file's services
+    /// reference (master requirements §17: "target server pulls immutable image
+    /// from registry") before `Up` recreates containers from it. Only used by
+    /// ContainerImage-mode deployments; LegacyFilesystem never pulls an image.</summary>
+    Pull,
 }
 
 /// <summary>EnvironmentVariables (name -> plaintext value, e.g. resolved secrets)
-/// are passed as real process environment variables, never as command-line
-/// arguments or written to any file — so a compose file can reference them via
-/// `${VAR}` interpolation without the value ever appearing in `ps` output, a
-/// log, or an exception. Optional and additive: omitting it (the default)
-/// behaves exactly as before this field existed.</summary>
+/// let a compose file reference them via `${VAR}` interpolation without the
+/// value appearing in command-line arguments a process listing could observe.
+/// Consumed by <see cref="IRemoteExecutionProvider"/> (the only place a
+/// ComposeCommandRequest is actually executed — see PROJECT_STATE.md's Phase 12
+/// remote-execution notes for how each implementation passes these through:
+/// SshRemoteExecutionProvider quotes each value into a `NAME='value'` prefix on
+/// the remote command line, since SSH.NET has no equivalent of
+/// ProcessStartInfo.Environment for a single remote command). Optional and
+/// additive: omitting it (the default) behaves exactly as before this field
+/// existed.</summary>
 public record ComposeCommandRequest(
     string WorkingDirectory, string ComposeFilePath, string? ProjectName, ComposeOperation Operation,
     IReadOnlyDictionary<string, string>? EnvironmentVariables = null);
 
 public record ComposeCommandResult(bool Success, int ExitCode, string StandardOutput, string StandardError);
-
-/// <summary>
-/// Executes `docker compose` against the Docker daemon reachable from this
-/// process (see PROJECT_STATE.md — remote TargetServer execution over
-/// SSH/an agent is not implemented yet). Always invokes the `docker` CLI
-/// directly with an argument array (never a shell string), so there is no
-/// command-injection surface regardless of what's in configuration.
-/// </summary>
-public interface IComposeCommandExecutor
-{
-    Task<ComposeCommandResult> RunAsync(ComposeCommandRequest request, CancellationToken cancellationToken = default);
-}

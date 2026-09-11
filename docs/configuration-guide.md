@@ -2,42 +2,22 @@
 
 Everything below is configured through the API/Admin UI or environment
 variables — **none of it requires touching source code**. This guide covers
-how a new organization (tenant) gets from an empty install to a working
-deployment pipeline.
+how this single-organization instance gets from an empty install to a
+working deployment pipeline.
 
 If you haven't installed the portal yet, see the
 [Installation Guide](installation-guide.md) first.
 
-## 1. Create your tenant
+## 1. Log in as the bootstrap admin
 
-Every application/repository/environment/credential lives inside a
-**Tenant** — the platform's top-level ownership boundary (one Tenant per
-customer organization, or per internal business unit if you're running this
-for multiple internal teams). Log in as the bootstrap platform admin
-created during installation and create one:
-
-`POST /api/tenants` (or Admin → Tenants in the UI, if you're logged in as a
-platform admin):
-
-```json
-{
-  "name": "Acme Corp",
-  "slug": "acme",
-  "description": "Acme's internal platform team",
-  "initialAdminUsername": "acme-admin",
-  "initialAdminEmail": "acme-admin@acme.example.com",
-  "initialAdminPassword": null
-}
-```
-
-Leave `initialAdminPassword` unset to have one generated and returned once
-in the response — capture it now, it is never shown again. This call also
-provisions the tenant's default roles (ADMIN, DEVOPS, DEVELOPER, QA, UAT,
-CTO) and the four standard environment tiers (DEV/QA/UAT/PRODUCTION).
-
-From here on, **log in as the tenant's own admin user**, not the platform
-admin — the platform admin has no application/deployment permissions inside
-any tenant (see the [Administrator Guide](administrator-guide.md)).
+There's no tenant or organization to create — the portal is
+single-organization. Log in as the bootstrap admin account created during
+installation (see the [Installation Guide](installation-guide.md)) and
+start creating users, repositories, and applications directly; the four
+standard environment tiers (DEV/QA/UAT/PRODUCTION) already exist as fixed
+platform reference data. See the [Administrator Guide](administrator-guide.md)
+for how to grant other users admin access, Production-approval ("CTO")
+rights, or access to specific environments.
 
 ## 2. Git provider
 
@@ -106,9 +86,9 @@ application lives in).
 
 ## 5. Environments and deployment targets
 
-Every tenant gets the four standard tiers (DEV/QA/UAT/PRODUCTION) —
+The platform has the four standard tiers (DEV/QA/UAT/PRODUCTION) —
 `GET /api/environments` lists them; these are fixed platform reference
-data, not something you add/remove per tenant.
+data, not something you add/remove.
 
 **Deployment Targets** (Admin → Deployment Targets) are the hosts your
 applications actually deploy to:

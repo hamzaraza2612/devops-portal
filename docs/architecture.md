@@ -31,15 +31,20 @@ tests/DevOpsPortal.Tests         xUnit; EF Core InMemory provider — no
 Dependencies point one direction only: Api → Infrastructure → Application →
 Domain. Application never references Infrastructure or Api.
 
-## Multi-tenancy
+## Single-organization, per-environment authorization
 
-`Tenant` is the top-level ownership boundary. Every tenant-owned entity
-carries a `TenantId`, enforced via EF Core global query filters — a query
-for another tenant's data simply returns nothing, not an error, at the
-database-query level, not as an application-code check that could be
-forgotten on a new endpoint. See `TenantIsolationTests` for the automated
-proof of this, and the [Administrator Guide](administrator-guide.md) for
-the platform-vs-tenant-admin split this creates.
+There is no multi-tenancy concept anywhere in the system — the product is
+single-organization. Authorization is three things on `User`: `IsAdmin`
+(full access to everything), `CanApproveProduction` (an independent
+"CTO" flag that lets a user approve Production promotions without being an
+admin), and `UserEnvironmentAccess` (a join table recording which of
+DEV/QA/UAT/PRODUCTION a given user may act on). Permission codes (the
+`deployments.deploy.dev`-style strings checked via `[RequirePermission]`/
+`EnsurePermissionAsync`) are unchanged from earlier phases — only what
+grants them changed. See
+`AppDbContextExtensions.GetRolesAndPermissionsAsync` for exactly how those
+three sources synthesize a user's permission set at login, and the
+[Administrator Guide](administrator-guide.md) for the operational view.
 
 ## Provider abstractions
 
@@ -53,48 +58,38 @@ class + one DI registration, never a change to the code that calls it:
 | `IBuildProvider` | `JenkinsBuildProvider` (Jenkins REST API) |
 | `INotificationProvider` | `EmailNotificationProvider` (SMTP) |
 | `ISecretProvider` | `EncryptedSecretProvider` (AES-256-GCM at rest) |
-| `IRemoteExecutionProvider` | **none** — see Known gaps below |
+| `IRemoteExecutionProvider` | `SshRemoteExecutionProvider` (SSH, via `Renci.SshNet`); `NotConfiguredRemoteExecutionProvider` for a `TargetServer` with no SSH credential set |
 
 ## Deployment execution topology
 
-**This is the single most important thing to understand before relying on
-this platform for a multi-server rollout.** The intended architecture is:
-
 ```
-Portal VM ──┬──► Target Server 1 ──► Docker/Compose
-            ├──► Target Server 2 ──► Docker/Compose
-            └──► Target Server N ──► Docker/Compose
+Portal VM ──┬──► Target Server 1 ──► Docker/Compose (over SSH)
+            ├──► Target Server 2 ──► Docker/Compose (over SSH)
+            └──► Target Server N ──► Docker/Compose (over SSH)
 ```
 
-**What actually exists today**: `DeploymentExecutor` (the component that
-runs `docker compose down`/`up` for an actual deployment) runs those
-commands as a **local process on whatever host the portal's own API
-container runs on** — it does not reach out to a `TargetServer` over any
-network channel. `IRemoteExecutionProvider` (the abstraction meant to carry
-deployment execution to a genuinely remote target server) exists and is
-correctly wired into **container monitoring/control** (status, restart,
-recreate), but its only implementation, `NotConfiguredRemoteExecutionProvider`,
-honestly reports every target server unreachable rather than fabricating a
-result — it never spawns a process. Deployment execution and container
-monitoring/control therefore currently disagree about where "the target
-server" actually is:
+Both **deployment execution** (`docker compose down`/`up` for a real
+deploy, and the container-image `pull`/`up -d` path) and **container
+monitoring/control** (status, restart, stop, recreate) go through
+`IRemoteExecutionProvider` over SSH to the application's configured
+`TargetServer` — neither runs as a local process on the portal's own host.
+A `TargetServer` needs `Hostname`, `SshUsername`, and a stored SSH
+credential (password or private key, via `SshAuthMethod`) before it's
+considered configured; one that isn't resolves to
+`NotConfiguredRemoteExecutionProvider`, which honestly reports the server
+unreachable rather than fabricating a result, and a deployment against it
+fails with a clear, actionable error instead of silently running on the
+portal's own host. Every dynamic value that goes into a remote command
+(container names, compose file paths, env var names/values) is POSIX
+shell-escaped before being interpolated; there is no free-form "run this
+command" surface — only a fixed set of compose operations
+(`Up`/`Down`/`DownWithVolumes`/`Restart`/`Start`/`Stop`/`Pull`) and
+`docker inspect` on an already-discovered container name are reachable.
 
-- **Deployment execution** (`docker compose up` for a real deploy):
-  happens on the portal VM itself, regardless of what `TargetServer`/
-  `Hostname` you configured.
-- **Container monitoring/control** (status, restart, recreate from the
-  UI): correctly refuses to pretend it reached a remote server it can't
-  actually reach — reports "unreachable" honestly, every time, for every
-  target server, since no real remote-execution mechanism (SSH, agent,
-  remote Docker API over TLS) is implemented yet.
-
-**Practical consequence**: today, deploy the portal's `api` container onto
-the same host (or with local Docker access to the same host) as the
-application(s) it deploys, for deployment execution to actually work.
-Container status/control from the UI will show "unreachable" for every
-target server until a real `IRemoteExecutionProvider` implementation is
-built — this is not a bug to work around, it's the documented, current
-state.
+Admin → Deployment Targets → **Test Connection**
+(`POST /api/target-servers/{id}/test-connection`) verifies SSH
+connectivity, the authenticated remote user, OS info, and Docker/Compose
+availability without ever returning the stored credential.
 
 ## Promotion / approval state machine
 
@@ -129,8 +124,8 @@ for the operational walkthrough.
 ## Security posture
 
 - Bearer-token (JWT) authentication; permissions embedded in the token at
-  login (a role/permission change takes effect on next login, not
-  instantly).
+  login (a change to a user's admin flag, CTO flag, or environment access
+  takes effect on next login, not instantly).
 - Every mutating action re-validates permissions server-side — a hidden UI
   button is never the actual enforcement.
 - Rate limiting on login (10/min/IP) and API-wide (300/min/IP) —
@@ -152,26 +147,20 @@ for the operational walkthrough.
 Carried forward deliberately, not hidden — see `PROJECT_STATE.md`'s
 "Production-critical gaps" section for the full detail behind each:
 
-1. **No real remote-execution mechanism** (see above) — the single biggest
-   architectural gap. Blocks true multi-server deployment execution and all
-   container monitoring/control.
-2. **No deploy-from-Release path.** The build pipeline (Jenkins → Docker
-   image → registry → `Release` record) is fully functional, but nothing
-   deploys from a `Release` yet — `DeploymentExecutor`'s container-image
-   branch explicitly throws "not implemented." Every application that
-   deploys today uses the Legacy (prebuilt publish directory) path.
-3. **Session storage is `sessionStorage`**, not an httpOnly cookie — a
+1. **No registry-credential entity.** `ContainerImage`-mode applications
+   deploy from an immutable `Release` (see above), but authenticating
+   `docker compose pull` against a private registry on the target server
+   (a `docker login`/credential helper) is a deliberate, documented scope
+   limit — expected to be configured out-of-band on the target server
+   itself.
+2. **Session storage is `sessionStorage`**, not an httpOnly cookie — a
    narrower exposure window than `localStorage`, but still script-readable.
-4. **No key-rotation tooling** for the secret-encryption key — see the
+3. **No key-rotation tooling** for the secret-encryption key — see the
    [Installation Guide](installation-guide.md#3-configure-environment-variables).
-5. **No backup automation baked into the platform itself** — a script and
+4. **No backup automation baked into the platform itself** — a script and
    documented schedule are provided (see the
    [Installation Guide](installation-guide.md#backup)), but nothing runs it
    for you; you wire it into your own cron/scheduler.
-6. **Container monitoring has no UI yet** — the backend (permissions,
-   validation, audit) is real and tested; there's no dedicated frontend
-   page for it, consistent with it currently always reporting "unreachable"
-   anyway (see gap 1).
 
 None of these are silently worked around — each one fails honestly (a
 clear error, or an explicit "not implemented" exception) rather than

@@ -10,7 +10,6 @@ namespace DevOpsPortal.Domain.Entities;
 public class AllowedDeploymentRoot
 {
     public Guid Id { get; set; } = Guid.NewGuid();
-    public Guid TenantId { get; set; }
 
     public Guid TargetServerId { get; set; }
     public TargetServer TargetServer { get; set; } = null!;

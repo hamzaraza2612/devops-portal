@@ -1,22 +1,23 @@
 import { api } from './client';
 import type {
+  AdminResetPasswordRequest,
   AllowedDeploymentRootDto,
   ApplicationDto,
   ApplicationEnvironmentDto,
   AuditLogDto,
   BuildConfigurationDto,
   BuildServerDto,
+  ChangeOwnPasswordRequest,
+  ContainerActionResultDto,
+  ContainerEnvironmentStatusDto,
   CreateAllowedDeploymentRootRequest,
   CreateApplicationRequest,
   CreateBuildServerRequest,
   CreateDevDeploymentRequest,
   CreatePromotionRequest,
   CreateRepositoryRequest,
-  CreateRoleRequest,
   CreateSecretReferenceRequest,
   CreateTargetServerRequest,
-  CreateTenantRequest,
-  CreateTenantResponse,
   CreateUserRequest,
   DecidePromotionRequest,
   DeploymentDto,
@@ -29,23 +30,25 @@ import type {
   LoginRequest,
   LoginResponse,
   PagedResult,
-  PermissionDto,
   PromotionRequestDto,
+  RecreateWithVolumesRequest,
+  ReleaseDto,
+  RepositoryConnectionTestResultDto,
   RepositoryDto,
   RevealedSecretDto,
-  RoleDto,
   RollbackRequest,
   SecretCategory,
   SecretReferenceDto,
+  SetRepositoryAccessTokenRequest,
+  SetSshCredentialRequest,
+  SetSshPassphraseRequest,
+  TargetServerConnectionTestResultDto,
   TargetServerDto,
-  TenantDto,
   UpdateApplicationRequest,
   UpdateBuildServerRequest,
   UpdateRepositoryRequest,
-  UpdateRoleRequest,
   UpdateSecretReferenceRequest,
   UpdateTargetServerRequest,
-  UpdateTenantRequest,
   UpdateUserRequest,
   UpsertApplicationEnvironmentRequest,
   UserDto,
@@ -92,6 +95,21 @@ export const ApplicationsApi = {
 
   buildConfiguration: (applicationId: string) =>
     api.get<BuildConfigurationDto | null>(`/applications/${applicationId}/build-configuration`),
+
+  releases: (applicationId: string) => api.get<ReleaseDto[]>(`/applications/${applicationId}/releases`),
+
+  // --- Live container status/control (master requirements §8/§9/§10) ---
+  containerStatus: (applicationId: string, environmentDefinitionId: string) =>
+    api.get<ContainerEnvironmentStatusDto>(`/applications/${applicationId}/environments/${environmentDefinitionId}/containers`),
+  restartContainers: (applicationId: string, environmentDefinitionId: string) =>
+    api.post<ContainerActionResultDto>(`/applications/${applicationId}/environments/${environmentDefinitionId}/containers/restart`),
+  startContainers: (applicationId: string, environmentDefinitionId: string) =>
+    api.post<ContainerActionResultDto>(`/applications/${applicationId}/environments/${environmentDefinitionId}/containers/start`),
+  stopContainers: (applicationId: string, environmentDefinitionId: string) =>
+    api.post<ContainerActionResultDto>(`/applications/${applicationId}/environments/${environmentDefinitionId}/containers/stop`),
+  /** docker compose down -v / up -d — destroys volumes; requires an explicit Confirm: true. */
+  recreateContainers: (applicationId: string, environmentDefinitionId: string, body: RecreateWithVolumesRequest) =>
+    api.post<ContainerActionResultDto>(`/applications/${applicationId}/environments/${environmentDefinitionId}/containers/recreate`, body),
 };
 
 export const DeploymentsApi = {
@@ -130,25 +148,13 @@ export const EnvironmentsApi = {
   list: () => api.get<EnvironmentDefinitionDto[]>('/environments'),
 };
 
-export const TenantsApi = {
-  list: () => api.get<TenantDto[]>('/tenants'),
-  get: (id: string) => api.get<TenantDto>(`/tenants/${id}`),
-  create: (body: CreateTenantRequest) => api.post<CreateTenantResponse>('/tenants', body),
-  update: (id: string, body: UpdateTenantRequest) => api.put<TenantDto>(`/tenants/${id}`, body),
-};
-
-export const RolesApi = {
-  list: () => api.get<RoleDto[]>('/roles'),
-  permissions: () => api.get<PermissionDto[]>('/roles/permissions'),
-  create: (body: CreateRoleRequest) => api.post<RoleDto>('/roles', body),
-  update: (id: string, body: UpdateRoleRequest) => api.put<RoleDto>(`/roles/${id}`, body),
-};
-
 export const UsersApi = {
   list: () => api.get<UserDto[]>('/users'),
   get: (id: string) => api.get<UserDto>(`/users/${id}`),
   create: (body: CreateUserRequest) => api.post<UserDto>('/users', body),
   update: (id: string, body: UpdateUserRequest) => api.put<UserDto>(`/users/${id}`, body),
+  resetPassword: (id: string, body: AdminResetPasswordRequest) => api.post<void>(`/users/${id}/reset-password`, body),
+  changeOwnPassword: (body: ChangeOwnPasswordRequest) => api.post<void>('/users/me/change-password', body),
 };
 
 export const RepositoriesApi = {
@@ -156,6 +162,10 @@ export const RepositoriesApi = {
   get: (id: string) => api.get<RepositoryDto>(`/repositories/${id}`),
   create: (body: CreateRepositoryRequest) => api.post<RepositoryDto>('/repositories', body),
   update: (id: string, body: UpdateRepositoryRequest) => api.put<RepositoryDto>(`/repositories/${id}`, body),
+  setAccessToken: (id: string, body: SetRepositoryAccessTokenRequest) =>
+    api.put<RepositoryDto>(`/repositories/${id}/access-token`, body),
+  /** Master requirements §3 "Test GitLab Connection" — actually reaches GitLab; never fabricated. */
+  testConnection: (id: string) => api.post<RepositoryConnectionTestResultDto>(`/repositories/${id}/test-connection`),
 };
 
 export const TargetServersApi = {
@@ -165,6 +175,10 @@ export const TargetServersApi = {
   update: (id: string, body: UpdateTargetServerRequest) => api.put<TargetServerDto>(`/target-servers/${id}`, body),
   addAllowedRoot: (targetServerId: string, body: CreateAllowedDeploymentRootRequest) =>
     api.post<AllowedDeploymentRootDto>(`/target-servers/${targetServerId}/allowed-roots`, body),
+  setSshCredential: (id: string, body: SetSshCredentialRequest) => api.put<TargetServerDto>(`/target-servers/${id}/ssh-credential`, body),
+  setSshPassphrase: (id: string, body: SetSshPassphraseRequest) => api.put<TargetServerDto>(`/target-servers/${id}/ssh-passphrase`, body),
+  /** Master requirements §6 "Test Connection" — actually connects over SSH; never fabricated. */
+  testConnection: (id: string) => api.post<TargetServerConnectionTestResultDto>(`/target-servers/${id}/test-connection`),
 };
 
 export const BuildServersApi = {

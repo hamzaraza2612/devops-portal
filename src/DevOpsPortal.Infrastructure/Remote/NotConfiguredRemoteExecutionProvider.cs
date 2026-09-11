@@ -5,19 +5,19 @@ using Microsoft.Extensions.Logging;
 namespace DevOpsPortal.Infrastructure.Remote;
 
 /// <summary>
-/// The only <see cref="IRemoteExecutionProvider"/> registered today. No secure
-/// remote execution mechanism exists yet for this deployment topology (the
-/// portal runs on its own VM, separate from every TargetServer — see
-/// PROJECT_STATE.md's Phase 5 remote-execution correction) — no SSH credential
-/// vault, no per-target-server agent. Rather than falling back to running
+/// Kept as a defensively-honest reference implementation of
+/// <see cref="IRemoteExecutionProvider"/>: unlike falling back to running
 /// `docker`/`docker compose` as a *local* process (which would silently
 /// inspect/control whatever the portal container itself can see — almost
 /// certainly nothing, and never the actual configured TargetServer — while
-/// looking like it worked), this provider is honest: every target server is
-/// reported unreachable, and no method here ever spawns a process. Swap the DI
-/// registration for a real implementation once secure remote connectivity is
-/// built (SSH-based or agent-based); nothing above this interface needs to
-/// change.
+/// looking like it worked), every method here reports the target server as
+/// unreachable and never spawns a process. Phase 12 replaced this as the
+/// registered <see cref="IRemoteExecutionProvider"/> with
+/// <c>SshRemoteExecutionProvider</c>, which is real once a TargetServer has
+/// SSH credentials configured — this class stays available (and its shape is
+/// still what any future non-SSH provider, e.g. an agent-based one, should
+/// match) for a TargetServer that has no SSH connection details configured at
+/// all, and for tests.
 /// </summary>
 public class NotConfiguredRemoteExecutionProvider(ILogger<NotConfiguredRemoteExecutionProvider> logger) : IRemoteExecutionProvider
 {
@@ -35,6 +35,9 @@ public class NotConfiguredRemoteExecutionProvider(ILogger<NotConfiguredRemoteExe
     public Task<RemoteContainerInspectResult> InspectContainerAsync(
         TargetServer targetServer, string containerName, CancellationToken cancellationToken = default) =>
         Task.FromResult(new RemoteContainerInspectResult(false, string.Empty, UnconfiguredMessage(targetServer)));
+
+    public Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new RemoteConnectionTestResult(false, null, null, false, null, false, null, UnconfiguredMessage(targetServer)));
 
     private static string UnconfiguredMessage(TargetServer targetServer) =>
         $"No remote execution mechanism is configured for target server '{targetServer.Name}'. " +

@@ -1,6 +1,7 @@
 using DevOpsPortal.Domain.Entities;
 using DevOpsPortal.Domain.Enums;
 using DevOpsPortal.Infrastructure.Git;
+using DevOpsPortal.Tests.Common;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -9,7 +10,7 @@ namespace DevOpsPortal.Tests.Git;
 public class GitLabProviderClientTests
 {
     private static GitLabProviderClient CreateSut() =>
-        new(new HttpClient(), NullLogger<GitLabProviderClient>.Instance);
+        new(new HttpClient(), new FakeSecretProvider(), NullLogger<GitLabProviderClient>.Instance);
 
     [Fact]
     public async Task GetLatestCommitAsync_WithInvalidRepositoryUrl_ReturnsFail()

@@ -18,7 +18,7 @@ namespace DevOpsPortal.Tests.Deployments;
 public class DeploymentExecutorTests
 {
     private static async Task<(DeploymentExecutor Sut, AppDbContext Db, Deployment Deployment, FakeNotificationService Notifications)> CreateSutAsync(
-        IComposeCommandExecutor composeExecutor, IHealthCheckProbe healthProbe,
+        IRemoteExecutionProvider remoteExecutionProvider, IHealthCheckProbe healthProbe,
         ISecretReferenceService? secretReferenceService = null, FakeNotificationService? notificationService = null,
         IConfiguration? configuration = null)
     {
@@ -28,7 +28,13 @@ public class DeploymentExecutorTests
         var app = new ManagedApplication { Name = "Sample", Slug = "sample", DeploymentMode = DeploymentMode.LegacyFilesystem };
         db.Applications.Add(app);
 
-        var server = new TargetServer { Name = "server-1", IsActive = true };
+        // Hostname/SshUsername/SshCredentialStoreKey are only here so
+        // IRemoteExecutionProvider.IsConfigured(appEnv.TargetServer) is true —
+        // the fakes below never actually open an SSH connection.
+        var server = new TargetServer
+        {
+            Name = "server-1", IsActive = true, Hostname = "10.0.0.1", SshUsername = "deploy", SshCredentialStoreKey = "fake-key",
+        };
         server.AllowedDeploymentRoots.Add(new AllowedDeploymentRoot { RootPath = "/tmp", IsActive = true, TargetServerId = server.Id });
         db.TargetServers.Add(server);
         await db.SaveChangesAsync();
@@ -62,10 +68,10 @@ public class DeploymentExecutorTests
         db.Deployments.Add(deployment);
         await db.SaveChangesAsync();
 
-        var audit = new AuditService(db, new FakeCurrentUserService(), new FakeCurrentTenantService());
+        var audit = new AuditService(db, new FakeCurrentUserService());
         var notifications = notificationService ?? new FakeNotificationService();
         var sut = new DeploymentExecutor(
-            db, composeExecutor, healthProbe, audit, secretReferenceService ?? new FakeSecretReferenceService(), notifications,
+            db, remoteExecutionProvider, healthProbe, audit, secretReferenceService ?? new FakeSecretReferenceService(), notifications,
             configuration ?? new FakeConfiguration(), NullLogger<DeploymentExecutor>.Instance);
         return (sut, db, deployment, notifications);
     }
@@ -73,7 +79,7 @@ public class DeploymentExecutorTests
     [Fact]
     public async Task ExecuteAsync_WhenComposeUpSucceedsAndHealthPasses_MarksSucceeded()
     {
-        var (sut, db, deployment, _) = await CreateSutAsync(new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(true));
+        var (sut, db, deployment, _) = await CreateSutAsync(new FakeRemoteExecutionProvider(true, true), new FakeHealthCheckProbe(true));
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
 
@@ -87,7 +93,7 @@ public class DeploymentExecutorTests
     [Fact]
     public async Task ExecuteAsync_WhenComposeUpFails_MarksFailed()
     {
-        var (sut, db, deployment, _) = await CreateSutAsync(new FakeComposeCommandExecutor(true, false), new FakeHealthCheckProbe(true));
+        var (sut, db, deployment, _) = await CreateSutAsync(new FakeRemoteExecutionProvider(true, false), new FakeHealthCheckProbe(true));
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
 
@@ -100,7 +106,7 @@ public class DeploymentExecutorTests
     public async Task ExecuteAsync_WhenComposeCommandHangsPastTheConfiguredTimeout_MarksFailedWithTimeoutReason()
     {
         var (sut, db, deployment, _) = await CreateSutAsync(
-            new HangingComposeCommandExecutor(), new FakeHealthCheckProbe(true),
+            new HangingRemoteExecutionProvider(), new FakeHealthCheckProbe(true),
             configuration: new FakeConfiguration(executionTimeoutMinutes: "0.0005")); // ~30ms
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
@@ -113,7 +119,7 @@ public class DeploymentExecutorTests
     [Fact]
     public async Task ExecuteAsync_WhenHealthCheckFails_MarksFailedNotSucceeded()
     {
-        var (sut, db, deployment, _) = await CreateSutAsync(new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(false));
+        var (sut, db, deployment, _) = await CreateSutAsync(new FakeRemoteExecutionProvider(true, true), new FakeHealthCheckProbe(false));
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
 
@@ -126,7 +132,7 @@ public class DeploymentExecutorTests
     [Fact]
     public async Task ExecuteAsync_SanitizesSecretsBeforePersistingLogs()
     {
-        var composeExecutor = new FakeComposeCommandExecutor(true, true, upStdErr: "DB_PASSWORD=hunter2 leaked in output");
+        var composeExecutor = new FakeRemoteExecutionProvider(true, true, upStdErr: "DB_PASSWORD=hunter2 leaked in output");
         var (sut, db, deployment, _) = await CreateSutAsync(composeExecutor, new FakeHealthCheckProbe(true));
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
@@ -139,7 +145,7 @@ public class DeploymentExecutorTests
     [Fact]
     public async Task ExecuteAsync_ProducesSequentialLogEntries()
     {
-        var (sut, db, deployment, _) = await CreateSutAsync(new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(true));
+        var (sut, db, deployment, _) = await CreateSutAsync(new FakeRemoteExecutionProvider(true, true), new FakeHealthCheckProbe(true));
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
 
@@ -151,7 +157,7 @@ public class DeploymentExecutorTests
     [Fact]
     public async Task ExecuteAsync_PassesResolvedSecretsAsProcessEnvironmentVariables_NeverAsArguments()
     {
-        var composeExecutor = new FakeComposeCommandExecutor(true, true);
+        var composeExecutor = new FakeRemoteExecutionProvider(true, true);
         var secretService = new FakeSecretReferenceService(new Dictionary<string, string> { ["DB_PASSWORD"] = "hunter2" });
         var (sut, db, deployment, _) = await CreateSutAsync(composeExecutor, new FakeHealthCheckProbe(true), secretService);
 
@@ -169,7 +175,7 @@ public class DeploymentExecutorTests
     [Fact]
     public async Task ExecuteAsync_RedactsResolvedSecretValueFromComposeOutput_EvenWithoutKeyValueShape()
     {
-        var composeExecutor = new FakeComposeCommandExecutor(true, true, upStdErr: "connecting with password hunter2 to db host");
+        var composeExecutor = new FakeRemoteExecutionProvider(true, true, upStdErr: "connecting with password hunter2 to db host");
         var secretService = new FakeSecretReferenceService(new Dictionary<string, string> { ["DB_PASSWORD"] = "hunter2" });
         var (sut, db, deployment, _) = await CreateSutAsync(composeExecutor, new FakeHealthCheckProbe(true), secretService);
 
@@ -183,7 +189,7 @@ public class DeploymentExecutorTests
     [Fact]
     public async Task ExecuteAsync_WhenSecretResolutionFails_MarksFailed_NeverCallsCompose()
     {
-        var composeExecutor = new FakeComposeCommandExecutor(true, true);
+        var composeExecutor = new FakeRemoteExecutionProvider(true, true);
         var secretService = new FakeSecretReferenceService(resolveError: "Failed to resolve secret 'db-password' for this deployment.");
         var (sut, db, deployment, _) = await CreateSutAsync(composeExecutor, new FakeHealthCheckProbe(true), secretService);
 
@@ -198,7 +204,7 @@ public class DeploymentExecutorTests
     [Fact]
     public async Task ExecuteAsync_AlreadyRunningDeployment_IsSkipped()
     {
-        var (sut, db, deployment, _) = await CreateSutAsync(new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(true));
+        var (sut, db, deployment, _) = await CreateSutAsync(new FakeRemoteExecutionProvider(true, true), new FakeHealthCheckProbe(true));
         deployment.Status = DeploymentStatus.Running;
         await db.SaveChangesAsync();
 
@@ -211,7 +217,7 @@ public class DeploymentExecutorTests
     [Fact]
     public async Task ExecuteAsync_WhenSucceeds_NotifiesStartedThenOutcome()
     {
-        var (sut, db, deployment, notifications) = await CreateSutAsync(new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(true));
+        var (sut, db, deployment, notifications) = await CreateSutAsync(new FakeRemoteExecutionProvider(true, true), new FakeHealthCheckProbe(true));
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
 
@@ -223,7 +229,7 @@ public class DeploymentExecutorTests
     [Fact]
     public async Task ExecuteAsync_WhenFails_StillNotifiesStartedAndOutcome()
     {
-        var (sut, db, deployment, notifications) = await CreateSutAsync(new FakeComposeCommandExecutor(true, false), new FakeHealthCheckProbe(true));
+        var (sut, db, deployment, notifications) = await CreateSutAsync(new FakeRemoteExecutionProvider(true, false), new FakeHealthCheckProbe(true));
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
 
@@ -237,7 +243,7 @@ public class DeploymentExecutorTests
     {
         var notifications = new FakeNotificationService { ThrowOnStarted = true, ThrowOnOutcome = true };
         var (sut, db, deployment, _) = await CreateSutAsync(
-            new FakeComposeCommandExecutor(true, true), new FakeHealthCheckProbe(true), notificationService: notifications);
+            new FakeRemoteExecutionProvider(true, true), new FakeHealthCheckProbe(true), notificationService: notifications);
 
         await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
 
@@ -245,28 +251,44 @@ public class DeploymentExecutorTests
         Assert.Equal(DeploymentStatus.Succeeded, updated!.Status);
     }
 
-    private sealed class FakeComposeCommandExecutor(bool downSucceeds, bool upSucceeds, string? upStdErr = null) : IComposeCommandExecutor
+    private sealed class FakeRemoteExecutionProvider(bool downSucceeds, bool upSucceeds, string? upStdErr = null) : IRemoteExecutionProvider
     {
         public List<ComposeCommandRequest> Requests { get; } = [];
 
-        public Task<ComposeCommandResult> RunAsync(ComposeCommandRequest request, CancellationToken cancellationToken = default)
+        public bool IsConfigured(TargetServer targetServer) => true;
+
+        public Task<ComposeCommandResult> RunComposeAsync(TargetServer targetServer, ComposeCommandRequest request, CancellationToken cancellationToken = default)
         {
             Requests.Add(request);
             var success = request.Operation == ComposeOperation.Up ? upSucceeds : downSucceeds;
             var stderr = request.Operation == ComposeOperation.Up ? upStdErr ?? string.Empty : string.Empty;
             return Task.FromResult(new ComposeCommandResult(success, success ? 0 : 1, "stdout", success ? stderr : "compose failed" + stderr));
         }
+
+        public Task<RemoteContainerInspectResult> InspectContainerAsync(TargetServer targetServer, string containerName, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     /// <summary>Never completes on its own — only responds to cancellation. Used to
     /// simulate a stuck `docker compose up` for the execution-timeout test.</summary>
-    private sealed class HangingComposeCommandExecutor : IComposeCommandExecutor
+    private sealed class HangingRemoteExecutionProvider : IRemoteExecutionProvider
     {
-        public async Task<ComposeCommandResult> RunAsync(ComposeCommandRequest request, CancellationToken cancellationToken = default)
+        public bool IsConfigured(TargetServer targetServer) => true;
+
+        public async Task<ComposeCommandResult> RunComposeAsync(TargetServer targetServer, ComposeCommandRequest request, CancellationToken cancellationToken = default)
         {
             await Task.Delay(Timeout.Infinite, cancellationToken);
             throw new InvalidOperationException("Unreachable — Task.Delay(Infinite) only returns via cancellation.");
         }
+
+        public Task<RemoteContainerInspectResult> InspectContainerAsync(TargetServer targetServer, string containerName, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     private sealed class FakeHealthCheckProbe(bool passed) : IHealthCheckProbe

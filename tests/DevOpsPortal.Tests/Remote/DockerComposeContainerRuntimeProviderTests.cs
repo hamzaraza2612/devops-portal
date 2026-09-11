@@ -183,5 +183,8 @@ public class DockerComposeContainerRuntimeProviderTests
 
         public Task<RemoteContainerInspectResult> InspectContainerAsync(TargetServer targetServer, string containerName, CancellationToken cancellationToken = default) =>
             Task.FromResult(new RemoteContainerInspectResult(inspectSuccess, inspectSuccess ? inspectJson : string.Empty, inspectSuccess ? null : "inspect failed"));
+
+        public Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new RemoteConnectionTestResult(isConfigured, null, null, false, null, false, null, isConfigured ? null : "not configured"));
     }
 }

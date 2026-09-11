@@ -14,4 +14,13 @@ public interface ITargetServerService
 
     Task<AllowedDeploymentRootDto> UpdateAllowedRootAsync(
         Guid targetServerId, Guid rootId, UpdateAllowedDeploymentRootRequest request, CancellationToken cancellationToken = default);
+
+    Task<TargetServerDto> SetSshCredentialAsync(Guid id, SetSshCredentialRequest request, CancellationToken cancellationToken = default);
+
+    Task<TargetServerDto> SetSshPassphraseAsync(Guid id, SetSshPassphraseRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>Master requirements §6 "Test Connection": actually connects to the
+    /// target server over SSH and verifies connectivity, the authenticated user, and
+    /// Docker/Compose availability — never fabricates a successful result.</summary>
+    Task<TargetServerConnectionTestResultDto> TestConnectionAsync(Guid id, CancellationToken cancellationToken = default);
 }
