@@ -7,23 +7,27 @@ import { Permissions } from '../../auth/permissions';
 import { useAuth } from '../../auth/AuthContext';
 import { BuildProviderType, type BuildServerDto } from '../../types/api';
 
-/** "Integrations": build-provider connections (Jenkins today; the
- * IBuildProvider abstraction supports adding others without touching this
- * page). Never stores or returns a credential — only the name of a
- * server-side environment variable holding the API token. */
+/** Build-provider connections (Jenkins today; the IBuildProvider
+ * abstraction supports adding others without touching this page). Named
+ * for what it actually manages — labeling this "Integrations" in the nav
+ * read as a broader settings hub (GitLab/SMTP/notifications) than exists;
+ * those are configured elsewhere (Repositories, and SMTP/notifications are
+ * environment-variable-only — see the Installation Guide) or not yet built.
+ * Never stores or returns a credential — only the name of a server-side
+ * environment variable holding the API token. */
 export function BuildServersPage() {
   const { data, isLoading, error, reload } = useAsyncData(BuildServersApi.list, []);
   const { can } = useAuth();
   const [showCreate, setShowCreate] = useState(false);
 
-  if (isLoading) return <LoadingSpinner label="Loading integrations…" />;
+  if (isLoading) return <LoadingSpinner label="Loading build servers…" />;
   if (error) return <ErrorBanner message={error} onDismiss={reload} />;
   if (!data) return null;
 
   return (
     <div>
       <PageHeader
-        title="Integrations"
+        title="Build Servers"
         subtitle="Configured build servers (e.g. Jenkins instances) applications can build from source through."
         actions={
           can(Permissions.BuildServersManage) && (
