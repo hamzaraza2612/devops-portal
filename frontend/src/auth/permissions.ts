@@ -20,6 +20,9 @@ export const Permissions = {
   EnvironmentsView: 'environments.view',
   BuildServersView: 'buildservers.view',
   BuildServersManage: 'buildservers.manage',
+  SecretsView: 'secrets.view',
+  SecretsReveal: 'secrets.reveal',
+  SecretsManage: 'secrets.manage',
 
   DeploymentsView: 'deployments.view',
   DeploymentsDeployDev: 'deployments.deploy.dev',

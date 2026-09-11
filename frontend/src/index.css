@@ -12,8 +12,13 @@ body {
   @apply bg-slate-50 text-slate-900 antialiased;
 }
 
-a {
-  color: inherit;
+/* @layer base (not plain CSS): plain, unlayered rules always beat Tailwind's
+   @layer utilities regardless of specificity, which would make every text-*
+   color utility on an <a> (e.g. the sidebar nav links) silently no-op. */
+@layer base {
+  a {
+    color: inherit;
+  }
 }
 
 /* Compact, readable monospace block for deployment logs. */

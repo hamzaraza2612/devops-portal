@@ -31,6 +31,24 @@ public class PromotionRequest
     /// <summary>Denormalized from SourceDeployment for quick display/audit; always kept in sync at creation.</summary>
     public string CommitSha { get; set; } = string.Empty;
 
+    /// <summary>Snapshot, at request time, of FromEnvironmentDefinition/ToEnvironmentDefinition's
+    /// configured ApplicationEnvironment.BranchName for this application — the git branches this
+    /// promotion moves code between (e.g. "develop" -> "qa"). Null when either environment has no
+    /// branch configured; that's a valid, supported configuration (branch promotion is then simply
+    /// skipped — see BranchPromotionSucceeded), not an error.</summary>
+    public string? FromBranch { get; set; }
+    public string? ToBranch { get; set; }
+
+    /// <summary>Null = branch promotion was not attempted (FromBranch/ToBranch missing, or the
+    /// application has no configured Repository). True/false = attempted, and its outcome — never
+    /// blocks the request itself succeeding (same "external integration failure never gates the
+    /// workflow" principle Phase 3 established for notifications and commit lookup).</summary>
+    public bool? BranchPromotionSucceeded { get; set; }
+
+    /// <summary>Sanitized (LogSanitizer), non-secret detail — the resulting merge commit SHA on
+    /// success, or a short failure reason on failure. Never raw provider output.</summary>
+    public string? BranchPromotionDetail { get; set; }
+
     public ApprovalStatus Status { get; set; } = ApprovalStatus.PendingApproval;
 
     public Guid RequestedByUserId { get; set; }

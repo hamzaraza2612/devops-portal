@@ -236,6 +236,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options, ICurrentTenant
             b.HasIndex(s => new { s.ApplicationId, s.EnvironmentDefinitionId });
             b.HasIndex(s => s.TenantId);
             b.Property(s => s.Name).HasMaxLength(200).IsRequired();
+            b.Property(s => s.Username).HasMaxLength(200);
+            b.Property(s => s.Host).HasMaxLength(255);
+            b.Property(s => s.DatabaseName).HasMaxLength(200);
             b.Property(s => s.ProviderKey).HasMaxLength(100).IsRequired();
             b.Property(s => s.StoreKey).HasMaxLength(100).IsRequired();
             b.HasOne(s => s.Application).WithMany()
@@ -299,6 +302,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options, ICurrentTenant
         {
             b.Property(p => p.CommitSha).HasMaxLength(64).IsRequired();
             b.Property(p => p.ApprovalTokenHash).HasMaxLength(100).IsRequired();
+            b.Property(p => p.FromBranch).HasMaxLength(200);
+            b.Property(p => p.ToBranch).HasMaxLength(200);
+            b.Property(p => p.BranchPromotionDetail).HasMaxLength(500);
             b.HasIndex(p => new { p.ApplicationId, p.ToEnvironmentDefinitionId, p.Status });
             b.HasIndex(p => p.ApprovalTokenHash).IsUnique();
             b.HasIndex(p => p.TenantId);

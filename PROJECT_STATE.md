@@ -2680,6 +2680,132 @@ creation).
   login — where the filter would otherwise hide a legitimate result).
   Confirmed safe by `TenantIsolationTests` and the full existing suite.
 
+### Phase 9 addendum — branch promotion, credentials, environment-focused UI
+
+Done, same branch/PR as Phase 9 above (not a new phase). Clarifies and
+extends the promotion workflow, adds a "Credentials" capability, and
+reworks the frontend into a sidebar-navigated, environment-focused SaaS
+layout, per explicit follow-up instruction.
+
+**Promote vs. deploy — confirmed, not changed.** The exact workflow asked
+for (developer deploys DEV explicitly; "Go Ahead to QA/UAT/Production"
+only promotes, never deploys; QA/UAT/Production each require their own
+explicit Deploy click; Production additionally needs CTO approval before
+its Deploy click is enabled) was already exactly what
+`IDeploymentService`/`DeploymentService` implemented since Phase 3
+(`RequestPromotionAsync` → `ApprovePromotionAsync` → separate
+`DeployApprovedPromotionAsync`, `DeployToDevAsync` as DEV's only direct
+entry point). Verified by re-reading the state machine and interface doc
+comments; only the frontend button label changed ("Request {tier}
+promotion" → "Go Ahead to {tier}") to match the requested terminology
+exactly — no backend behavior changed.
+
+**Git branch promotion** is now a first-class, traceable part of
+`RequestPromotionAsync`, built on top of `ApplicationEnvironment.BranchName`
+(already configurable per application/environment — no new configuration
+surface needed) rather than inventing a parallel branch model:
+`PromotionRequest` gained `FromBranch`/`ToBranch` (a snapshot, at request
+time, of both environments' configured branch names) and
+`BranchPromotionSucceeded`/`BranchPromotionDetail`. `IGitProviderClient`
+gained `PromoteBranchAsync(repository, sourceBranch, targetBranch)`;
+`GitLabProviderClient` implements it via GitLab's merge-request API
+(create — or reuse an already-open one on 409 — then accept), requiring
+the same `AccessTokenEnvVarName` write-capable token pattern
+`GetLatestCommitAsync` already uses for auth. Never blocks the DB-level
+workflow: a missing repository/branch config or a real Git failure (no
+token, merge conflict, GitLab unreachable) is recorded on the
+`PromotionRequest` and surfaced in the UI (`PromotionCard`), but the
+promotion request itself still succeeds — same "external integration
+failure never gates the workflow" principle Phase 3 established for
+notifications and commit lookup. `BranchPromotionDetail` is
+`LogSanitizer.Sanitize`d before storage, same as deployment log output.
+
+**Credentials** ("Developers and QA frequently ask DevOps for
+credentials") reuses `SecretReference`/`ISecretProvider` entirely rather
+than adding a parallel entity — `SecretReference` gained four plain,
+non-secret display columns (`Username`, `Host`, `Port`, `DatabaseName`);
+the actual secret value still only ever lives behind `ISecretProvider`,
+addressed by the existing `ProviderKey`/`StoreKey`. The one deliberate,
+narrow exception to "no method returns a plaintext value to a
+controller": `ISecretReferenceService.RevealAsync` / `POST
+/api/secrets/{id}/reveal`, gated by a new `secrets.reveal` permission
+**distinct from** `secrets.view` (view sees metadata only; reveal sees
+the actual value — an org can grant one without the other), and audited
+as `secret.revealed` with the same scope-description detail
+`secret.referenced` already uses — never the value itself, never
+`AuditLog`. `secrets.reveal` was added to the Developer/QA/UAT/DevOps
+default role grants (alongside `secrets.view`) so the exact pain point
+described ("frequently ask DevOps") is addressed by default, not just
+made theoretically possible; an org can tighten this via the Roles UI.
+The frontend's `CredentialsPage` never fetches a value until the viewer
+explicitly clicks "Show password" (one credential at a time, via
+`ActionButton`, never preloaded or cached).
+
+**Environment-focused UI.** `EnvironmentsPage` (all four tiers at a
+glance) is unchanged and remains the landing overview; a new
+`EnvironmentDashboardPage` (`/environments/:tier`) gives each environment
+its own fully separated view — applications currently deployed there,
+their commit/status/requester, and (reusing `PromotionCard`, not a
+duplicate) anything pending that environment's action — exactly the
+per-environment example format specified (application → release/commit →
+status → requested by → action). `Layout` was rewritten from a top nav
+bar to a fixed, collapsible-on-mobile sidebar (dark `slate-900`, blue-600
+active-item accent, grouped into primary nav / Environments (color-dot
+per tier) / Administration), a closer professional-SaaS-dashboard
+treatment per the Techbey-inspired direction requested — content area
+(white cards on `slate-50`) is unchanged, so this was a navigation
+restructuring, not a full component-library rewrite.
+
+**A real, pre-existing CSS bug was caught by live Playwright verification
+and fixed**, not merely reported: `index.css` had `a { color: inherit; }`
+as plain, unlayered CSS. Tailwind v4 puts its utility classes in
+`@layer utilities`; per the CSS Cascade Layers spec, *unlayered* rules
+always beat *layered* ones regardless of selector specificity — so that
+one line silently overrode every `text-*` color utility ever applied to
+an `<a>`/`NavLink` anywhere in the app. It had been invisible because the
+old top nav's white background happened to make the inherited near-black
+body text readable by accident; the new dark sidebar made every nav
+link's text render in the same color as its own background. Fixed by
+moving the rule into `@layer base`, restoring the intended cascade
+(utilities > base) everywhere in the app, not just the sidebar. Caught by
+taking an actual screenshot during smoke verification, not just checking
+HTTP status codes — worth calling out since it would not have surfaced
+from either backend tests or a build/typecheck pass.
+
+**New migration**: `Phase9b_BranchPromotionAndCredentials` (additive
+only — four nullable columns on `PromotionRequests`, four nullable
+columns on `SecretReferences`, three new global permission codes seeded
+by the existing generic `PermissionCodes.All` loop). Verified with a live
+`dotnet ef database update` against a fresh Postgres 16 instance and
+`dotnet ef migrations has-pending-model-changes` (none).
+
+**New tests**: `BranchPromotionTests` (4 — success/failure/no-repository/
+no-branches-configured, all confirming the DB-level workflow is never
+blocked) and four new cases in `SecretReferenceServiceTests` (reveal
+requires `secrets.reveal` even with `secrets.view`; reveal returns the
+correct value; reveal audits without the value; structured fields
+round-trip through Create/Get). 333/333 backend tests pass (325 prior +
+8 new), 38/38 frontend tests pass (2 existing `PromotionRequestDto` test
+fixtures updated for the new fields).
+
+**Known limitations (this addendum):**
+- Branch promotion's merge-request-based approach means a genuine merge
+  conflict is surfaced as a failure (`BranchPromotionSucceeded = false`,
+  detail names the conflict) rather than auto-resolved — this is
+  intentional (an automatic conflict resolution would be far riskier than
+  reporting it), but there is no in-portal conflict-resolution UI; an
+  operator resolves it directly in GitLab, same as they would today.
+- `RevealAsync` reveals to anyone holding the (org-configurable)
+  `secrets.reveal` permission platform-wide within their tenant — it is
+  not further scoped per-environment/per-application the way deployment
+  permissions are (matches the pre-existing `secrets.view`/`secrets.manage`
+  model exactly; not a new limitation, just inherited).
+- The sidebar redesign restructured navigation only; it did not touch
+  `ApplicationsListPage`'s "manage via the API/admin tooling" placeholder
+  or add inline create/edit forms to pages this addendum didn't otherwise
+  touch (Applications itself still has no inline create form — unchanged
+  from before this addendum, and out of the requested scope).
+
 ## Production-critical gaps / next implementation
 
 Carried forward, unresolved, and deliberately **not** touched by Phase 9

@@ -25,6 +25,7 @@ public class SecretReferenceServiceTests
         EnvironmentDefinition QaEnv,
         Guid ManageUserId,
         Guid ViewOnlyUserId,
+        Guid RevealUserId,
         Guid NoPermissionUserId);
 
     private static async Task<Fixture> CreateFixtureAsync()
@@ -47,11 +48,12 @@ public class SecretReferenceServiceTests
             db, Options.Create(new SecretEncryptionSettings { EncryptionKey = "0123456789abcdef0123456789abcdef" }), NullLogger<EncryptedSecretProvider>.Instance);
         var sut = new SecretReferenceService(db, currentUser, currentTenant, audit, secretProvider);
 
-        var manageUserId = await TestDb.CreateUserWithPermissionsAsync(db, "devops", PermissionCodes.SecretsView, PermissionCodes.SecretsManage);
+        var manageUserId = await TestDb.CreateUserWithPermissionsAsync(db, "devops", PermissionCodes.SecretsView, PermissionCodes.SecretsReveal, PermissionCodes.SecretsManage);
         var viewOnlyUserId = await TestDb.CreateUserWithPermissionsAsync(db, "viewer", PermissionCodes.SecretsView);
+        var revealUserId = await TestDb.CreateUserWithPermissionsAsync(db, "revealer", PermissionCodes.SecretsView, PermissionCodes.SecretsReveal);
         var noPermissionUserId = await TestDb.CreateUserWithPermissionsAsync(db, "developer", PermissionCodes.ApplicationsView);
 
-        return new Fixture(sut, db, currentUser, app, devEnv, qaEnv, manageUserId, viewOnlyUserId, noPermissionUserId);
+        return new Fixture(sut, db, currentUser, app, devEnv, qaEnv, manageUserId, viewOnlyUserId, revealUserId, noPermissionUserId);
     }
 
     // -------------------------------------------------------------- authorization / unauthorized access
@@ -393,5 +395,69 @@ public class SecretReferenceServiceTests
         var ex = await Assert.ThrowsAsync<DeploymentExecutionException>(() =>
             f.Sut.ResolveForDeploymentAsync(f.App.Id, f.DevEnv.Id, f.ManageUserId, "devops"));
         Assert.Contains("db-password", ex.Message);
+    }
+
+    // -------------------------------------------------------------- reveal ("Show password")
+
+    [Fact]
+    public async Task RevealAsync_WithoutSecretsRevealPermission_ThrowsForbidden_EvenWithSecretsView()
+    {
+        var f = await CreateFixtureAsync();
+        f.CurrentUser.UserId = f.ManageUserId;
+        var created = await f.Sut.CreateAsync(new CreateSecretReferenceRequest(
+            "db-password", SecretCategory.Database, SecretScope.Global, null, null, null, "hunter2-secret"));
+
+        f.CurrentUser.UserId = f.ViewOnlyUserId; // holds secrets.view only, not secrets.reveal
+        await Assert.ThrowsAsync<ForbiddenException>(() => f.Sut.RevealAsync(created.Id));
+    }
+
+    [Fact]
+    public async Task RevealAsync_WithSecretsRevealPermission_ReturnsTheActualValue()
+    {
+        var f = await CreateFixtureAsync();
+        f.CurrentUser.UserId = f.ManageUserId;
+        var created = await f.Sut.CreateAsync(new CreateSecretReferenceRequest(
+            "db-password", SecretCategory.Database, SecretScope.Global, null, null, null, "hunter2-secret"));
+
+        f.CurrentUser.UserId = f.RevealUserId;
+        var revealed = await f.Sut.RevealAsync(created.Id);
+
+        Assert.Equal("hunter2-secret", revealed.Value);
+    }
+
+    [Fact]
+    public async Task RevealAsync_AuditsTheAction_ButNeverTheValue()
+    {
+        var f = await CreateFixtureAsync();
+        f.CurrentUser.UserId = f.ManageUserId;
+        var created = await f.Sut.CreateAsync(new CreateSecretReferenceRequest(
+            "db-password", SecretCategory.Database, SecretScope.Global, null, null, null, "hunter2-secret"));
+
+        f.CurrentUser.UserId = f.RevealUserId;
+        await f.Sut.RevealAsync(created.Id);
+
+        var entry = await f.Db.AuditLogs.SingleAsync(a => a.Action == "secret.revealed");
+        Assert.Equal(AuditResult.Success, entry.Result);
+        Assert.DoesNotContain("hunter2-secret", entry.Details ?? string.Empty);
+    }
+
+    [Fact]
+    public async Task CreateAsync_WithStructuredCredentialFields_RoundTripsThroughGetAsync_WithoutTheValue()
+    {
+        var f = await CreateFixtureAsync();
+        f.CurrentUser.UserId = f.ManageUserId;
+
+        var created = await f.Sut.CreateAsync(new CreateSecretReferenceRequest(
+            "reporting-db", SecretCategory.Database, SecretScope.Global, null, null, "Reporting database", "s3cr3t!",
+            Username: "report_reader", Host: "db.internal.example.com", Port: 5432, DatabaseName: "reporting"));
+
+        Assert.Equal("report_reader", created.Username);
+        Assert.Equal("db.internal.example.com", created.Host);
+        Assert.Equal(5432, created.Port);
+        Assert.Equal("reporting", created.DatabaseName);
+
+        var fetched = await f.Sut.GetAsync(created.Id);
+        Assert.Equal("report_reader", fetched.Username);
+        Assert.Equal(5432, fetched.Port);
     }
 }

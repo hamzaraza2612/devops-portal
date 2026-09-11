@@ -266,6 +266,9 @@ public class DeploymentExecutorTests
 
         public Task DeleteAsync(Guid id, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
+        public Task<RevealedSecretDto> RevealAsync(Guid id, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task<IReadOnlyDictionary<string, string>> ResolveForDeploymentAsync(
             Guid applicationId, Guid environmentDefinitionId, Guid actorUserId, string? actorUsername, CancellationToken cancellationToken = default)
         {
