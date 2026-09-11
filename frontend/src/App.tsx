@@ -6,9 +6,11 @@ import { RequireAuth, RequirePermission } from './components/RouteGuards';
 import { Permissions } from './auth/permissions';
 import { ApplicationDetailsPage } from './pages/ApplicationDetailsPage';
 import { ApplicationsListPage } from './pages/ApplicationsListPage';
+import { CredentialsPage } from './pages/CredentialsPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DeploymentDetailsPage } from './pages/DeploymentDetailsPage';
 import { DeploymentHistoryPage } from './pages/DeploymentHistoryPage';
+import { EnvironmentDashboardPage } from './pages/EnvironmentDashboardPage';
 import { EnvironmentsPage } from './pages/EnvironmentsPage';
 import { LoginPage } from './pages/LoginPage';
 import { NotFoundPage } from './pages/NotFoundPage';
@@ -60,10 +62,26 @@ export default function App() {
                 }
               />
               <Route
+                path="environments/:tier"
+                element={
+                  <RequirePermission permission={Permissions.EnvironmentsView}>
+                    <EnvironmentDashboardPage />
+                  </RequirePermission>
+                }
+              />
+              <Route
                 path="pending"
                 element={
                   <RequirePermission permission={Permissions.DeploymentsView}>
                     <PendingRequestsPage />
+                  </RequirePermission>
+                }
+              />
+              <Route
+                path="credentials"
+                element={
+                  <RequirePermission permission={Permissions.SecretsView}>
+                    <CredentialsPage />
                   </RequirePermission>
                 }
               />

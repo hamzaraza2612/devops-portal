@@ -21,6 +21,8 @@ public static class DefaultRolePermissions
             PermissionCodes.ContainersView,
             PermissionCodes.BuildsView,
             PermissionCodes.BuildsRequest,
+            PermissionCodes.SecretsView,
+            PermissionCodes.SecretsReveal,
         ],
         [RoleNames.Qa] =
         [
@@ -31,6 +33,8 @@ public static class DefaultRolePermissions
             PermissionCodes.DeploymentsDeployQa,
             PermissionCodes.ContainersView,
             PermissionCodes.BuildsView,
+            PermissionCodes.SecretsView,
+            PermissionCodes.SecretsReveal,
         ],
         [RoleNames.Uat] =
         [
@@ -41,6 +45,8 @@ public static class DefaultRolePermissions
             PermissionCodes.DeploymentsDeployUat,
             PermissionCodes.ContainersView,
             PermissionCodes.BuildsView,
+            PermissionCodes.SecretsView,
+            PermissionCodes.SecretsReveal,
         ],
         [RoleNames.DevOps] =
         [
@@ -67,6 +73,7 @@ public static class DefaultRolePermissions
             PermissionCodes.BuildsView,
             PermissionCodes.BuildsRequest,
             PermissionCodes.SecretsView,
+            PermissionCodes.SecretsReveal,
             PermissionCodes.SecretsManage,
         ],
         [RoleNames.Cto] =

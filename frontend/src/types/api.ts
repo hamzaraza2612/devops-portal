@@ -422,6 +422,10 @@ export interface PromotionRequestDto {
   toEnvironmentName: string;
   sourceDeploymentId: string;
   commitSha: string;
+  fromBranch: string | null;
+  toBranch: string | null;
+  branchPromotionSucceeded: boolean | null;
+  branchPromotionDetail: string | null;
   status: ApprovalStatus;
   requestedByUserId: string;
   requestedByUsername: string | null;
@@ -506,4 +510,80 @@ export interface PagedResult<T> {
   page: number;
   pageSize: number;
   totalCount: number;
+}
+
+// --- Secrets / Credentials ---
+// A "Credential" in the UI is just a SecretReference with the structured
+// display fields (Username/Host/Port/DatabaseName) filled in — same
+// backend model, no separate entity. The actual value is never present on
+// SecretReferenceDto; only RevealAsync/RevealedSecretDto ever returns it,
+// via the explicit, separately-permissioned "Show password" action.
+
+export const SecretCategory = {
+  Database: 0,
+  Api: 1,
+  Registry: 2,
+  GitLab: 3,
+  Jenkins: 4,
+  Smtp: 5,
+  Server: 6,
+  Other: 7,
+} as const;
+export type SecretCategory = (typeof SecretCategory)[keyof typeof SecretCategory];
+
+export const SecretScope = {
+  Global: 0,
+  Application: 1,
+  ApplicationEnvironment: 2,
+} as const;
+export type SecretScope = (typeof SecretScope)[keyof typeof SecretScope];
+
+export interface SecretReferenceDto {
+  id: string;
+  name: string;
+  category: SecretCategory;
+  scope: SecretScope;
+  applicationId: string | null;
+  applicationName: string | null;
+  environmentDefinitionId: string | null;
+  environmentName: string | null;
+  description: string | null;
+  username: string | null;
+  host: string | null;
+  port: number | null;
+  databaseName: string | null;
+  providerKey: string;
+  isActive: boolean;
+  createdByUserId: string;
+  createdByUsername: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
+export interface CreateSecretReferenceRequest {
+  name: string;
+  category: SecretCategory;
+  scope: SecretScope;
+  applicationId: string | null;
+  environmentDefinitionId: string | null;
+  description: string | null;
+  value: string;
+  username: string | null;
+  host: string | null;
+  port: number | null;
+  databaseName: string | null;
+}
+
+export interface UpdateSecretReferenceRequest {
+  description: string | null;
+  isActive: boolean;
+  value: string | null;
+  username: string | null;
+  host: string | null;
+  port: number | null;
+  databaseName: string | null;
+}
+
+export interface RevealedSecretDto {
+  value: string;
 }

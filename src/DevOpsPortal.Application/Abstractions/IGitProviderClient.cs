@@ -15,12 +15,12 @@ public record GitProviderResult<T>(bool Success, T? Data, string? ErrorMessage)
 }
 
 /// <summary>
-/// Read-only commit lookup against a configured repository. Never mutates
-/// anything in the Git provider and never triggers a deployment — a push
-/// notification/webhook is out of scope for Phase 3; this is pull-based,
-/// called only when a caller explicitly asks "what's the latest commit".
-/// Implemented behind this interface so a non-GitLab provider (or a mock for
-/// tests) can be substituted without touching any caller.
+/// Commit lookup (read-only) and branch promotion (the one write operation
+/// this interface performs) against a configured repository. Never triggers a
+/// deployment — a push notification/webhook is out of scope; this is
+/// pull-based/explicitly-invoked only. Implemented behind this interface so a
+/// non-GitLab provider (or a mock for tests) can be substituted without
+/// touching any caller.
 /// </summary>
 public interface IGitProviderClient
 {
@@ -28,4 +28,13 @@ public interface IGitProviderClient
 
     Task<GitProviderResult<IReadOnlyList<GitCommitInfo>>> GetRecentCommitsAsync(
         Repository repository, string branch, int count, CancellationToken cancellationToken = default);
+
+    /// <summary>Merges sourceBranch into targetBranch (e.g. "develop" -> "qa") — the git-level
+    /// half of an environment promotion (see PromotionRequest.FromBranch/ToBranch). Requires a
+    /// write-capable AccessTokenEnvVarName; without one this fails gracefully rather than
+    /// attempting an unauthenticated write. Returns the resulting merge commit SHA on success.
+    /// Never throws for an expected failure (network, auth, merge conflict, no token
+    /// configured) — same GitProviderResult contract as the read methods above.</summary>
+    Task<GitProviderResult<string>> PromoteBranchAsync(
+        Repository repository, string sourceBranch, string targetBranch, CancellationToken cancellationToken = default);
 }

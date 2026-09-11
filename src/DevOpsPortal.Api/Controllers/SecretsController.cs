@@ -6,12 +6,13 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace DevOpsPortal.Api.Controllers;
 
-/// <summary>Permission checks (secrets.view/secrets.manage) are enforced inside
-/// ISecretReferenceService, not via a static [RequirePermission] attribute here
-/// — same pattern as containers/builds — so the same authorization logic is
-/// exercised whether or not a request reaches this controller. No action on
-/// this controller ever returns a secret value; there is no such method on
-/// ISecretReferenceService for a controller to call in the first place.</summary>
+/// <summary>Permission checks (secrets.view/secrets.reveal/secrets.manage) are
+/// enforced inside ISecretReferenceService, not via a static
+/// [RequirePermission] attribute here — same pattern as containers/builds —
+/// so the same authorization logic is exercised whether or not a request
+/// reaches this controller. Only Reveal ever returns a secret's actual
+/// value, gated by secrets.reveal (distinct from secrets.view) — every other
+/// action here returns metadata only.</summary>
 [ApiController]
 [Route("api/secrets")]
 [Authorize]
@@ -46,4 +47,10 @@ public class SecretsController(ISecretReferenceService secretReferenceService) :
         await secretReferenceService.DeleteAsync(id, cancellationToken);
         return NoContent();
     }
+
+    /// <summary>The controlled "Show password" action — the one endpoint on this
+    /// controller that returns a secret's actual value, gated by secrets.reveal.</summary>
+    [HttpPost("{id:guid}/reveal")]
+    public async Task<IActionResult> Reveal(Guid id, CancellationToken cancellationToken) =>
+        Ok(await secretReferenceService.RevealAsync(id, cancellationToken));
 }

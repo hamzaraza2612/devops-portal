@@ -326,7 +326,7 @@ function PromotionControls({
   return (
     <Can permission={promotePermission}>
       <ActionButton
-        label={`Request ${tier} promotion`}
+        label={`Go Ahead to ${tier}`}
         disabled={!previousSucceeded}
         disabledReason="No successful deployment in the previous environment to promote."
         onAction={() =>

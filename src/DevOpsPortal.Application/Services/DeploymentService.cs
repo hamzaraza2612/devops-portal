@@ -17,7 +17,8 @@ public partial class DeploymentService(
     ICurrentTenantService currentTenantService,
     IAuditService auditService,
     IDeploymentJobQueue jobQueue,
-    INotificationService notificationService) : IDeploymentService
+    INotificationService notificationService,
+    IGitProviderClient gitProviderClient) : IDeploymentService
 {
     /// <summary>How long an approval-requested notification's preview deep link
     /// stays resolvable (master requirements §4: approval links/tokens must
@@ -250,6 +251,8 @@ public partial class DeploymentService(
             throw new ConflictException($"A promotion request into '{toEnv.Name}' is already pending approval.");
 
         var (rawToken, tokenHash) = ApprovalTokenHelper.Generate();
+        var (fromBranch, toBranch) = await ResolveBranchesAsync(applicationId, fromEnv.Id, toEnv.Id, cancellationToken);
+
         var promotion = new PromotionRequest
         {
             TenantId = currentTenantService.RequireTenantId(),
@@ -258,15 +261,38 @@ public partial class DeploymentService(
             ToEnvironmentDefinitionId = toEnvironmentDefinitionId,
             SourceDeploymentId = sourceDeployment.Id,
             CommitSha = sourceDeployment.CommitSha,
+            FromBranch = fromBranch,
+            ToBranch = toBranch,
             RequestedByUserId = userId,
             ApprovalTokenHash = tokenHash,
             ApprovalTokenExpiresAt = DateTimeOffset.UtcNow.AddHours(ApprovalTokenExpiryHours),
         };
+
+        // Git-level branch promotion (e.g. merge "develop" into "qa") is attempted, never
+        // blocking: a Git outage or missing branch config must not prevent the DB-level
+        // promotion workflow from proceeding (same principle Phase 3 established for
+        // notifications and commit lookup — see PromotionRequest.BranchPromotionSucceeded).
+        string? branchPromotionSummary = null;
+        if (fromBranch is not null && toBranch is not null && application.RepositoryId is { } repositoryId)
+        {
+            var repository = await db.Repositories.FirstOrDefaultAsync(r => r.Id == repositoryId, cancellationToken);
+            if (repository is not null)
+            {
+                var mergeResult = await gitProviderClient.PromoteBranchAsync(repository, fromBranch, toBranch, cancellationToken);
+                promotion.BranchPromotionSucceeded = mergeResult.Success;
+                promotion.BranchPromotionDetail = LogSanitizer.Sanitize(mergeResult.Success ? mergeResult.Data : mergeResult.ErrorMessage);
+                branchPromotionSummary = mergeResult.Success
+                    ? $"; branch '{fromBranch}' merged into '{toBranch}'"
+                    : $"; branch promotion failed: {promotion.BranchPromotionDetail}";
+            }
+        }
+
         db.PromotionRequests.Add(promotion);
         await db.SaveChangesAsync(cancellationToken);
 
         await auditService.LogAsync("promotion.requested", AuditResult.Success, "PromotionRequest", promotion.Id.ToString(),
-            details: $"{application.Name}: {fromEnv.Name} -> {toEnv.Name}, commit {promotion.CommitSha}", cancellationToken: cancellationToken);
+            details: $"{application.Name}: {fromEnv.Name} -> {toEnv.Name}, commit {promotion.CommitSha}{branchPromotionSummary}",
+            cancellationToken: cancellationToken);
 
         if (toEnv.IsProductionLike)
         {
@@ -553,6 +579,23 @@ public partial class DeploymentService(
         await db.ApplicationEnvironments.FirstOrDefaultAsync(ae =>
             ae.ApplicationId == applicationId && ae.EnvironmentDefinitionId == environmentDefinitionId && ae.IsActive, cancellationToken);
 
+    /// <summary>Looks up this application's configured branch name (ApplicationEnvironment.BranchName
+    /// — already per-application, per-environment configuration, not hardcoded anywhere) for both
+    /// sides of a promotion. Either or both can legitimately be null (no branch configured for that
+    /// environment yet) — the caller treats that as "skip git-level branch promotion", not an error.</summary>
+    private async Task<(string? FromBranch, string? ToBranch)> ResolveBranchesAsync(
+        Guid applicationId, Guid fromEnvironmentDefinitionId, Guid toEnvironmentDefinitionId, CancellationToken cancellationToken)
+    {
+        var branchesByEnvironmentId = await db.ApplicationEnvironments
+            .Where(ae => ae.ApplicationId == applicationId &&
+                (ae.EnvironmentDefinitionId == fromEnvironmentDefinitionId || ae.EnvironmentDefinitionId == toEnvironmentDefinitionId))
+            .ToDictionaryAsync(ae => ae.EnvironmentDefinitionId, ae => ae.BranchName, cancellationToken);
+
+        branchesByEnvironmentId.TryGetValue(fromEnvironmentDefinitionId, out var fromBranch);
+        branchesByEnvironmentId.TryGetValue(toEnvironmentDefinitionId, out var toBranch);
+        return (fromBranch, toBranch);
+    }
+
     private async Task EnsureNoActiveDeploymentAsync(
         Guid applicationId, Guid environmentDefinitionId, string commitSha, CancellationToken cancellationToken)
     {
@@ -596,6 +639,7 @@ public partial class DeploymentService(
         p.FromEnvironmentDefinitionId, p.FromEnvironmentDefinition.Name,
         p.ToEnvironmentDefinitionId, p.ToEnvironmentDefinition.Name,
         p.SourceDeploymentId, p.CommitSha,
+        p.FromBranch, p.ToBranch, p.BranchPromotionSucceeded, p.BranchPromotionDetail,
         p.Status, p.RequestedByUserId, db.Users.Where(u => u.Id == p.RequestedByUserId).Select(u => u.Username).FirstOrDefault(), p.RequestedAt,
         p.DecidedByUserId,
         p.DecidedByUserId != null ? db.Users.Where(u => u.Id == p.DecidedByUserId).Select(u => u.Username).FirstOrDefault() : null,

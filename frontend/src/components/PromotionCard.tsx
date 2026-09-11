@@ -31,6 +31,13 @@ export function PromotionCard({ promotion, onChanged }: { promotion: PromotionRe
           <p className="text-xs text-slate-500">
             {promotion.fromEnvironmentName} → {promotion.toEnvironmentName} · commit <span className="font-mono">{shortSha(promotion.commitSha)}</span>
           </p>
+          {promotion.fromBranch && promotion.toBranch && (
+            <p className="mt-0.5 text-xs text-slate-400">
+              branch <span className="font-mono">{promotion.fromBranch}</span> → <span className="font-mono">{promotion.toBranch}</span>
+              {promotion.branchPromotionSucceeded === true && <span className="ml-1 text-emerald-600">merged</span>}
+              {promotion.branchPromotionSucceeded === false && <span className="ml-1 text-amber-600" title={promotion.branchPromotionDetail ?? undefined}>merge failed</span>}
+            </p>
+          )}
         </div>
         <ApprovalStatusBadge status={promotion.status} />
       </div>

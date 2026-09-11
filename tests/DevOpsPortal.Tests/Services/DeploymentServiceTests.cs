@@ -80,7 +80,7 @@ public class DeploymentServiceTests
         var notificationService = new NotificationService(
             db, [notificationProvider], audit, new FakeConfiguration(), NullLogger<NotificationService>.Instance);
 
-        var sut = new DeploymentService(db, currentUser, currentTenant, audit, jobQueue, notificationService);
+        var sut = new DeploymentService(db, currentUser, currentTenant, audit, jobQueue, notificationService, new FakeGitProviderClient());
 
         return new Fixture(db, sut, currentUser, jobQueue, notificationProvider, app, envs, devUserId, qaUserId, uatUserId, devopsUserId, ctoUserId, noPermUserId);
     }

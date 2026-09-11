@@ -12,12 +12,12 @@ namespace DevOpsPortal.Application.Services;
 /// <summary>
 /// Owns SecretReference metadata and is the only Application-layer code that
 /// talks to ISecretProvider — every other service that needs a resolved
-/// value (today: only DeploymentExecutor, via ResolveForDeploymentAsync) goes
-/// through this class rather than the provider directly, so permission
-/// checks, audit, and environment-isolation logic live in exactly one place.
-/// No method here ever returns a plaintext value to a controller — only
-/// ResolveForDeploymentAsync returns one, and it is never wired to any API
-/// endpoint (see ISecretReferenceService's doc comment).
+/// value (DeploymentExecutor, via ResolveForDeploymentAsync; an authorized
+/// human, via the explicit, separately-permissioned RevealAsync) goes through
+/// this class rather than the provider directly, so permission checks,
+/// audit, and environment-isolation logic live in exactly one place. Every
+/// other method here returns metadata only — RevealAsync is the sole,
+/// deliberate, secrets.reveal-gated exception (see its doc comment).
 /// </summary>
 public class SecretReferenceService(
     IAppDbContext db, ICurrentUserService currentUser, ICurrentTenantService currentTenantService, IAuditService auditService, ISecretProvider secretProvider)
@@ -86,6 +86,10 @@ public class SecretReferenceService(
             ApplicationId = request.ApplicationId,
             EnvironmentDefinitionId = request.EnvironmentDefinitionId,
             Description = NormalizeOrNull(request.Description),
+            Username = NormalizeOrNull(request.Username),
+            Host = NormalizeOrNull(request.Host),
+            Port = request.Port,
+            DatabaseName = NormalizeOrNull(request.DatabaseName),
             ProviderKey = secretProvider.ProviderKey,
             StoreKey = storeKey,
             CreatedByUserId = userId,
@@ -108,6 +112,10 @@ public class SecretReferenceService(
             ?? throw new NotFoundException("SecretReference", id);
 
         secret.Description = NormalizeOrNull(request.Description);
+        secret.Username = NormalizeOrNull(request.Username);
+        secret.Host = NormalizeOrNull(request.Host);
+        secret.Port = request.Port;
+        secret.DatabaseName = NormalizeOrNull(request.DatabaseName);
         secret.IsActive = request.IsActive;
         secret.UpdatedAt = DateTimeOffset.UtcNow;
 
@@ -141,6 +149,26 @@ public class SecretReferenceService(
 
         await auditService.LogAsync("secret.deleted", AuditResult.Success, "SecretReference", id.ToString(),
             details: DescribeScope(secret), cancellationToken: cancellationToken);
+    }
+
+    public async Task<RevealedSecretDto> RevealAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var userId = RequireUserId();
+        await EnsurePermissionAsync(userId, PermissionCodes.SecretsReveal, cancellationToken);
+
+        var secret = await db.SecretReferences.FirstOrDefaultAsync(s => s.Id == id, cancellationToken)
+            ?? throw new NotFoundException("SecretReference", id);
+
+        var value = await secretProvider.RetrieveAsync(secret.StoreKey, cancellationToken);
+        if (!value.Success || value.Value is null)
+            throw new ValidationException($"Failed to retrieve the value for '{secret.Name}'.");
+
+        // Audits that the value was revealed and by whom — never the value itself
+        // (same "audit the action, never the secret" principle as secret.referenced).
+        await auditService.LogAsync("secret.revealed", AuditResult.Success, "SecretReference", secret.Id.ToString(),
+            details: DescribeScope(secret), cancellationToken: cancellationToken);
+
+        return new RevealedSecretDto(value.Value);
     }
 
     public async Task<IReadOnlyDictionary<string, string>> ResolveForDeploymentAsync(
@@ -231,7 +259,8 @@ public class SecretReferenceService(
 
         return new SecretReferenceDto(
             s.Id, s.Name, s.Category, s.Scope, s.ApplicationId, applicationName, s.EnvironmentDefinitionId, environmentName,
-            s.Description, s.ProviderKey, s.IsActive, s.CreatedByUserId, createdByUsername, s.CreatedAt, s.UpdatedAt);
+            s.Description, s.Username, s.Host, s.Port, s.DatabaseName,
+            s.ProviderKey, s.IsActive, s.CreatedByUserId, createdByUsername, s.CreatedAt, s.UpdatedAt);
     }
 
     private static string? NormalizeOrNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
