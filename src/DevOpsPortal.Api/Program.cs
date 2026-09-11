@@ -167,6 +167,9 @@ static Task WriteHealthCheckResponseAsync(HttpContext context, HealthReport repo
     var payload = new
     {
         status = report.Status.ToString(),
+        // From the Api project's <Version> (csproj) — lets an operator confirm an
+        // upgrade actually took effect without digging through container image tags.
+        version = typeof(Program).Assembly.GetName().Version?.ToString(3),
         totalDurationMs = report.TotalDuration.TotalMilliseconds,
         checks = report.Entries.Select(e => new
         {

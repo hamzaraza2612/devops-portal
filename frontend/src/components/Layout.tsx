@@ -18,7 +18,7 @@ const adminNavItems = [
   { to: '/admin/roles', label: 'Roles', permission: Permissions.RolesView },
   { to: '/admin/repositories', label: 'Repositories', permission: Permissions.RepositoriesView },
   { to: '/admin/target-servers', label: 'Deployment Targets', permission: Permissions.TargetServersView },
-  { to: '/admin/integrations', label: 'Integrations', permission: Permissions.BuildServersView },
+  { to: '/admin/build-servers', label: 'Build Servers', permission: Permissions.BuildServersView },
 ];
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>

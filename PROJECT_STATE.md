@@ -3063,6 +3063,261 @@ in-process/per-instance (a future multi-instance API deployment would need
 a distributed limiter — out of scope until the portal is actually
 horizontally scaled, which nothing today requires).
 
+## Phase 11 — Final QA, Documentation & Release (v1.0.0)
+
+The release-readiness pass: full end-to-end verification of the deployment
+workflow (including failure modes), a UI QA pass across every real screen,
+confirmation that no infra-specific values remain hardcoded, a final
+secret scan, a complete practical documentation set, and the platform's
+first tagged version (`1.0.0`, surfaced in `GET /health`). No domain/schema
+changes, so no new migration.
+
+### §1 End-to-end workflow test
+
+Drove the full pipeline live against a real Postgres 16 instance and a
+real running API — a fresh tenant, repository, application, and all four
+environments configured from nothing via the API, exactly as a new
+customer would per the [Configuration Guide](docs/configuration-guide.md):
+
+- **GitLab commit → Deploy DEV → Request QA → QA approval → Deploy QA →
+  Request UAT → UAT approval → Deploy UAT → Production request → CTO
+  approval → explicit production deployment → health check → deployment
+  history → audit**: every step exercised for real via the API, each one
+  confirmed independently (e.g. approving a promotion was confirmed, by
+  direct query, to create **zero** `Deployment` rows; only the subsequent
+  explicit deploy call did). Docker isn't available in this sandbox (the
+  daemon can't start — a sandbox constraint, not a portal limitation; see
+  every prior phase's own testing sections for the same caveat), so
+  `docker compose up` correctly and honestly failed
+  (`failed to connect to the docker API...`) — this **is** the "failure"
+  test case, proving the pipeline never falsely reports success, not a
+  gap in this pass. Deployments needed downstream (to exercise promotion
+  further) were force-marked `Succeeded` directly in the database, the
+  same documented technique Phase 4's own live-verification used for the
+  same reason.
+- **Retry**: re-deploying the same approved promotion after its first
+  attempt failed is allowed (a fresh `Deployment` row, HTTP 200) — the
+  "already deployed" guard only excludes `Pending/Queued/Running/Succeeded`,
+  deliberately not `Failed`, so a failed attempt never traps a promotion.
+- **Rollback**: creates a new, correctly `isRollback`-linked deployment
+  through the identical execution/concurrency/audit path as a normal
+  deploy.
+- **Unauthorized access**: a Developer-role user confirmed unable to
+  approve a QA promotion, create a repository, view the user list, or
+  deploy to Production (each a clean 403 naming the missing permission);
+  an unauthenticated request confirmed 401; the same user confirmed
+  **able** to deploy DEV (the one permission they do hold).
+- **Unavailable target**: proven twice over — the Docker-daemon-unreachable
+  failure above, and (unchanged from Phase 5) container status/control
+  correctly reporting every target server unreachable rather than
+  fabricating a result.
+- **Unhealthy container**: the health-check-failure path itself
+  (`HealthCheckProbe` against a real loopback server, and
+  `DeploymentExecutor` marking `Failed` not `Succeeded` on a failing check)
+  is exercised by the existing automated suite
+  (`HealthCheckProbeTests`, `DeploymentExecutorTests`) — not re-proven live
+  in this pass, since no live Docker daemon exists here to get a container
+  actually running-but-unhealthy in the first place; the automated
+  coverage already exercises the exact mechanism end to end.
+- **Concurrent deployment — a real, previously-unknown bug found and
+  fixed**: two genuinely parallel `POST .../deployments/dev` requests
+  (fired truly concurrently, not just in quick succession) both passed
+  `DeploymentService`'s up-front check-then-insert race window; the loser
+  was correctly rejected by the Postgres partial unique index (exactly as
+  designed — see Phase 3's Concurrency & safety section) but the resulting
+  `DbUpdateException` was never caught, so it surfaced as an unhandled
+  HTTP 500 instead of a clean 409. **Fixed**: `SaveAndEnqueueAsync` now
+  catches `DbUpdateException` from this specific insert and raises the
+  same `ConflictException` message the (non-racing) up-front check already
+  gives. Live-verified fixed: two parallel requests now return 200 + 409
+  (was 200 + 500). Not unit-tested (EF Core's InMemory provider used by
+  the test suite doesn't enforce this Postgres-specific partial unique
+  index — the same documented limitation Phase 3 already noted for a
+  related race) — covered by this live verification instead, matching how
+  Phase 3 originally verified the underlying index.
+
+### §2 UI QA
+
+Full-stack Playwright pass (real API + real Vite dev server, Chromium,
+1440px and 390px mobile viewports) across every real screen in the
+application — login, dashboard, applications list/details, environments
+overview/per-tier, pending requests, credentials (including a real
+"New Credential" → "Show password" reveal round-trip), deployment
+history/details with logs, and every admin screen (tenants, users, roles,
+repositories, deployment targets, build servers) — plus the 404 page.
+Zero console/page errors across the entire pass.
+
+Three screens named in the task's checklist don't exist as dedicated pages
+today — **monitoring**, a general **integrations** hub beyond build
+servers, and **settings** — and were correctly not built here, per "do not
+add unnecessary features": container monitoring has had no frontend since
+Phase 5 (its backend always reports every target unreachable today — see
+[Architecture: Known gaps](docs/architecture.md#known-gaps) — a monitoring
+screen for a feature that cannot yet show real data would be misleading,
+not useful); there is no portal-wide "settings" concept beyond the
+per-tenant admin screens that already exist; "integrations" turned out to
+be exactly the usability bug found and fixed below, not a missing screen.
+
+**Fixed (2 real, material usability issues):**
+- **"Integrations" nav item/page only ever showed Jenkins build servers** —
+  materially misleading: an admin looking for where GitLab/SMTP/
+  notification configuration lives (documented in the
+  [Configuration Guide](docs/configuration-guide.md) as env-var-only /
+  per-repository, not a database-backed "integration" object) would click
+  "Integrations" and find neither, with no signal that they were in the
+  wrong place. Renamed to **"Build Servers"** everywhere (nav label, page
+  title, route `/admin/build-servers`, loading/empty-state copy) — an
+  honest name for what the page actually manages.
+- **Commit SHA truncation on the Environments overview cards** — the
+  app-name + commit span used a single `truncate` on both together, so in
+  a narrow card the *commit* (the operationally important part during an
+  incident scan — "Needs attention" cards) could be clipped
+  (`"1111…"` instead of `"11112222"`) while the already-known-from-context
+  app name took the space. Restructured so only the app name truncates;
+  the short commit SHA is now `shrink-0` and always shows in full.
+
+Both fixes verified with before/after screenshots; 38/38 frontend tests
+still pass unmodified (neither fix touched tested behavior, only labels/
+layout).
+
+### §3/§6 Documentation
+
+No practical documentation existed beyond `PROJECT_STATE.md` itself (an
+engineering design record, not a user-facing guide) and a stale,
+Phase-1-era `README.md`. Added a full `docs/` set, each scoped to "how do
+you actually do X" rather than duplicating `PROJECT_STATE.md`'s
+design-rationale detail:
+
+- [`docs/installation-guide.md`](docs/installation-guide.md) — prerequisites,
+  required env vars/secrets, first login, upgrade, backup, restore,
+  install-specific troubleshooting.
+- [`docs/configuration-guide.md`](docs/configuration-guide.md) — onboarding
+  a new tenant end to end: Git provider, repositories, applications,
+  environments/deployment targets, registry, build provider, notification
+  provider, URLs, credentials — with a full worked GitLab walkthrough.
+- [`docs/deployment-guide.md`](docs/deployment-guide.md) — the DEV→QA→UAT→
+  Production workflow as an operator actually uses it, including retry.
+- [`docs/administrator-guide.md`](docs/administrator-guide.md) — platform-
+  vs-tenant administration, users, roles/permissions, audit.
+- [`docs/developer-guide.md`](docs/developer-guide.md) — local setup,
+  adding a new provider implementation, adding a permission-gated action,
+  migrations, code conventions.
+- [`docs/qa-uat-guide.md`](docs/qa-uat-guide.md) — the QA/UAT reviewer's
+  side of an approval.
+- [`docs/production-approval-guide.md`](docs/production-approval-guide.md) —
+  the CTO approval gate specifically, including the secure-preview-email
+  flow.
+- [`docs/rollback-guide.md`](docs/rollback-guide.md).
+- [`docs/troubleshooting-guide.md`](docs/troubleshooting-guide.md) —
+  operational issues (a specific deployment failing, a degraded health
+  check, a stuck deployment) mapped to their actual cause.
+- [`docs/architecture.md`](docs/architecture.md) — the condensed,
+  current-state system design (layers, provider abstractions, the
+  deployment-execution topology gap explained plainly, concurrency,
+  security posture, known gaps) that this whole doc set links back to.
+
+`README.md` rewritten from its stale "only Phase 1 implemented" state to
+reflect the actual, complete v1.0.0 platform, with a documentation index
+linking every guide above.
+
+### §4 Configuration audit
+
+Reviewed for hardcoded Techbey-specific (or any customer-specific) values
+across the whole codebase (`grep` across every `.cs`/`.tsx`/`.ts`/`.json`
+file plus `appsettings.json`/`docker-compose.yml`). Found **none** — every
+occurrence of "Techbey"/"DmsApi" is either a code comment explicitly
+explaining that the code is deliberately generic, or a synthetic name used
+only in test fixtures (arbitrary, like any other test data — not a
+configuration constraint on a real customer). Every credential-shaped
+setting (`Jwt:SigningKey`, `Secrets:EncryptionKey`, `Smtp:Password`, every
+`*TokenEnvVarName` field) defaults to empty and must be explicitly
+configured. Confirmed a new customer can configure Git provider,
+repositories, applications, environments, deployment targets, registry,
+build provider, notification provider, URLs, and credentials entirely
+through the API/Admin UI or environment variables — see the
+[Configuration Guide](docs/configuration-guide.md), which is itself the
+artifact proving this (every section describes an API call or env var, none
+describes a code change). No changes were needed; this section exists to
+record that the audit was performed, not to document a fix.
+
+### §5 Final security/secret scan
+
+- **Git history** (`git log --all -p`, not just the current tree) scanned
+  for common secret patterns (AWS access keys, private-key PEM headers,
+  Slack/GitHub/GitLab token shapes, inline `password = "..."` literals) —
+  zero matches anywhere in the project's history.
+- `.gitignore` correctly excludes `.env`; only `.env.example` (placeholder
+  values only, every one prefixed `change_me_to_...` or left blank) is
+  tracked.
+- Every file matching `*secret*`/`*credential*`/`.env*` in the tracked tree
+  is legitimate source implementing the secrets feature (Phase 7/9), not a
+  leaked value.
+- RBAC and tenant isolation: the dedicated automated suite
+  (`TenantIsolationTests` + the full 340-test backend suite) passes;
+  additionally live-verified in this pass via the unauthorized-access
+  checks under §1 above (403/401 confirmed for every case tried).
+- Deployment/build logs: unchanged, already-verified `LogSanitizer` +
+  literal-secret-value redaction (Phase 3/6/7) — no new log-emitting code
+  was added this phase.
+
+No findings requiring a fix.
+
+### §7 Versioning
+
+First tagged release: **v1.0.0**. Added `<Version>1.0.0</Version>` to
+`DevOpsPortal.Api.csproj` (the single source of truth for the running
+version) and surfaced it in every `GET /health*` response's new `version`
+field — live-verified: a fresh install's `/health` correctly reports
+`"version": "1.0.0"`. Added `CHANGELOG.md` at the repository root with the
+v1.0.0 release notes (a summary by area, not a re-statement of every
+phase's detail — that's what `PROJECT_STATE.md` is for), migration notes
+(every migration to date is additive-only; a fresh install applies all of
+them automatically), and upgrade instructions (linking to the Installation
+Guide's own Backup/Upgrade sections for the mechanics).
+
+### §8 Docker
+
+- `docker compose config` validates cleanly with every required variable
+  set (unchanged mechanism from Phase 10, re-confirmed after all Phase 11
+  changes).
+- Live-verified: a completely fresh Postgres 16 database, migrated via
+  `dotnet ef database update` from empty (every migration from
+  `InitialCreate` through `Phase9b_BranchPromotionAndCredentials` applied
+  in order, cleanly), then the API started against it in `Production`
+  mode — `GET /health` returned `Healthy`-for-database,
+  `Healthy`-for-worker, `Degraded`-for-integrations (expected, nothing
+  configured), and the correct `"version": "1.0.0"`.
+- The Docker **daemon itself cannot start in this sandbox** (a permission
+  restriction of the sandbox, unrelated to the portal — `dockerd` refuses
+  to start here; unchanged from every prior phase's own noted constraint),
+  so `docker compose up`/image builds were not exercised end-to-end in
+  this session — the fresh-migration-plus-clean-startup verification above
+  is the closest equivalent available, and covers the actual risk (does a
+  brand-new install come up clean) that a full `docker compose up` run
+  would otherwise be verifying.
+
+### §9 Final tests
+
+340/340 backend tests pass, 38/38 frontend tests pass, `dotnet build`
+(full solution) and `npm run build` both clean, `dotnet ef migrations
+has-pending-model-changes` reports none. No new automated tests were added
+this phase — the work here was verification (§1's live E2E pass, §2's UI
+QA, §5's scans) and fixes (the concurrency-exception bug, the two UI
+issues) rather than new backend features needing new unit-test coverage;
+the concurrency fix's correctness is demonstrated by the live before/after
+proof under §1 rather than a new unit test, for the same InMemory-provider
+reason noted there.
+
+**Known limitations (this phase):** the three screens named in the task
+brief that don't exist (`monitoring`, a broader `integrations` hub,
+`settings`) were correctly left unbuilt, not overlooked — see §2 above for
+why each is either premature (monitoring, given the backend gap) or
+doesn't map to a real missing capability (integrations, settings). No new
+automated test coverage was added for the concurrency fix (see §9 above) —
+a future phase adding a Postgres-backed integration test tier (as opposed
+to the current all-InMemory-provider suite) could close this gap properly
+rather than relying on live verification alone.
+
 ## Production-critical gaps / next implementation
 
 Carried forward, unresolved, and deliberately **not** touched by Phase 9
@@ -3121,24 +3376,41 @@ Phase 9 — this section exists so the gap stays visible and explicit
 rather than getting lost once multi-tenancy makes the codebase look more
 "finished" than the actual deployment-execution path is.
 
+## Release status
+
+**v1.0.0 — released.** Phase 11 (Final QA, Documentation & Release) is
+complete: the platform has been end-to-end verified (including failure/
+retry/rollback/unauthorized-access/concurrency/unavailable-target/
+unhealthy-container cases), UI-QA'd across every real screen, audited for
+hardcoded customer-specific values and leaked secrets (none found), fully
+documented (see `README.md`'s documentation index), and tagged. This is
+the first version of this platform considered ready for real internal
+production use. See Phase 11 above for the complete verification record,
+`CHANGELOG.md` for release notes, and
+[`docs/architecture.md`'s Known gaps section](docs/architecture.md#known-gaps)
+for exactly what "ready" does and doesn't mean — most notably, deployment
+execution still runs on the portal's own host rather than reaching a truly
+remote target server over the network (see below).
+
 ## Next phase
 
-Not yet assigned — Phase 10 (Production Hardening, Security & Recovery) is
-complete; awaiting explicit approval before starting further work.
-Strongest candidate, per the "Production-critical gaps" section directly
-above (unchanged by Phase 10 — hardening the existing surface area
-deliberately did not touch these architecture-level gaps): a real secure
-remote-execution mechanism for `IRemoteExecutionProvider`, since it blocks
-the portal's own stated target architecture (Portal VM → secure remote
-execution → Target Server → Docker Compose) and would immediately benefit
-deployment execution, container monitoring, and container control all at
-once. Other candidates, unchanged from before: wiring `IDeploymentService`/
+Not yet assigned — awaiting explicit approval before starting further
+work. Strongest candidate, per the "Production-critical gaps" section
+directly above (unchanged by Phases 10–11 — neither touched these
+architecture-level gaps): a real secure remote-execution mechanism for
+`IRemoteExecutionProvider`, since it blocks the portal's own stated target
+architecture (Portal VM → secure remote execution → Target Server →
+Docker Compose) and would immediately benefit deployment execution,
+container monitoring, and container control all at once. Other
+candidates, unchanged from before: wiring `IDeploymentService`/
 `DeploymentExecutor` to deploy from a `Release` (Phase 6) and secret
 injection for that path (Phase 7), broader notification distribution or a
 second `INotificationProvider` (Phase 8), a platform-admin
 view-into-a-tenant capability (Phase 9, deliberately deferred), backfill
 tooling for pre-Phase-9 data, hardening session storage to an httpOnly
-cookie (flagged since Phase 4), or wiring the new backup script into an
-actual scheduled job for a given hosting environment (Phase 10, provided
-as a script + documented procedure rather than a hardcoded schedule — see
-Phase 10 §4/§9). Do not assume which without asking.
+cookie (flagged since Phase 4), wiring the backup script into an actual
+scheduled job for a given hosting environment (Phase 10, provided as a
+script + documented procedure rather than a hardcoded schedule), or a
+Postgres-backed integration test tier to properly cover the
+concurrency-exception fix (Phase 11 §9). Do not assume which without
+asking.

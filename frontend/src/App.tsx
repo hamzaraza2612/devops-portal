@@ -142,7 +142,7 @@ export default function App() {
                 }
               />
               <Route
-                path="admin/integrations"
+                path="admin/build-servers"
                 element={
                   <RequirePermission permission={Permissions.BuildServersView}>
                     <BuildServersPage />

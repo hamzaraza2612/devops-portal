@@ -624,7 +624,25 @@ public partial class DeploymentService(
     private async Task SaveAndEnqueueAsync(Deployment deployment, CancellationToken cancellationToken)
     {
         db.Deployments.Add(deployment);
-        await db.SaveChangesAsync(cancellationToken);
+
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            // EnsureNoActiveDeploymentAsync's check-then-insert has a genuine race window
+            // under true concurrency (two requests both pass the check before either
+            // commits) — the DB-level partial unique index on (ApplicationId,
+            // EnvironmentDefinitionId) WHERE Status IN (Pending,Queued,Running) is the
+            // real backstop for that (see PROJECT_STATE.md's Concurrency & safety
+            // section) and correctly rejects the loser here. Without this catch, that
+            // rejection surfaced as an unhandled 500 instead of the same clear 409 the
+            // pre-check already gives the common (non-racing) case — live-verified via
+            // two genuinely parallel deploy requests to the same application/environment.
+            throw new ConflictException("A different deployment is already in progress for this application and environment.");
+        }
+
         jobQueue.Enqueue(new DeploymentJob(deployment.Id, deployment.TenantId));
     }
 

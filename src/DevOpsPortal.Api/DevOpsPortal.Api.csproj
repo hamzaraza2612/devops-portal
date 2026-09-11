@@ -4,6 +4,9 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Bump alongside CHANGELOG.md's "Unreleased"/next version heading — surfaced
+         in GET /health so an operator can confirm an upgrade actually took effect. -->
+    <Version>1.0.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

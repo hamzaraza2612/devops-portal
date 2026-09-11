@@ -99,9 +99,9 @@ function EnvironmentColumn({
         ) : (
           rows.map(({ app, deployment }) => (
             <Link key={app.id} to={`/applications/${app.id}`} className="flex items-center justify-between gap-2 py-2 text-sm hover:text-slate-600">
-              <span className="min-w-0 truncate">
-                <span className="font-medium text-slate-800">{app.name}</span>
-                <span className="text-slate-400"> · {shortSha(deployment?.commitSha)}</span>
+              <span className="flex min-w-0 items-baseline gap-1">
+                <span className="truncate font-medium text-slate-800">{app.name}</span>
+                <span className="shrink-0 text-slate-400">· {shortSha(deployment?.commitSha)}</span>
               </span>
               <span className="flex shrink-0 items-center gap-2">
                 <span className="text-[11px] text-slate-400">{formatRelative(deployment?.requestedAt)}</span>
