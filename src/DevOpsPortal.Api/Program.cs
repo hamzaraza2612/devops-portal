@@ -1,4 +1,6 @@
 using System.Text;
+using System.Text.Json;
+using System.Threading.RateLimiting;
 using DevOpsPortal.Api.Middleware;
 using DevOpsPortal.Api.Services;
 using DevOpsPortal.Application;
@@ -9,6 +11,9 @@ using DevOpsPortal.Infrastructure.Secrets;
 using DevOpsPortal.Infrastructure.Security;
 using DevOpsPortal.Infrastructure.Seed;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -78,7 +83,42 @@ builder.Services.AddAuthentication(options =>
     });
 
 builder.Services.AddAuthorization();
-builder.Services.AddHealthChecks().AddDbContextCheck<AppDbContext>();
+
+// Partitioned per client IP (falls back to a shared bucket if none is available,
+// e.g. some test hosts) — protects the API from brute-force/credential-stuffing and
+// general abuse without needing an external gateway. "auth" is deliberately much
+// stricter than the API-wide default since login is the highest-value target for
+// automated guessing; every other authenticated endpoint is already gated by the
+// permission system, so the wider default policy is a resource-exhaustion guard, not
+// a substitute for authorization.
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        context.HttpContext.Response.ContentType = "application/json";
+        await context.HttpContext.Response.WriteAsync(
+            JsonSerializer.Serialize(new { error = "Too many requests. Please try again shortly." }), cancellationToken);
+    };
+
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions { PermitLimit = 300, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+
+    options.AddPolicy("auth", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+});
+
+// Granular checks (tagged so /health/{db,worker,integrations} can each expose just
+// their own slice) alongside the aggregate /health and a dependency-free /health/live
+// for orchestrator liveness probes — see the mapped endpoints below.
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<AppDbContext>("database", tags: ["ready", "db"])
+    .AddCheck<DevOpsPortal.Infrastructure.Deployments.BackgroundWorkerHealthCheck>("worker", tags: ["ready", "worker"])
+    .AddCheck<DevOpsPortal.Infrastructure.Integrations.IntegrationsHealthCheck>("integrations", tags: ["integrations"]);
 
 var app = builder.Build();
 
@@ -98,13 +138,45 @@ if (app.Environment.IsDevelopment())
 
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 app.UseHttpsRedirection();
+app.UseRateLimiter();
 app.UseAuthentication();
 app.UseMiddleware<TenantResolutionMiddleware>();
 app.UseAuthorization();
 
 app.MapControllers();
-app.MapHealthChecks("/health");
+
+// /health: everything, for a simple all-in-one probe. /health/live: no dependencies —
+// answers "is the process up" for an orchestrator restart policy. /health/ready:
+// database + background worker — "can this instance actually serve deployments".
+// /health/db, /health/worker, /health/integrations: each component on its own, for
+// targeted troubleshooting. All unauthenticated by design (no sensitive data in the
+// response), matching the pre-existing /health.
+var healthResponseOptions = new HealthCheckOptions { ResponseWriter = WriteHealthCheckResponseAsync };
+app.MapHealthChecks("/health", healthResponseOptions);
+app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false, ResponseWriter = WriteHealthCheckResponseAsync });
+app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = c => c.Tags.Contains("ready"), ResponseWriter = WriteHealthCheckResponseAsync });
+app.MapHealthChecks("/health/db", new HealthCheckOptions { Predicate = c => c.Tags.Contains("db"), ResponseWriter = WriteHealthCheckResponseAsync });
+app.MapHealthChecks("/health/worker", new HealthCheckOptions { Predicate = c => c.Tags.Contains("worker"), ResponseWriter = WriteHealthCheckResponseAsync });
+app.MapHealthChecks("/health/integrations", new HealthCheckOptions { Predicate = c => c.Tags.Contains("integrations"), ResponseWriter = WriteHealthCheckResponseAsync });
 
 app.Run();
+
+static Task WriteHealthCheckResponseAsync(HttpContext context, HealthReport report)
+{
+    context.Response.ContentType = "application/json";
+    var payload = new
+    {
+        status = report.Status.ToString(),
+        totalDurationMs = report.TotalDuration.TotalMilliseconds,
+        checks = report.Entries.Select(e => new
+        {
+            name = e.Key,
+            status = e.Value.Status.ToString(),
+            description = e.Value.Description,
+            durationMs = e.Value.Duration.TotalMilliseconds,
+        }),
+    };
+    return context.Response.WriteAsync(JsonSerializer.Serialize(payload));
+}
 
 public partial class Program;
