@@ -4,6 +4,7 @@ using DevOpsPortal.Application.Exceptions;
 using DevOpsPortal.Domain.Entities;
 using DevOpsPortal.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace DevOpsPortal.Application.Services;
@@ -22,8 +23,17 @@ public class DeploymentExecutor(
     IAuditService auditService,
     ISecretReferenceService secretReferenceService,
     INotificationService notificationService,
+    IConfiguration configuration,
     ILogger<DeploymentExecutor> logger) : IDeploymentExecutor
 {
+    // The deployment queue is processed one job at a time (DeploymentWorker), so a
+    // single stuck `docker compose up` (e.g. an image pull that never completes) would
+    // otherwise stall every subsequent deployment indefinitely. Configurable via
+    // Deployment:ExecutionTimeoutMinutes / DEPLOYMENT_EXECUTION_TIMEOUT_MINUTES (a
+    // double, so tests can configure a sub-second value; operators only ever set whole
+    // minutes).
+    private double TimeoutMinutes => double.TryParse(configuration["Deployment:ExecutionTimeoutMinutes"], out var minutes) && minutes > 0 ? minutes : 20;
+
     public async Task ExecuteAsync(Guid deploymentId, CancellationToken cancellationToken)
     {
         var deployment = await db.Deployments
@@ -54,6 +64,14 @@ public class DeploymentExecutor(
             cancellationToken);
         await NotifyBestEffortAsync(() => notificationService.NotifyDeploymentStartedAsync(deployment, cancellationToken), "deployment started", deployment.Id);
 
+        // Bounds the whole execution (compose commands + health check) so one stuck job
+        // can never block the single-threaded queue forever; does not affect the
+        // cancellationToken used for the final status write below, which must still be
+        // able to persist a Failed/timed-out outcome.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromMinutes(TimeoutMinutes));
+        var executionToken = timeoutCts.Token;
+
         try
         {
             var appEnv = deployment.ApplicationEnvironment;
@@ -62,7 +80,7 @@ public class DeploymentExecutor(
 
             if (deployment.Application.DeploymentMode == DeploymentMode.LegacyFilesystem)
             {
-                await ExecuteLegacyFilesystemAsync(deployment, appEnv, log, cancellationToken);
+                await ExecuteLegacyFilesystemAsync(deployment, appEnv, log, executionToken);
             }
             else
             {
@@ -73,7 +91,7 @@ public class DeploymentExecutor(
 
             await log.WriteAsync(DeploymentLogLevel.Info, "Running post-deployment health check.", cancellationToken);
             var healthResult = await healthCheckProbe.ProbeAsync(
-                appEnv.HealthCheckType, appEnv.HealthCheckEndpoint, appEnv.HealthCheckTimeoutSeconds, cancellationToken);
+                appEnv.HealthCheckType, appEnv.HealthCheckEndpoint, appEnv.HealthCheckTimeoutSeconds, executionToken);
 
             deployment.HealthCheckPassed = healthResult.Passed;
             deployment.HealthCheckDetail = LogSanitizer.Sanitize(healthResult.Detail);
@@ -97,15 +115,18 @@ public class DeploymentExecutor(
         }
         catch (Exception ex)
         {
+            var timedOut = ex is OperationCanceledException && timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested;
+            var reason = timedOut ? $"Deployment timed out after {TimeoutMinutes} minute(s)." : ex.Message;
+
             deployment.Status = DeploymentStatus.Failed;
             deployment.CompletedAt = DateTimeOffset.UtcNow;
-            deployment.FailureReason = LogSanitizer.Sanitize(ex.Message);
-            await log.WriteAsync(DeploymentLogLevel.Error, $"Deployment failed: {ex.Message}", cancellationToken);
+            deployment.FailureReason = LogSanitizer.Sanitize(reason);
+            await log.WriteAsync(DeploymentLogLevel.Error, $"Deployment failed: {reason}", cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
 
             await auditService.LogAsync(deployment.IsRollback ? "rollback.failed" : "deployment.failed", AuditResult.Failure,
                 "Deployment", deployment.Id.ToString(),
-                details: $"{deployment.Application.Name}/{deployment.EnvironmentDefinition.Name} commit {deployment.CommitSha}: {LogSanitizer.Sanitize(ex.Message)}",
+                details: $"{deployment.Application.Name}/{deployment.EnvironmentDefinition.Name} commit {deployment.CommitSha}: {LogSanitizer.Sanitize(reason)}",
                 cancellationToken: cancellationToken);
             await NotifyBestEffortAsync(() => notificationService.NotifyDeploymentOutcomeAsync(deployment, cancellationToken), "deployment failed", deployment.Id);
         }

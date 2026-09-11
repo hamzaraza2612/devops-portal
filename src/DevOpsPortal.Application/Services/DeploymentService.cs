@@ -50,6 +50,14 @@ public partial class DeploymentService(
 
     // ----------------------------------------------------------------- reads
 
+    // Deployment history only ever grows (every deploy/promote/rollback adds a row) and
+    // ListAsync has no caller-supplied paging today — capping it here is what keeps an
+    // old, heavily-deployed application's history from turning an unfiltered dashboard
+    // query into an unbounded table scan. Comfortably above any realistic "most recent
+    // deployments" view; callers that need the full history can already narrow by
+    // applicationId/environmentDefinitionId/status.
+    private const int MaxListResults = 500;
+
     public async Task<IReadOnlyList<DeploymentDto>> ListAsync(
         Guid? applicationId, Guid? environmentDefinitionId, DeploymentStatus? status, CancellationToken cancellationToken = default)
     {
@@ -58,7 +66,7 @@ public partial class DeploymentService(
         if (environmentDefinitionId is not null) query = query.Where(d => d.EnvironmentDefinitionId == environmentDefinitionId);
         if (status is not null) query = query.Where(d => d.Status == status);
 
-        return await query.OrderByDescending(d => d.RequestedAt).Select(DeploymentProjection()).ToListAsync(cancellationToken);
+        return await query.OrderByDescending(d => d.RequestedAt).Take(MaxListResults).Select(DeploymentProjection()).ToListAsync(cancellationToken);
     }
 
     public async Task<DeploymentDto> GetAsync(Guid id, CancellationToken cancellationToken = default) =>

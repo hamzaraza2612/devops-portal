@@ -24,7 +24,11 @@ public static class DependencyInjection
         var connectionString = configuration.GetConnectionString("Default")
             ?? throw new InvalidOperationException("Connection string 'Default' is not configured.");
 
-        services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
+        // EnableRetryOnFailure: transient network blips/Postgres restarts shouldn't take
+        // the whole API down with them — retries only genuinely transient Npgsql errors,
+        // never masks a real query/constraint failure.
+        services.AddDbContext<AppDbContext>(options =>
+            options.UseNpgsql(connectionString, npgsql => npgsql.EnableRetryOnFailure(maxRetryCount: 3)));
         services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
 
         // One AmbientTenantContext instance per scope, exposed as both the read-only
