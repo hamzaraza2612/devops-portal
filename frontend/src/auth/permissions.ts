@@ -14,6 +14,7 @@ export const Permissions = {
   TargetServersView: 'targetservers.view',
   TargetServersManage: 'targetservers.manage',
   EnvironmentsView: 'environments.view',
+  EnvironmentsManage: 'environments.manage',
   BuildServersView: 'buildservers.view',
   BuildServersManage: 'buildservers.manage',
   BuildsView: 'builds.view',

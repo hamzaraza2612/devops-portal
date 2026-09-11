@@ -5,7 +5,7 @@ import { Card, EmptyState, ErrorBanner, LoadingSpinner, PageHeader } from '../..
 import { useAsyncData } from '../../hooks/useAsyncData';
 import { Permissions } from '../../auth/permissions';
 import { useAuth } from '../../auth/AuthContext';
-import { RepositoryProvider, type RepositoryConnectionTestResultDto, type RepositoryDto } from '../../types/api';
+import { RepositoryProvider, type RepositoryConnectionTestResultDto, type RepositoryDto, type UpdateRepositoryRequest } from '../../types/api';
 import { describeError } from '../../api/client';
 
 export function RepositoriesPage() {
@@ -62,6 +62,7 @@ function RepositoryCard({ repo, canManage, onChanged }: { repo: RepositoryDto; c
   const [testError, setTestError] = useState<string | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [showTokenForm, setShowTokenForm] = useState(false);
+  const [showEditForm, setShowEditForm] = useState(false);
   const [token, setToken] = useState('');
 
   async function runTest() {
@@ -114,6 +115,15 @@ function RepositoryCard({ repo, canManage, onChanged }: { repo: RepositoryDto; c
           </button>
         )}
         {canManage && (
+          <button
+            type="button"
+            onClick={() => setShowEditForm((v) => !v)}
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            {showEditForm ? 'Cancel' : 'Edit'}
+          </button>
+        )}
+        {canManage && (
           <ActionButton
             label={repo.isActive ? 'Deactivate' : 'Activate'}
             variant={repo.isActive ? 'danger' : 'secondary'}
@@ -133,7 +143,26 @@ function RepositoryCard({ repo, canManage, onChanged }: { repo: RepositoryDto; c
             onSuccess={onChanged}
           />
         )}
+        {canManage && (
+          <ActionButton
+            label="Delete"
+            variant="danger"
+            confirmLabel="Confirm delete"
+            onAction={() => RepositoriesApi.delete(repo.id)}
+            onSuccess={onChanged}
+          />
+        )}
       </div>
+
+      {showEditForm && canManage && (
+        <RepositoryEditForm
+          repo={repo}
+          onSubmitted={() => {
+            setShowEditForm(false);
+            onChanged();
+          }}
+        />
+      )}
 
       {testError && <p className="mt-2 text-xs text-red-600">{testError}</p>}
       {testResult && (
@@ -177,6 +206,71 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="flex justify-between gap-3">
       <dt className="text-slate-500">{label}</dt>
       <dd className="font-medium text-slate-800">{value}</dd>
+    </div>
+  );
+}
+
+function RepositoryEditForm({ repo, onSubmitted }: { repo: RepositoryDto; onSubmitted: () => void }) {
+  const [name, setName] = useState(repo.name);
+  const [url, setUrl] = useState(repo.url);
+  const [description, setDescription] = useState(repo.description ?? '');
+  const [defaultBranch, setDefaultBranch] = useState(repo.defaultBranch ?? '');
+  const [username, setUsername] = useState(repo.username ?? '');
+  const [accessTokenEnvVarName, setAccessTokenEnvVarName] = useState(repo.accessTokenEnvVarName ?? '');
+
+  const canSubmit = name.trim() && url.trim();
+
+  function buildRequest(): UpdateRepositoryRequest {
+    return {
+      name: name.trim(),
+      url: url.trim(),
+      provider: repo.provider,
+      description: description.trim() || null,
+      defaultBranch: defaultBranch.trim() || null,
+      username: username.trim() || null,
+      accessTokenEnvVarName: accessTokenEnvVarName.trim() || null,
+      isActive: repo.isActive,
+    };
+  }
+
+  return (
+    <div className="mt-3 border-t border-slate-100 pt-3">
+      <h3 className="text-xs font-semibold text-slate-900">Edit repository</h3>
+      <div className="mt-2 grid gap-3 sm:grid-cols-2">
+        <label className="block text-xs font-medium text-slate-600">
+          Name
+          <input value={name} onChange={(e) => setName(e.target.value)} className={inputClass} />
+        </label>
+        <label className="block text-xs font-medium text-slate-600">
+          GitLab URL
+          <input value={url} onChange={(e) => setUrl(e.target.value)} className={inputClass} />
+        </label>
+        <label className="block text-xs font-medium text-slate-600">
+          Default branch
+          <input value={defaultBranch} onChange={(e) => setDefaultBranch(e.target.value)} className={inputClass} placeholder="main" />
+        </label>
+        <label className="block text-xs font-medium text-slate-600">
+          Username
+          <input value={username} onChange={(e) => setUsername(e.target.value)} className={inputClass} />
+        </label>
+        <label className="block text-xs font-medium text-slate-600 sm:col-span-2">
+          Description
+          <input value={description} onChange={(e) => setDescription(e.target.value)} className={inputClass} placeholder="Optional" />
+        </label>
+        <label className="block text-xs font-medium text-slate-600 sm:col-span-2">
+          Legacy: access token environment variable name
+          <input value={accessTokenEnvVarName} onChange={(e) => setAccessTokenEnvVarName(e.target.value)} className={inputClass} />
+        </label>
+      </div>
+      <div className="mt-3">
+        <ActionButton
+          label="Save changes"
+          disabled={!canSubmit}
+          disabledReason="Name and URL are required."
+          onAction={() => RepositoriesApi.update(repo.id, buildRequest())}
+          onSuccess={onSubmitted}
+        />
+      </div>
     </div>
   );
 }

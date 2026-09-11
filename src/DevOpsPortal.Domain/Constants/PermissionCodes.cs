@@ -20,6 +20,7 @@ public static class PermissionCodes
     public const string TargetServersView = "targetservers.view";
     public const string TargetServersManage = "targetservers.manage";
     public const string EnvironmentsView = "environments.view";
+    public const string EnvironmentsManage = "environments.manage";
 
     public const string DeploymentsView = "deployments.view";
     public const string DeploymentsDeployDev = "deployments.deploy.dev";
@@ -58,6 +59,7 @@ public static class PermissionCodes
         (TargetServersView, "View target servers and their allowed deployment roots"),
         (TargetServersManage, "Create and configure target servers and allowed deployment roots"),
         (EnvironmentsView, "View pipeline environment definitions"),
+        (EnvironmentsManage, "Edit a pipeline environment's IsProductionLike flag and active status"),
         (DeploymentsView, "View deployments, promotion requests, and deployment logs"),
         (DeploymentsDeployDev, "Deploy an application to DEV"),
         (DeploymentsPromoteQa, "Request promotion of a successful DEV deployment to QA"),

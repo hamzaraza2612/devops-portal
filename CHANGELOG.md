@@ -8,6 +8,68 @@ procedure — in short: back up first, `git pull` / pull the new image,
 (new nullable columns/tables); none has ever dropped or destructively
 altered existing data.
 
+## v1.2.0 — Configuration CRUD & Environment Server Dashboard host metrics
+
+Closes the remaining "DevOps has to edit the database to configure the
+portal" gaps: every configuration/resource type the portal manages now has
+full Create/View/Edit/Delete coverage in the UI (previously several had
+create-only or view-only screens), and the "Test Connection" check against
+a `TargetServer` now also reports host-level uptime/load, memory, and disk
+— the "Environment Server Dashboard" data master requirements asked for,
+alongside the SSH/Docker/Compose status that already existed.
+
+**Highlights**:
+- **Applications**: full Create/Edit/Delete/Deactivate from the
+  Applications list (previously view-only with a "manage via the
+  API/admin tooling" placeholder).
+- **Application environment configuration**: the target server, deployment
+  paths, compose/service/container names, health check, and application
+  URL for each application × environment pairing can now be created,
+  edited, and removed directly from the application's details page
+  (previously there was no UI for this at all — the biggest gap closed
+  this release).
+- **Repositories, Target Servers, Secrets, Users**: Edit and Delete (or
+  Deactivate, where a hard delete isn't safe — see below) added everywhere
+  Create already existed but Edit/Delete didn't; Secrets also gained a
+  "Rotate value" action distinct from editing metadata.
+- **Environments admin page**: a new `/admin/environments` page to view
+  and edit the bounded, safe subset of environment-stage configuration
+  (`IsProductionLike`, `IsActive`) — see "Known limitations" for why Name/
+  SortOrder/full Create/Delete are deliberately not offered.
+- **Environment Server Dashboard host metrics**: "Test Connection" now
+  also runs `uptime`, `free -h`, and `df -h` on the target server and
+  reports the raw output alongside the existing SSH/Docker/Compose
+  status — never fabricated: any command that fails independently reports
+  as unavailable rather than failing the whole test or inventing a value.
+
+**Delete semantics** (unchanged behavior, now exposed in the UI): most
+entities (`TargetServer`, `Repository`, `User`, `Secret`) already used to
+deactivate rather than hard-delete; this release adds real `DELETE`
+endpoints only where a row is either safe to hard-delete unconditionally
+(`Repository` — any reference is cleared, not cascaded) or where deletion
+is guarded by a live check for dependents and refused with a clear error
+otherwise (`ApplicationEnvironment`, `ManagedApplication`, `TargetServer`
+— all blocked while deployment/config history references them). Deleting
+a configuration record never touches the actual remote server, its Docker
+containers, or application data — it only removes the portal's own
+reference.
+
+**Known limitations**: `EnvironmentDefinition` (the four pipeline stages)
+deliberately does not get a full Create or hard-Delete — their `Name` and
+`SortOrder` are load-bearing, hardcoded by exact string throughout both
+the backend's permission-synthesis/deployment-service dictionaries and the
+frontend's environment-tier dictionaries; adding a fifth stage through a
+generic Create would silently grant it zero permissions rather than fail
+loudly, so only `IsProductionLike`/`IsActive` are editable until a broader
+change makes the pipeline stages themselves data-driven. As in v1.1.0, no
+real DEV/QA/UAT/PRODUCTION target server was reachable from this release's
+own build environment to exercise the new host-metrics commands against;
+the SSH connect/auth/command-execution code path itself (not just the
+`ssh` CLI) was validated against a local loopback `openssh-server`
+installed for that one-off check — see `PROJECT_STATE.md`'s Phase 13
+section for exactly what that did and didn't prove, and for the manual
+verification steps to run against real infrastructure.
+
 ## v1.1.0 — Real remote execution, GitLab integration & simplified authorization
 
 Closes the two biggest gaps called out in v1.0.0's known limitations:

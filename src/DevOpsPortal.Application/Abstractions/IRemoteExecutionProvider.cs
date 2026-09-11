@@ -24,9 +24,16 @@ public record RemoteContainerStatsResult(bool Success, string RawJson, string? E
 
 /// <summary>Result of a "Test Connection" check against a TargetServer (master
 /// requirements §6): verifies SSH connectivity, the authenticated remote user,
-/// basic OS identification, and Docker/Compose availability + versions. Never
-/// fakes a successful result — when SshConnected is false every other field is
-/// meaningless and ErrorMessage explains why.</summary>
+/// basic OS identification, Docker/Compose availability + versions, and
+/// host-level resource info (uptime/load, memory, disk — Phase 13 "Environment
+/// Server Dashboard"). Each host-metric field is the raw output of a single
+/// read-only command (`uptime`, `free -h`, `df -h`) rather than parsed
+/// numbers — same provider-agnostic-string pattern as OsInfo, and it means a
+/// parsing failure can never fabricate a number. Never fakes a successful
+/// result — when SshConnected is false every other field is meaningless and
+/// ErrorMessage explains why; when SshConnected is true but an individual
+/// host-metric command fails, that one field is null rather than failing the
+/// whole test.</summary>
 public record RemoteConnectionTestResult(
     bool SshConnected,
     string? AuthenticatedUser,
@@ -35,6 +42,9 @@ public record RemoteConnectionTestResult(
     string? DockerVersion,
     bool ComposeAvailable,
     string? ComposeVersion,
+    string? UptimeInfo,
+    string? MemoryInfo,
+    string? DiskInfo,
     string? ErrorMessage);
 
 /// <summary>

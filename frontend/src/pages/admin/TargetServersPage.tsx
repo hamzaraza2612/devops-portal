@@ -6,7 +6,13 @@ import { useAsyncData } from '../../hooks/useAsyncData';
 import { Permissions } from '../../auth/permissions';
 import { useAuth } from '../../auth/AuthContext';
 import { describeError } from '../../api/client';
-import { SshAuthMethod, type TargetServerConnectionTestResultDto, type TargetServerDto } from '../../types/api';
+import {
+  SshAuthMethod,
+  type AllowedDeploymentRootDto,
+  type TargetServerConnectionTestResultDto,
+  type TargetServerDto,
+  type UpdateTargetServerRequest,
+} from '../../types/api';
 
 const authMethodLabel: Record<SshAuthMethod, string> = {
   [SshAuthMethod.PrivateKey]: 'SSH private key',
@@ -87,6 +93,7 @@ function TargetServerCard({
   const [testError, setTestError] = useState<string | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [showCredentialForm, setShowCredentialForm] = useState(false);
+  const [showEditForm, setShowEditForm] = useState(false);
   const [credential, setCredential] = useState('');
   const [passphrase, setPassphrase] = useState('');
 
@@ -119,6 +126,15 @@ function TargetServerCard({
             {server.isActive ? 'Active' : 'Inactive'}
           </span>
           {canManage && (
+            <button
+              type="button"
+              onClick={() => setShowEditForm((v) => !v)}
+              className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            >
+              {showEditForm ? 'Cancel' : 'Edit'}
+            </button>
+          )}
+          {canManage && (
             <ActionButton
               label={server.isActive ? 'Deactivate' : 'Activate'}
               variant={server.isActive ? 'danger' : 'secondary'}
@@ -137,8 +153,27 @@ function TargetServerCard({
               onSuccess={onChanged}
             />
           )}
+          {canManage && (
+            <ActionButton
+              label="Delete"
+              variant="danger"
+              confirmLabel="Confirm delete"
+              onAction={() => TargetServersApi.delete(server.id)}
+              onSuccess={onChanged}
+            />
+          )}
         </div>
       </div>
+
+      {showEditForm && canManage && (
+        <TargetServerEditForm
+          server={server}
+          onSubmitted={() => {
+            setShowEditForm(false);
+            onChanged();
+          }}
+        />
+      )}
 
       <dl className="mt-3 grid gap-1 text-xs sm:grid-cols-2">
         <Row label="SSH user" value={server.sshUsername ?? '—'} />
@@ -184,6 +219,9 @@ function TargetServerCard({
                 Compose {testResult.composeAvailable ? `OK (${testResult.composeVersion})` : 'NOT AVAILABLE'}
               </p>
               {testResult.osInfo && <p className="text-slate-500">{testResult.osInfo}</p>}
+              {testResult.uptimeInfo && <p className="whitespace-pre-wrap text-slate-500">Uptime/load: {testResult.uptimeInfo}</p>}
+              {testResult.memoryInfo && <pre className="mt-1 whitespace-pre-wrap rounded bg-slate-50 p-1.5 font-mono text-[11px] text-slate-600">{testResult.memoryInfo}</pre>}
+              {testResult.diskInfo && <pre className="whitespace-pre-wrap rounded bg-slate-50 p-1.5 font-mono text-[11px] text-slate-600">{testResult.diskInfo}</pre>}
             </>
           )}
           {!testResult.sshConnected && testResult.errorMessage && <p className="text-red-600">{testResult.errorMessage}</p>}
@@ -247,10 +285,7 @@ function TargetServerCard({
           ) : (
             <ul className="mt-1 space-y-1">
               {server.allowedDeploymentRoots.map((root) => (
-                <li key={root.id} className="flex items-center gap-2 text-xs">
-                  <span className={`font-mono ${root.isActive ? 'text-slate-700' : 'text-slate-400 line-through'}`}>{root.rootPath}</span>
-                  {root.description && <span className="text-slate-400">— {root.description}</span>}
-                </li>
+                <AllowedRootRow key={root.id} targetServerId={server.id} root={root} canManage={canManage} onChanged={onChanged} />
               ))}
             </ul>
           )}
@@ -266,6 +301,114 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="flex justify-between gap-3">
       <dt className="text-slate-500">{label}</dt>
       <dd className="font-medium text-slate-800">{value}</dd>
+    </div>
+  );
+}
+
+/** No dedicated edit-fields form for the path/description — deactivating is
+ * this row's own established "remove" affordance (same pattern as
+ * TargetServer/Repository/User elsewhere in this admin UI); the path itself
+ * is rarely worth editing in place versus adding a new one and deactivating
+ * the old. */
+function AllowedRootRow({
+  targetServerId,
+  root,
+  canManage,
+  onChanged,
+}: {
+  targetServerId: string;
+  root: AllowedDeploymentRootDto;
+  canManage: boolean;
+  onChanged: () => void;
+}) {
+  return (
+    <li className="flex flex-wrap items-center gap-2 text-xs">
+      <span className={`font-mono ${root.isActive ? 'text-slate-700' : 'text-slate-400 line-through'}`}>{root.rootPath}</span>
+      {root.description && <span className="text-slate-400">— {root.description}</span>}
+      {canManage && (
+        <ActionButton
+          label={root.isActive ? 'Deactivate' : 'Activate'}
+          variant={root.isActive ? 'danger' : 'secondary'}
+          onAction={() =>
+            TargetServersApi.updateAllowedRoot(targetServerId, root.id, {
+              rootPath: root.rootPath,
+              description: root.description,
+              isActive: !root.isActive,
+            })
+          }
+          onSuccess={onChanged}
+        />
+      )}
+    </li>
+  );
+}
+
+function TargetServerEditForm({ server, onSubmitted }: { server: TargetServerDto; onSubmitted: () => void }) {
+  const [name, setName] = useState(server.name);
+  const [description, setDescription] = useState(server.description ?? '');
+  const [hostname, setHostname] = useState(server.hostname ?? '');
+  const [sshPort, setSshPort] = useState(String(server.sshPort));
+  const [sshUsername, setSshUsername] = useState(server.sshUsername ?? '');
+  const [sshAuthMethod, setSshAuthMethod] = useState<SshAuthMethod>(server.sshAuthMethod);
+
+  function buildRequest(): UpdateTargetServerRequest {
+    return {
+      name: name.trim(),
+      description: description.trim() || null,
+      hostname: hostname.trim() || null,
+      sshPort: Number(sshPort) || 22,
+      sshUsername: sshUsername.trim() || null,
+      sshAuthMethod,
+      isActive: server.isActive,
+    };
+  }
+
+  return (
+    <div className="mt-3 border-t border-slate-100 pt-3">
+      <h3 className="text-xs font-semibold text-slate-900">Edit target server</h3>
+      <div className="mt-2 grid gap-3 sm:grid-cols-2">
+        <label className="block text-xs font-medium text-slate-600">
+          Name
+          <input value={name} onChange={(e) => setName(e.target.value)} className={inputClass} />
+        </label>
+        <label className="block text-xs font-medium text-slate-600">
+          Hostname / IP
+          <input value={hostname} onChange={(e) => setHostname(e.target.value)} className={inputClass} />
+        </label>
+        <label className="block text-xs font-medium text-slate-600">
+          SSH port
+          <input value={sshPort} onChange={(e) => setSshPort(e.target.value)} className={inputClass} />
+        </label>
+        <label className="block text-xs font-medium text-slate-600">
+          SSH username
+          <input value={sshUsername} onChange={(e) => setSshUsername(e.target.value)} className={inputClass} />
+        </label>
+        <label className="block text-xs font-medium text-slate-600">
+          Authentication method
+          <select value={sshAuthMethod} onChange={(e) => setSshAuthMethod(Number(e.target.value) as SshAuthMethod)} className={inputClass}>
+            <option value={SshAuthMethod.PrivateKey}>SSH private key</option>
+            <option value={SshAuthMethod.Password}>Password</option>
+          </select>
+        </label>
+        <label className="block text-xs font-medium text-slate-600 sm:col-span-2">
+          Description
+          <input value={description} onChange={(e) => setDescription(e.target.value)} className={inputClass} />
+        </label>
+      </div>
+      {sshAuthMethod !== server.sshAuthMethod && (
+        <p className="mt-2 text-xs text-amber-700">
+          Changing the authentication method means the previously stored credential no longer applies — set a new one below after saving.
+        </p>
+      )}
+      <div className="mt-3">
+        <ActionButton
+          label="Save changes"
+          disabled={!name.trim()}
+          disabledReason="Name is required."
+          onAction={() => TargetServersApi.update(server.id, buildRequest())}
+          onSuccess={onSubmitted}
+        />
+      </div>
     </div>
   );
 }

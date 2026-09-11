@@ -3709,6 +3709,194 @@ it successfully).
   implements). Worth a dedicated follow-up phase if visual polish matters
   more than further backend capability right now.
 
+## Phase 13 — Configuration CRUD & Environment Server Dashboard host metrics
+
+Done. Two objectives: (1) every configuration/resource type DevOps can
+create through the portal UI gets full Create/View/Edit/Delete coverage,
+so nobody needs to SSH into the portal VM or edit the database to
+maintain portal configuration; (2) the "Environment Server Dashboard"
+gains real host-level metrics (CPU/RAM/Disk/Uptime), on top of the
+SSH/Docker/Compose status "Test Connection" already reported. Explicitly
+scoped as additive — this phase does not redesign or reimplement any
+existing functionality (deployment execution, container monitoring, the
+DEV→QA→UAT→Production workflow, authorization model, and GitLab
+integration are all unchanged from Phase 12/§6a).
+
+### §1 — Configuration CRUD
+
+Every entry point below reuses an existing service method/endpoint and
+authorization attribute — no new backend authorization surface, no new
+abstraction. What changed is exclusively that the frontend now offers an
+Edit/Delete affordance where before there was Create-only, view-only, or
+nothing:
+
+- **Applications** (`ApplicationsListPage.tsx`): full Create/Edit/Delete/
+  Deactivate — previously view-only with a static "manage via the API/
+  admin tooling" placeholder. Uses the already-existing
+  `POST/PUT/DELETE /applications` endpoints
+  (`PermissionCodes.ApplicationsManage`).
+- **Application environment configuration** (`ApplicationDetailsPage.tsx`,
+  new `ApplicationEnvironmentConfigForm`): target server, branch,
+  deployment root path, compose file path, publish/backup subpaths,
+  backup retention, compose project/service/container names, external
+  network name, `down -v` toggle, health check type/endpoint/interval/
+  timeout, and application URL — all creatable, editable, and removable
+  per application × environment pairing. This was the single biggest gap:
+  there was previously **no UI at all** to configure a new
+  `ApplicationEnvironment` row; it had to be done directly against the
+  API. Uses the existing `PUT/DELETE /applications/{id}/environments/
+  {environmentDefinitionId}` endpoints (`UpsertApplicationEnvironmentRequest`,
+  unchanged).
+- **Repositories, Target Servers** (`admin/RepositoriesPage.tsx`,
+  `admin/TargetServersPage.tsx`): Edit forms and Delete actions added
+  alongside the Create forms and Test Connection actions that already
+  existed.
+- **Secrets/Credentials** (`CredentialsPage.tsx`): "Edit" (metadata —
+  description/username/host/port/databaseName, value unchanged), "Rotate
+  value" (value only, metadata unchanged), and "Delete" added alongside
+  the existing Create/reveal/Deactivate. Rotate and Edit both call the
+  existing `SecretsApi.update` with the appropriate fields held constant
+  — no new backend endpoint. Delete calls the pre-existing
+  `DELETE /secrets/{id}` (had zero UI call sites before this phase).
+- **Environments** (new `admin/EnvironmentsPage.tsx`, route
+  `/admin/environments`, nav entry "Environments"): view and edit
+  `IsProductionLike`/`IsActive` for each of the four pipeline stages.
+  Deliberately bounded — see "Known limitations" for why a full Create/
+  hard-Delete is not offered.
+- **Users**: "Reset password" action added to `admin/UsersPage.tsx`,
+  wired to the pre-existing `POST /users/{id}/reset-password`
+  (`UsersApi.resetPassword`) which had no UI call site before this phase.
+  Environment/access editing already existed (`UserAccessEditor`) and is
+  unchanged.
+
+**Backend additions** (all thin — a guarded `DeleteAsync` per service,
+mirroring the existing `CreateAsync`/`UpdateAsync` pattern in each file):
+`ApplicationEnvironmentService.DeleteAsync` (blocked while any
+`Deployment` references the row), `ApplicationService.DeleteAsync`
+(blocked while any `Deployment` references the application),
+`TargetServerService.DeleteAsync` (blocked while any
+`ApplicationEnvironment` references the server), `RepositoryService.DeleteAsync`
+(unconditional — the FK is `SetNull`, so any application referencing the
+repository just has its link cleared, never cascaded), and
+`EnvironmentDefinitionService.UpdateAsync` (new
+`PermissionCodes.EnvironmentsManage`, restricted to `IsProductionLike`/
+`IsActive`). Every guarded delete throws the existing `ConflictException`
+(409) with a message naming what's still referencing it — the UI surfaces
+this via `ActionButton`'s existing inline error display, no new error-handling
+code needed.
+
+**Deleting configuration never touches the real remote server, its Docker
+containers, or application data** — every delete above removes only the
+portal's own configuration record/reference, consistent with every prior
+phase's delete semantics (deactivate-in-place for most entities, hard
+delete only where an FK makes it provably safe or a dependents check
+blocks it first).
+
+### §2 — Environment Server Dashboard host metrics
+
+`IRemoteExecutionProvider.TestConnectionAsync`'s result
+(`RemoteConnectionTestResult`) gained three fields — `UptimeInfo`,
+`MemoryInfo`, `DiskInfo` — populated by `SshRemoteExecutionProvider` from
+the raw output of `uptime`, `free -h`, and `df -h / 2>/dev/null || df -h .`
+respectively, run in the same SSH session as the existing `whoami`/
+`uname -a`/`docker version`/`docker compose version` calls. Each field is
+the **raw command output**, not parsed numbers — same pattern as the
+pre-existing `OsInfo` field — so a parsing failure can never fabricate a
+value; if one command fails independently, only that field is `null`
+rather than failing the whole connection test.
+`TargetServerConnectionTestResultDto` and the frontend's matching type
+carry the same three fields through to `admin/TargetServersPage.tsx`,
+which renders them under the existing Docker/Compose status in the "Test
+Connection" result panel. `NotConfiguredRemoteExecutionProvider` reports
+all three as `null`, consistent with every other field it returns.
+
+### §3 — Verified unchanged (no reimplementation)
+
+Confirmed still correct and untouched by this phase, per its "must not
+redesign or reimplement existing functionality" constraint: SSH
+configuration UI (Phase 12 §3), Test Connection (Phase 12 §3, extended in
+§2 above — not replaced), real container start/stop/restart/recreate
+(Phase 12 §3), real LegacyFilesystem and ContainerImage deployment
+execution on the target server (Phase 12 §4/§7 —
+`DeploymentExecutor` still calls `IRemoteExecutionProvider` directly, no
+new abstraction layer inserted), the generic (non-Techbey-hardcoded)
+deployment-path configuration (`deploymentRootPath`/`composeFilePath`
+free-text fields, unchanged since Phase 11 §4), the explicit
+DEV→QA→UAT→Production workflow and CTO-approval gating (Phase 12 §2,
+`PromotionControls`/`DeploymentService` unchanged), application-level
+pending-request visibility with per-user environment filtering
+(`PendingRequestsPage.tsx` → `hasEnvironmentAccess`, unchanged), and
+GitLab connection verification (Phase 12 §5, unchanged).
+
+### §4 — Real-world validation
+
+**Local SSH mechanism validation (not a real DEV/QA/UAT/PRODUCTION
+test):** an `openssh-server` was installed and started in this build
+sandbox for one manual validation run, specifically to exercise the real
+`SshRemoteExecutionProvider` class end-to-end (connect, key-based auth,
+remote command execution) against a live SSH server — not just the `ssh`
+CLI, and not a fake/mock. A throwaway ed25519 keypair was generated,
+`TestConnectionAsync` was called directly against `127.0.0.1` with a
+`TargetServer` configured for `SshAuthMethod.PrivateKey`, and it returned
+`SshConnected: true`, `AuthenticatedUser: "root"`, a real `uname -a`
+`OsInfo` string, `ComposeAvailable: true` (the `docker compose` CLI
+plugin is present even without a running daemon), `DockerAvailable:
+false` with the existing honest error message (this sandbox's Docker
+daemon is not running — no `/var/run/docker.sock`), and non-null
+`UptimeInfo`/`MemoryInfo`/`DiskInfo` with real `uptime`/`free -h`/`df -h`
+output. This proves the real connect/auth/command-execution/host-metrics
+code path works, including its honest-failure path for an unavailable
+Docker daemon. The sshd instance, keypair, and `authorized_keys` entry
+were all removed again immediately after this one validation run — none
+of it is part of the committed change.
+
+**What this does NOT prove:** no real DEV/QA/UAT/PRODUCTION target server
+was reachable from this build environment, so deployment execution,
+container start/stop/restart/recreate, and the new host-metrics commands
+were never exercised against an actual Techbey (or any other) target
+server. Before production reliance, manually verify against one: add a
+`TargetServer` with its real SSH credentials, run "Test Connection" and
+confirm the host-metrics panel shows sensible output, then perform one
+real DEV deployment and one container restart/recreate.
+
+### Tests
+
+375/375 backend (`dotnet test`), 43/43 frontend (`npm run test -- --run`).
+New backend tests: `EnvironmentDefinitionServiceTests.UpdateAsync_*`
+(confirms Name/SortOrder are untouched by an update), and
+`SshRemoteExecutionProviderTests.TestConnectionAsync_WhenNotConfigured_*`
+(confirms the three new host-metric fields are `null`, never fabricated,
+when the connection was never attempted — matching the honesty
+convention every other field in that result already follows). No new
+frontend tests were added specifically for this phase's CRUD forms beyond
+fixing `ApplicationDetailsPage.test.tsx`'s mock (it now also mocks
+`TargetServersApi.list`, called by the new environment-config form to
+populate its target-server dropdown); the existing component test suite
+continues to pass unchanged, and every new form reuses the already-tested
+`ActionButton`/`useAsyncData` patterns.
+
+### Known limitations (this phase)
+
+- **`EnvironmentDefinition` still has no full Create or hard-Delete** —
+  confirmed via a dedicated read-only audit before implementing anything:
+  `Name`/`SortOrder` are load-bearing and hardcoded by exact string
+  throughout both `AppDbContextExtensions.PermissionsByEnvironmentName`/
+  `DeploymentService`'s permission dictionaries (backend) and
+  `permissions.ts`'s `EnvironmentTiers` + mirroring dictionaries
+  (frontend). A generically-added fifth stage would silently receive zero
+  grantable permissions rather than fail loudly, so only
+  `IsProductionLike`/`IsActive` are editable from `admin/EnvironmentsPage.tsx`.
+  Making the pipeline stages themselves fully data-driven is a
+  substantial, deliberate follow-up design, not a reflexive CRUD
+  extension — flag before starting.
+- **No real target server was reachable** to validate deployment
+  execution, container control, or the new host-metrics commands against
+  actual infrastructure — see §4 above for exactly what local validation
+  did and didn't cover, and the manual verification steps.
+- Every other Phase 12 "Known limitations" entry (QA/UAT promotion
+  authorization coarseness, no registry-credential entity, sessionStorage-based
+  session storage) is unchanged by this phase.
+
 ## Production-critical gaps / next implementation
 
 **Items 1–5 below (carried forward since Phase 5/6/7) are now resolved by
@@ -3745,6 +3933,10 @@ Carried forward, unresolved:
    new remote-execution/GitLab paths end-to-end** — see Phase 12's "Known
    limitations" for exactly what was and wasn't verified, and the
    recommended manual verification steps before production reliance.
+   **Partially narrowed by Phase 13 §4**: the real `SshRemoteExecutionProvider`
+   connect/auth/command-execution code path (including the new host-metrics
+   commands) was validated against a local loopback `openssh-server` — still
+   not a real target server, but no longer entirely unexercised code.
 9. **QA/UAT promotion request vs. approve/deploy authorization is now
    coarser** than before Phase 9/12 (Phase 12 §2/"Known limitations") — a
    deliberate simplification, flagged in case per-environment separation

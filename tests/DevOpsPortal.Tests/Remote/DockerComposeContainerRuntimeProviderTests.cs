@@ -302,6 +302,6 @@ public class DockerComposeContainerRuntimeProviderTests
             Task.FromResult(new RemoteContainerStatsResult(statsSuccess, statsSuccess ? statsJson : string.Empty, statsSuccess ? null : "stats failed"));
 
         public Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new RemoteConnectionTestResult(isConfigured, null, null, false, null, false, null, isConfigured ? null : "not configured"));
+            Task.FromResult(new RemoteConnectionTestResult(isConfigured, null, null, false, null, false, null, null, null, null, isConfigured ? null : "not configured"));
     }
 }

@@ -14,6 +14,11 @@ public interface IApplicationEnvironmentService
     Task<ApplicationEnvironmentDto> UpsertAsync(
         Guid applicationId, Guid environmentDefinitionId, UpsertApplicationEnvironmentRequest request, CancellationToken cancellationToken = default);
 
+    /// <summary>Removes the config row itself — blocked while any Deployment
+    /// references it (use IsActive: false via UpsertAsync instead once
+    /// deployment history exists).</summary>
+    Task DeleteAsync(Guid applicationId, Guid environmentDefinitionId, CancellationToken cancellationToken = default);
+
     /// <summary>Read-only GitLab lookup using this app's Repository and this environment's
     /// configured BranchName. Never auto-deploys — purely informational. Fails gracefully
     /// (Success=false) rather than throwing if the repository/branch isn't reachable.</summary>

@@ -44,6 +44,16 @@ public class ApplicationsController(
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateApplicationRequest request, CancellationToken cancellationToken) =>
         Ok(await applicationService.UpdateAsync(id, request, cancellationToken));
 
+    /// <summary>Blocked (409) while any Deployment exists for this application —
+    /// deactivate it (PUT with IsActive: false) instead to preserve history.</summary>
+    [HttpDelete("{id:guid}")]
+    [RequirePermission(PermissionCodes.ApplicationsManage)]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
+    {
+        await applicationService.DeleteAsync(id, cancellationToken);
+        return NoContent();
+    }
+
     [HttpGet("{id:guid}/environments")]
     [RequirePermission(PermissionCodes.ApplicationsView)]
     public async Task<IActionResult> GetEnvironments(Guid id, CancellationToken cancellationToken) =>
@@ -59,6 +69,16 @@ public class ApplicationsController(
     public async Task<IActionResult> UpsertEnvironment(
         Guid id, Guid environmentDefinitionId, [FromBody] UpsertApplicationEnvironmentRequest request, CancellationToken cancellationToken) =>
         Ok(await environmentService.UpsertAsync(id, environmentDefinitionId, request, cancellationToken));
+
+    /// <summary>Blocked (409) while any Deployment references this row —
+    /// upsert with IsActive: false instead to preserve deployment history.</summary>
+    [HttpDelete("{id:guid}/environments/{environmentDefinitionId:guid}")]
+    [RequirePermission(PermissionCodes.ApplicationsManage)]
+    public async Task<IActionResult> DeleteEnvironment(Guid id, Guid environmentDefinitionId, CancellationToken cancellationToken)
+    {
+        await environmentService.DeleteAsync(id, environmentDefinitionId, cancellationToken);
+        return NoContent();
+    }
 
     [HttpGet("{id:guid}/environments/{environmentDefinitionId:guid}/commits/latest")]
     [RequirePermission(PermissionCodes.ApplicationsView)]
