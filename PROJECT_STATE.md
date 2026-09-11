@@ -3897,6 +3897,178 @@ continues to pass unchanged, and every new form reuses the already-tested
   authorization coarseness, no registry-credential entity, sessionStorage-based
   session storage) is unchanged by this phase.
 
+## Phase 13c — Real server/Docker discovery for the Environment Infrastructure Dashboard
+
+Done. Corrective phase: Phase 13's own "Environment Server Dashboard" (§2
+above) only extended `TestConnectionAsync`'s host metrics — it never
+addressed the actual complaint, which is that opening an environment's
+page showed nothing but database-driven deployment records
+("No applications currently deployed to DEV") even with a real target
+server configured. This phase makes container/host discovery genuinely
+independent of the `Application`/`ApplicationEnvironment` model.
+
+### §1 — Environment → TargetServer assignment
+
+`EnvironmentDefinition` gained `PrimaryTargetServerId` (nullable FK to
+`TargetServer`, `SetNull` on delete — migration
+`Phase13b_EnvironmentPrimaryTargetServer`) — the one new piece of
+configuration state this phase needed. Settable from
+`admin/EnvironmentsPage.tsx`'s existing bounded edit form (a new dropdown
+next to `IsProductionLike`/`IsActive`, still gated by
+`EnvironmentsManage`). This is deliberately independent of
+`ApplicationEnvironment.TargetServerId`: an environment can have real
+infrastructure discovery working with zero applications configured, which
+is the whole point.
+
+### §2 — Whole-server container discovery (`IRemoteExecutionProvider` additions)
+
+Three new methods, all real in `SshRemoteExecutionProvider` and honestly
+"not configured" in `NotConfiguredRemoteExecutionProvider`:
+
+- `DiscoverContainersAsync` — `ids=$(docker ps -aq); if [ -n "$ids" ]; then
+  docker inspect $ids; else echo '[]'; fi` (one command, entirely fixed —
+  `docker ps`'s own output feeds `docker inspect`, never anything
+  caller-supplied, so there is no injection surface at all here) plus a
+  separate unscoped `docker stats --no-stream --format '{{json .}}'` (no
+  name filter = every running container's stats in one shot). Two SSH
+  round trips over one connection, regardless of container count — the
+  same "avoid N calls for N containers" principle `TestConnectionAsync`
+  already established for host commands.
+- `RunContainerActionAsync` — direct `docker start|stop|restart <id>` for
+  a container discovered outside any configured `ApplicationEnvironment`
+  (no known compose file, so `docker compose <op>` doesn't apply).
+  Deliberately excludes "recreate with volumes": that needs a known
+  compose file/working directory, so it stays available only through the
+  existing `ComposeOperation.DownWithVolumes`/`Up` path for a *mapped*
+  container (see §4).
+- `GetHostMetricsAsync` — `/proc/loadavg`, `free -b` (exact bytes), and
+  `df -Pk` (exact 1024-byte blocks) — chosen over `TestConnectionAsync`'s
+  existing `uptime`/`free -h`/`df -h` specifically because they're
+  reliably machine-parseable without guessing at Ki/Mi/Gi unit suffixes.
+  `TestConnectionAsync`'s own three raw-text fields are untouched — this
+  is a new, separate method, not a change to them.
+
+`DockerDiscoveryParser` (`Application/Common`, pure/no I/O, same
+principle as `ContainerStateMapper`) parses `docker inspect`'s JSON array
+(id, name, image/tag, state, health, restart count, created/started time,
+ports) and `docker stats`'s NDJSON (keyed by container name) into
+`DiscoveredContainerRaw`/`ContainerStatsInfo`, plus the three host-metric
+raw strings into structured `Load1/5/15`, `MemTotal/Used/AvailableBytes`,
+`DiskTotal/Used/AvailableBytes`/`DiskUsePercent` — every field
+independently nullable on a parse failure, never fabricated, mirroring
+`RemoteConnectionTestResult`'s existing honesty convention.
+
+### §3 — `EnvironmentInfrastructureService` (new, additive)
+
+Scoped to one `EnvironmentDefinition` alone — not one
+Application×Environment pairing, unlike `ContainerOperationsService`,
+which is untouched and still backs the per-application container view on
+`ApplicationDetailsPage.tsx`. `GetInfrastructureAsync` resolves the
+environment's `PrimaryTargetServer`, and:
+
+- No server assigned → `IsConfigured: false` with a clear message, never
+  an attempted connection.
+- SSH unreachable → `SshConnected: false` with the real error message,
+  **discovery is never attempted** (confirmed via a test asserting the
+  fake provider's discovery call count stays 0) — never a bare "no
+  containers".
+- Docker unavailable → same pattern, `DockerAvailable: false`, discovery
+  skipped.
+- Both up → `DiscoverContainersAsync` runs, results are matched against
+  this environment's `ApplicationEnvironment.ContainerName` values (exact
+  name match only — deliberately not a compose-project/service-name
+  heuristic, which would risk a false-positive ownership claim) to mark
+  each container `IsMapped` with its `ApplicationName`, or clearly
+  unmapped.
+
+`RunContainerActionAsync`/`GetContainerLogsAsync` both re-run
+`DiscoverContainersAsync` and check the caller-supplied `containerId`
+against the fresh result **before** doing anything — a browser-supplied
+id is never trusted on its own, even though it was legitimately
+discovered on an earlier page load (master requirement: re-validate
+against the target server, not just once at load time). Same
+`EnsurePermissionAsync`/`EnsureEnvironmentAccessAsync` gates as every
+other Phase 12 container-facing service — `ContainersView` for read,
+`ContainersControl` for actions — enforced inside the service itself
+(`EnvironmentsController` has no per-action `[RequirePermission]`,
+matching the `SecretsController`/`ContainerOperationsService` pattern of
+exercising the same authorization code whether or not a request reaches
+the controller).
+
+### §4 — API surface
+
+All under the existing `EnvironmentsController` (`api/environments`, base
+`[RequirePermission(EnvironmentsView)]`, itself base-tier so any user with
+some environment access can reach the controller — the service's own
+finer-grained checks do the real gating):
+`GET {id}/infrastructure`, `POST {id}/infrastructure/containers/{containerId}/start|stop|restart`,
+`GET {id}/infrastructure/containers/{containerId}/logs?tailLines=N`.
+"Recreate with volumes" for a *mapped* container reuses the existing
+`POST /applications/{applicationId}/environments/{environmentDefinitionId}/containers/recreate`
+endpoint unchanged — the frontend calls it directly when
+`DiscoveredContainerDto.CanRecreateWithVolumes` is true, no new backend
+code for that path.
+
+### §5 — Frontend: the Environment Infrastructure Dashboard
+
+`EnvironmentDashboardPage.tsx` (`/environments/:tier`) now leads with a
+new `InfrastructureSection` — server status (online/offline dot, Docker/
+Compose version, host uptime/load/memory/disk as both summary cards and
+detail rows) and a live container list (state badge, health, restart
+count, CPU/memory/network/block I/O, ports, created/started time,
+Logs/Start/Stop/Restart, Recreate for mapped containers only) — **above**
+the existing "Deployment workflow status" table, which is otherwise
+unchanged (still the DEV→QA→UAT→Production promotion-status view). Polls
+every 20 seconds and offers a manual Refresh button, both re-querying the
+target server fresh (never relying on cached/database state). An
+unmapped container is shown with a clear "Unregistered container" label
+rather than hidden. The three distinct failure states (not configured /
+SSH unreachable / Docker unavailable) render as three distinct, clearly
+worded messages — never a bare "no containers" for what is actually a
+connection failure, which was the exact bug this phase exists to fix.
+
+### Tests
+
+415/415 backend (`dotnet test`), 47/47 frontend (`npm run test -- --run`).
+New: `DockerDiscoveryParserTests` (21 tests — inspect-array parsing
+including zero-containers/malformed-input/unhealthy-mapping, stats-line
+parsing including one-bad-line-doesn't-lose-the-rest, load/mem/disk
+parsing including missing-line/malformed-input), `SshRemoteExecutionProviderTests`
+additions (not-configured paths for all three new methods, unsafe
+container-id rejection), `EnvironmentInfrastructureServiceTests` (10
+tests — not-configured, SSH-unreachable-never-attempts-discovery,
+Docker-unavailable-never-attempts-discovery, container-mapping-by-name
+with an unmapped container left alone, environment-access denial,
+unknown-container-id rejected before any remote action/log fetch runs,
+known-container-id action succeeds and audits, a reflection-based guard
+that `EnvironmentServerInfoDto` never gains a credential-shaped field),
+`EnvironmentDefinitionServiceTests` additions (`PrimaryTargetServerId` set/
+validated-against-real-server), and a new `EnvironmentDashboardPage.test.tsx`
+(4 tests covering the three honest-failure-vs-empty-data UI states plus
+the discovered-container/unregistered-container rendering).
+
+### Known limitations (this phase)
+
+- **No real target server was reachable** from this build environment to
+  validate whole-server discovery end-to-end — the same limitation as
+  every prior phase's remote-execution work. What was validated: every
+  parsing routine (`DockerDiscoveryParser`) against real-shaped
+  `docker inspect`/`docker stats`/`/proc/loadavg`/`free -b`/`df -Pk`
+  sample output, and the service's authorization/re-validation/honest-
+  failure logic against a fake `IRemoteExecutionProvider`. Before relying
+  on this in production: assign a real `TargetServer` to an environment,
+  open that environment's dashboard, and confirm the containers shown
+  match `docker ps -a` run directly on that server.
+- **Container-to-application mapping requires `ContainerName` to be set**
+  on the `ApplicationEnvironment` row — an application configured without
+  an explicit container name will show its container as "Unregistered"
+  even though it's actually managed by the portal. Setting
+  `ContainerName` when configuring an application's environment (already
+  an existing field, just newly load-bearing for this mapping) resolves
+  it; a looser compose-project/service-name heuristic was deliberately
+  not used, to avoid a false-positive ownership claim.
+- Every other Phase 12/Phase 13 "Known limitations" entry is unchanged.
+
 ## Production-critical gaps / next implementation
 
 **Items 1–5 below (carried forward since Phase 5/6/7) are now resolved by

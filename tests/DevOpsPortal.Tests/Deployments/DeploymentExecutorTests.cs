@@ -276,6 +276,16 @@ public class DeploymentExecutorTests
 
         public Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public Task<RemoteContainerDiscoveryResult> DiscoverContainersAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RemoteContainerActionResult> RunContainerActionAsync(
+            TargetServer targetServer, string containerId, RemoteContainerAction action, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RemoteHostMetricsResult> GetHostMetricsAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     /// <summary>Never completes on its own — only responds to cancellation. Used to
@@ -300,6 +310,16 @@ public class DeploymentExecutorTests
             throw new NotSupportedException();
 
         public Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RemoteContainerDiscoveryResult> DiscoverContainersAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RemoteContainerActionResult> RunContainerActionAsync(
+            TargetServer targetServer, string containerId, RemoteContainerAction action, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RemoteHostMetricsResult> GetHostMetricsAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }
 

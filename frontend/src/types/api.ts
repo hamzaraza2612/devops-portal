@@ -82,13 +82,17 @@ export interface EnvironmentDefinitionDto {
   sortOrder: number;
   isProductionLike: boolean;
   isActive: boolean;
+  primaryTargetServerId: string | null;
+  primaryTargetServerName: string | null;
 }
 
 /** Name and SortOrder are not editable — see IEnvironmentDefinitionService's
- * doc comment on the backend for why. */
+ * doc comment on the backend for why. PrimaryTargetServerId is the server the
+ * Environment Infrastructure Dashboard SSHes to for real Docker discovery. */
 export interface UpdateEnvironmentDefinitionRequest {
   isProductionLike: boolean;
   isActive: boolean;
+  primaryTargetServerId: string | null;
 }
 
 // --- Auth / Users ---
@@ -728,4 +732,80 @@ export interface UpdateSecretReferenceRequest {
 
 export interface RevealedSecretDto {
   value: string;
+}
+
+// --- Environment Infrastructure Dashboard (real server/Docker discovery) ---
+
+/** Every field independently nullable — never fabricated. A null field means
+ * that one metric's command failed or its output didn't parse, not zero. */
+export interface HostMetricsDto {
+  load1: number | null;
+  load5: number | null;
+  load15: number | null;
+  memTotalBytes: number | null;
+  memUsedBytes: number | null;
+  memAvailableBytes: number | null;
+  diskTotalBytes: number | null;
+  diskUsedBytes: number | null;
+  diskAvailableBytes: number | null;
+  diskUsePercent: number | null;
+}
+
+/** `isConfigured: false` means this environment has no PrimaryTargetServer
+ * assigned yet — distinct from "assigned but unreachable" (sshConnected:
+ * false). When sshConnected is false every field but errorMessage is
+ * meaningless. */
+export interface EnvironmentServerInfoDto {
+  targetServerId: string | null;
+  targetServerName: string | null;
+  hostname: string | null;
+  isConfigured: boolean;
+  sshConnected: boolean;
+  authenticatedUser: string | null;
+  osInfo: string | null;
+  uptimeInfo: string | null;
+  dockerAvailable: boolean;
+  dockerVersion: string | null;
+  composeAvailable: boolean;
+  composeVersion: string | null;
+  metrics: HostMetricsDto | null;
+  errorMessage: string | null;
+  retrievedAt: string;
+}
+
+/** One container discovered directly on the target server, independent of
+ * whether any Application row references it. isMapped: false means exactly
+ * that — a real running-or-stopped container with no configured application
+ * behind it; the dashboard shows it anyway, labeled "Unregistered". */
+export interface DiscoveredContainerDto {
+  containerId: string;
+  name: string;
+  image: string;
+  imageTag: string | null;
+  state: ContainerState;
+  dockerHealthStatus: string | null;
+  createdAt: string | null;
+  startedAt: string | null;
+  restartCount: number;
+  ports: string[];
+  stats: ContainerStatsDto | null;
+  isMapped: boolean;
+  applicationId: string | null;
+  applicationName: string | null;
+  environmentDefinitionId: string | null;
+  canRecreateWithVolumes: boolean;
+}
+
+export interface EnvironmentInfrastructureDto {
+  environmentDefinitionId: string;
+  environmentName: string;
+  server: EnvironmentServerInfoDto;
+  containers: DiscoveredContainerDto[];
+}
+
+export interface DiscoveredContainerLogsDto {
+  containerId: string;
+  success: boolean;
+  logs: string;
+  error: string | null;
 }

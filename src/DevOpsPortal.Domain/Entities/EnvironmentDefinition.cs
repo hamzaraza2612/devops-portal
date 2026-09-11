@@ -17,4 +17,13 @@ public class EnvironmentDefinition
     public bool IsProductionLike { get; set; }
 
     public bool IsActive { get; set; } = true;
+
+    /// <summary>The TargetServer the Environment Infrastructure Dashboard SSHes to
+    /// for this pipeline stage's real Docker discovery/monitoring — independent
+    /// of any ApplicationEnvironment configuration, so infrastructure discovery
+    /// works even before a single application is configured for this
+    /// environment. Null means discovery isn't configured yet for this stage
+    /// (the dashboard reports that honestly rather than guessing a server).</summary>
+    public Guid? PrimaryTargetServerId { get; set; }
+    public TargetServer? PrimaryTargetServer { get; set; }
 }

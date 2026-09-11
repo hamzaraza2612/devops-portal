@@ -20,6 +20,7 @@ public static class DependencyInjection
         services.AddScoped<IDeploymentService, DeploymentService>();
         services.AddScoped<IBuildConfigurationService, BuildConfigurationService>();
         services.AddScoped<IContainerOperationsService, ContainerOperationsService>();
+        services.AddScoped<IEnvironmentInfrastructureService, EnvironmentInfrastructureService>();
         services.AddScoped<IBuildServerService, BuildServerService>();
         services.AddScoped<IBuildService, BuildService>();
         services.AddScoped<ISecretReferenceService, SecretReferenceService>();

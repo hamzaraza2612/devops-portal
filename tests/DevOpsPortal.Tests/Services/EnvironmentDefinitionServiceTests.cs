@@ -34,11 +34,38 @@ public class EnvironmentDefinitionServiceTests
         await TestDb.SeedEnvironmentDefinitionsAsync(db);
         var qa = (await sut.GetAllAsync()).Single(e => e.Name == "QA");
 
-        var updated = await sut.UpdateAsync(qa.Id, new UpdateEnvironmentDefinitionRequest(IsProductionLike: true, IsActive: false));
+        var updated = await sut.UpdateAsync(qa.Id, new UpdateEnvironmentDefinitionRequest(IsProductionLike: true, IsActive: false, PrimaryTargetServerId: null));
 
         Assert.Equal("QA", updated.Name);
         Assert.Equal(qa.SortOrder, updated.SortOrder);
         Assert.True(updated.IsProductionLike);
         Assert.False(updated.IsActive);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_WithKnownTargetServer_SetsPrimaryTargetServer()
+    {
+        var sut = CreateSut(out var db);
+        await TestDb.SeedEnvironmentDefinitionsAsync(db);
+        var dev = (await sut.GetAllAsync()).Single(e => e.Name == "DEV");
+        var server = new DevOpsPortal.Domain.Entities.TargetServer { Name = "dev-server" };
+        db.TargetServers.Add(server);
+        await db.SaveChangesAsync();
+
+        var updated = await sut.UpdateAsync(dev.Id, new UpdateEnvironmentDefinitionRequest(IsProductionLike: false, IsActive: true, PrimaryTargetServerId: server.Id));
+
+        Assert.Equal(server.Id, updated.PrimaryTargetServerId);
+        Assert.Equal("dev-server", updated.PrimaryTargetServerName);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_WithUnknownTargetServer_ThrowsValidation()
+    {
+        var sut = CreateSut(out var db);
+        await TestDb.SeedEnvironmentDefinitionsAsync(db);
+        var dev = (await sut.GetAllAsync()).Single(e => e.Name == "DEV");
+
+        await Assert.ThrowsAsync<DevOpsPortal.Application.Exceptions.ValidationException>(() =>
+            sut.UpdateAsync(dev.Id, new UpdateEnvironmentDefinitionRequest(IsProductionLike: false, IsActive: true, PrimaryTargetServerId: Guid.NewGuid())));
     }
 }

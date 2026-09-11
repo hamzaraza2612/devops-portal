@@ -171,6 +171,109 @@ public class SshRemoteExecutionProvider(ISecretProvider secretProvider, ILogger<
         }, cancellationToken);
     }
 
+    public async Task<RemoteContainerDiscoveryResult> DiscoverContainersAsync(TargetServer targetServer, CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured(targetServer))
+            return new RemoteContainerDiscoveryResult(false, string.Empty, string.Empty, NotConfiguredMessage(targetServer));
+
+        return await Task.Run(async () =>
+        {
+            SshClient? client = null;
+            try
+            {
+                var connectionInfo = await BuildConnectionInfoAsync(targetServer, cancellationToken);
+                client = new SshClient(connectionInfo);
+                client.Connect();
+
+                // Entirely fixed strings — docker ps's own output (container IDs it
+                // generated itself) is what feeds docker inspect, never anything the
+                // caller supplied, so there is nothing here to quote or validate.
+                var inspect = RunQuick(client, "ids=$(docker ps -aq); if [ -n \"$ids\" ]; then docker inspect $ids; else echo '[]'; fi");
+                if (!inspect.Success)
+                    return new RemoteContainerDiscoveryResult(false, string.Empty, string.Empty, "Failed to list containers on this target server (is Docker installed and reachable for this SSH user?).");
+
+                var stats = RunQuick(client, "docker stats --no-stream --format '{{json .}}'");
+
+                return new RemoteContainerDiscoveryResult(true, inspect.Output, stats.Success ? stats.Output : string.Empty, null);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Container discovery failed for target server '{TargetServerName}'", targetServer.Name);
+                return new RemoteContainerDiscoveryResult(false, string.Empty, string.Empty, DescribeFailure(ex));
+            }
+            finally
+            {
+                if (client is { IsConnected: true })
+                    client.Disconnect();
+                client?.Dispose();
+            }
+        }, cancellationToken);
+    }
+
+    public async Task<RemoteContainerActionResult> RunContainerActionAsync(
+        TargetServer targetServer, string containerId, RemoteContainerAction action, CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured(targetServer))
+            return new RemoteContainerActionResult(false, string.Empty, NotConfiguredMessage(targetServer));
+
+        if (!PosixShellEscaper.IsSafeDockerName(containerId))
+            return new RemoteContainerActionResult(false, string.Empty, "Invalid container identifier.");
+
+        var (verb, pastTense) = action switch
+        {
+            RemoteContainerAction.Start => ("start", "started"),
+            RemoteContainerAction.Stop => ("stop", "stopped"),
+            RemoteContainerAction.Restart => ("restart", "restarted"),
+            _ => throw new ArgumentOutOfRangeException(nameof(action)),
+        };
+
+        var commandText = $"docker {verb} {PosixShellEscaper.Quote(containerId)}";
+        var result = await RunRemoteCommandAsync(targetServer, commandText, cancellationToken);
+
+        return result.Success
+            ? new RemoteContainerActionResult(true, $"Container {pastTense}.", null)
+            : new RemoteContainerActionResult(false, string.Empty, string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError);
+    }
+
+    public async Task<RemoteHostMetricsResult> GetHostMetricsAsync(TargetServer targetServer, CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured(targetServer))
+            return new RemoteHostMetricsResult(false, null, null, null, NotConfiguredMessage(targetServer));
+
+        return await Task.Run(async () =>
+        {
+            SshClient? client = null;
+            try
+            {
+                var connectionInfo = await BuildConnectionInfoAsync(targetServer, cancellationToken);
+                client = new SshClient(connectionInfo);
+                client.Connect();
+
+                var loadAvg = RunQuick(client, "cat /proc/loadavg");
+                var mem = RunQuick(client, "free -b");
+                var disk = RunQuick(client, "df -Pk / 2>/dev/null || df -Pk .");
+
+                return new RemoteHostMetricsResult(
+                    true,
+                    loadAvg.Success ? loadAvg.Output : null,
+                    mem.Success ? mem.Output : null,
+                    disk.Success ? disk.Output : null,
+                    null);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Host metrics collection failed for target server '{TargetServerName}'", targetServer.Name);
+                return new RemoteHostMetricsResult(false, null, null, null, DescribeFailure(ex));
+            }
+            finally
+            {
+                if (client is { IsConnected: true })
+                    client.Disconnect();
+                client?.Dispose();
+            }
+        }, cancellationToken);
+    }
+
     private static (bool Success, string Output) RunQuick(SshClient client, string commandText)
     {
         using var command = client.CreateCommand(commandText);

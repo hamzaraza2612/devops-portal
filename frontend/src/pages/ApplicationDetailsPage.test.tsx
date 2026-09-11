@@ -88,10 +88,10 @@ const application: ApplicationDto = {
 };
 
 const environmentDefs: EnvironmentDefinitionDto[] = [
-  { id: 'dev', name: 'DEV', sortOrder: 0, isProductionLike: false, isActive: true },
-  { id: 'qa', name: 'QA', sortOrder: 1, isProductionLike: false, isActive: true },
-  { id: 'uat', name: 'UAT', sortOrder: 2, isProductionLike: false, isActive: true },
-  { id: 'prod', name: 'PRODUCTION', sortOrder: 3, isProductionLike: true, isActive: true },
+  { id: 'dev', name: 'DEV', sortOrder: 0, isProductionLike: false, isActive: true, primaryTargetServerId: null, primaryTargetServerName: null },
+  { id: 'qa', name: 'QA', sortOrder: 1, isProductionLike: false, isActive: true, primaryTargetServerId: null, primaryTargetServerName: null },
+  { id: 'uat', name: 'UAT', sortOrder: 2, isProductionLike: false, isActive: true, primaryTargetServerId: null, primaryTargetServerName: null },
+  { id: 'prod', name: 'PRODUCTION', sortOrder: 3, isProductionLike: true, isActive: true, primaryTargetServerId: null, primaryTargetServerName: null },
 ];
 
 const devEnvironment: ApplicationEnvironmentDto = {

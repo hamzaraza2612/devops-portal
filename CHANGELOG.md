@@ -8,6 +8,63 @@ procedure — in short: back up first, `git pull` / pull the new image,
 (new nullable columns/tables); none has ever dropped or destructively
 altered existing data.
 
+## v1.3.0 — Real server/Docker discovery for the Environment Infrastructure Dashboard
+
+Closes the gap where an environment's page showed nothing more than
+database-driven deployment records ("No applications currently deployed to
+DEV") even once a real target server was configured. Opening an
+environment now SSHes to that environment's assigned server and shows
+every real Docker container running there — independent of whether a
+single Application has been configured in the portal yet.
+
+**Highlights**:
+- **Environment → Server assignment**: `EnvironmentDefinition` gained an
+  optional `PrimaryTargetServerId`, settable from the Environments admin
+  page — the server each pipeline stage's infrastructure dashboard
+  queries. Assigning one is now the only setup step needed before real
+  discovery works; no `ApplicationEnvironment` row is required.
+- **Whole-server container discovery**: `docker ps -aq` piped into
+  `docker inspect` (every container on the host, running or stopped,
+  regardless of compose project) plus a single unscoped
+  `docker stats --no-stream` snapshot — three fixed SSH round trips
+  regardless of how many containers exist, never one call per container.
+- **Environment Infrastructure Dashboard UI**: each environment's page now
+  leads with live server status (SSH/Docker/Compose, host uptime/load,
+  memory, disk — summary cards plus detail) and a live container list
+  (status, health, restart count, CPU/memory/network/block I/O, ports,
+  created/started time) above the existing deployment-workflow status
+  table, which is unchanged. Polls automatically and offers a manual
+  Refresh, both re-querying the target server fresh every time.
+- **Application mapping, never hiding**: a discovered container whose name
+  matches a configured `ApplicationEnvironment.ContainerName` links back to
+  that application; every other real container is still shown, clearly
+  labeled "Unregistered container" — discovery never depends on or is
+  filtered by portal configuration.
+- **Container actions for any discovered container**: Start/Stop/Restart
+  work directly by container id (`docker start/stop/restart`) for any
+  container, mapped or not; "Recreate with volumes" remains available only
+  for a mapped container with `UseDownWithVolumesOnDeploy` enabled, since
+  it's a compose-level operation that needs a known compose file — reuses
+  the existing per-application recreate endpoint unchanged.
+- **Container logs**: on-demand `docker logs --tail N` for any discovered
+  container, with the browser-supplied container id re-validated against a
+  fresh discovery pass before anything is fetched — never trusted as-is.
+- **Honest failure handling**: "no target server assigned",
+  "SSH unreachable", and "Docker unavailable" are three distinct, clearly
+  labeled states, never collapsed into a bare "no containers" — the
+  dashboard was previously the exact opposite of this, which was the bug
+  this release closes.
+
+**Migration notes**: one new migration
+(`Phase13b_EnvironmentPrimaryTargetServer`) — a single nullable column and
+FK, applied automatically on first startup like every migration before it.
+
+**Known limitations**: no real target server was reachable from this
+release's own build environment to validate whole-server discovery
+end-to-end (same limitation as every prior phase's remote-execution work —
+see `PROJECT_STATE.md`'s Phase 13c "Known limitations" for the parsing-only
+validation that was possible and the manual verification steps).
+
 ## v1.2.0 — Configuration CRUD & Environment Server Dashboard host metrics
 
 Closes the remaining "DevOps has to edit the database to configure the

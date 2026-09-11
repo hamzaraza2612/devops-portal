@@ -303,5 +303,15 @@ public class DockerComposeContainerRuntimeProviderTests
 
         public Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
             Task.FromResult(new RemoteConnectionTestResult(isConfigured, null, null, false, null, false, null, null, null, null, isConfigured ? null : "not configured"));
+
+        public Task<RemoteContainerDiscoveryResult> DiscoverContainersAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RemoteContainerActionResult> RunContainerActionAsync(
+            TargetServer targetServer, string containerId, RemoteContainerAction action, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RemoteHostMetricsResult> GetHostMetricsAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }
