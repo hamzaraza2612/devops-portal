@@ -98,6 +98,11 @@ public class TargetServerService(
                 "reassign or remove those first, or set IsActive to false instead.");
         }
 
+        if (server.SshCredentialStoreKey is { } credentialKey)
+            await secretProvider.DeleteAsync(credentialKey, cancellationToken);
+        if (server.SshPassphraseStoreKey is { } passphraseKey)
+            await secretProvider.DeleteAsync(passphraseKey, cancellationToken);
+
         db.TargetServers.Remove(server);
         await db.SaveChangesAsync(cancellationToken);
 

@@ -93,6 +93,9 @@ public partial class RepositoryService(
 
         var linkedAppCount = await db.Applications.CountAsync(a => a.RepositoryId == id, cancellationToken);
 
+        if (repo.AccessTokenStoreKey is { } tokenKey)
+            await secretProvider.DeleteAsync(tokenKey, cancellationToken);
+
         db.Repositories.Remove(repo);
         await db.SaveChangesAsync(cancellationToken);
 

@@ -9,11 +9,14 @@ namespace DevOpsPortal.Tests.Services;
 
 public class RepositoryServiceTests
 {
-    private static RepositoryService CreateSut()
+    private static RepositoryService CreateSut() => CreateSut(out _);
+
+    private static RepositoryService CreateSut(out FakeSecretProvider secretProvider)
     {
         var db = TestDb.CreateInMemory();
+        secretProvider = new FakeSecretProvider();
         return new RepositoryService(
-            db, new AuditService(db, new FakeCurrentUserService()), new FakeSecretProvider(), new FakeGitProviderClient());
+            db, new AuditService(db, new FakeCurrentUserService()), secretProvider, new FakeGitProviderClient());
     }
 
     [Fact]
@@ -78,5 +81,24 @@ public class RepositoryServiceTests
 
         await Assert.ThrowsAsync<ValidationException>(() => sut.CreateAsync(new CreateRepositoryRequest(
             "sample-repo", "https://gitlab.example.com/group/sample-repo.git", RepositoryProvider.GitLab, null, null, null, envVarName)));
+    }
+
+    [Fact]
+    public async Task DeleteAsync_RemovesTheRepositoryAndItsStoredAccessToken()
+    {
+        // Regression test (Phase 13 final review): DeleteAsync used to remove
+        // the Repository row without ever calling ISecretProvider.DeleteAsync
+        // on its AccessTokenStoreKey — leaving the encrypted token orphaned in
+        // the secret store forever.
+        var sut = CreateSut(out var secretProvider);
+        var repo = await sut.CreateAsync(new CreateRepositoryRequest(
+            "sample-repo", "https://gitlab.example.com/group/sample-repo.git", RepositoryProvider.GitLab, null, null, null, null));
+        await sut.SetAccessTokenAsync(repo.Id, new SetRepositoryAccessTokenRequest("glpat-super-secret-token"));
+        Assert.Equal(1, secretProvider.StoredValueCount);
+
+        await sut.DeleteAsync(repo.Id);
+
+        await Assert.ThrowsAsync<NotFoundException>(() => sut.GetByIdAsync(repo.Id));
+        Assert.Equal(0, secretProvider.StoredValueCount);
     }
 }

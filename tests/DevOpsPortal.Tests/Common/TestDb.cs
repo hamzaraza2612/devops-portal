@@ -108,6 +108,11 @@ public class FakeSecretProvider : ISecretProvider
 
     public string ProviderKey => "fake";
 
+    /// <summary>Test-only introspection — lets a test assert that a Delete
+    /// operation actually cleaned up its stored credential(s) rather than
+    /// leaving them orphaned in the store.</summary>
+    public int StoredValueCount => _values.Count;
+
     public Task<string> StoreAsync(string? existingStoreKey, string plaintextValue, CancellationToken cancellationToken = default)
     {
         var key = existingStoreKey ?? Guid.NewGuid().ToString();
