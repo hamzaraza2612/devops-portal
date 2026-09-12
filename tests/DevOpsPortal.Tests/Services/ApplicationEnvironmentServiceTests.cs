@@ -33,9 +33,10 @@ public class ApplicationEnvironmentServiceTests
         return (sut, db, app, envDef, server);
     }
 
-    private static UpsertApplicationEnvironmentRequest ValidRequest(Guid targetServerId, string? rootPath = "/mnt/data/apps/sample") =>
+    private static UpsertApplicationEnvironmentRequest ValidRequest(
+        Guid targetServerId, string? rootPath = "/mnt/data/apps/sample", bool syncSourceFromRepository = false) =>
         new(targetServerId, "develop", rootPath, "publish", "Backups", null, "docker-compose.yml",
-            null, "SampleApi", "SampleApi", null, false, HealthCheckType.None, null, 30, 5, null, true);
+            null, "SampleApi", "SampleApi", null, false, syncSourceFromRepository, HealthCheckType.None, null, 30, 5, null, true);
 
     [Fact]
     public async Task UpsertAsync_WithPathUnderAllowedRoot_Succeeds()
@@ -87,6 +88,28 @@ public class ApplicationEnvironmentServiceTests
 
         await Assert.ThrowsAsync<ValidationException>(() =>
             sut.UpsertAsync(app.Id, envDef.Id, ValidRequest(server.Id, rootPath: null)));
+    }
+
+    [Fact]
+    public async Task UpsertAsync_WithSyncSourceFromRepositoryButNoRepositoryConfigured_ThrowsValidation()
+    {
+        var (sut, _, app, envDef, server) = await CreateSutAsync();
+
+        await Assert.ThrowsAsync<ValidationException>(() =>
+            sut.UpsertAsync(app.Id, envDef.Id, ValidRequest(server.Id, syncSourceFromRepository: true)));
+    }
+
+    [Fact]
+    public async Task UpsertAsync_WithSyncSourceFromRepositoryAndRepositoryConfigured_Succeeds()
+    {
+        var (sut, db, app, envDef, server) = await CreateSutAsync();
+        app.RepositoryId = Guid.NewGuid();
+        db.Repositories.Add(new Repository { Id = app.RepositoryId.Value, Name = "repo", Url = "https://gitlab.example.com/group/repo.git", Provider = RepositoryProvider.GitLab });
+        await db.SaveChangesAsync();
+
+        var dto = await sut.UpsertAsync(app.Id, envDef.Id, ValidRequest(server.Id, syncSourceFromRepository: true));
+
+        Assert.True(dto.SyncSourceFromRepository);
     }
 
     [Fact]

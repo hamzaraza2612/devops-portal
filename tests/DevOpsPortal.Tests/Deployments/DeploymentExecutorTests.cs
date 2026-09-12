@@ -20,12 +20,24 @@ public class DeploymentExecutorTests
     private static async Task<(DeploymentExecutor Sut, AppDbContext Db, Deployment Deployment, FakeNotificationService Notifications)> CreateSutAsync(
         IRemoteExecutionProvider remoteExecutionProvider, IHealthCheckProbe healthProbe,
         ISecretReferenceService? secretReferenceService = null, FakeNotificationService? notificationService = null,
-        IConfiguration? configuration = null)
+        IConfiguration? configuration = null, IGitProviderClient? gitProviderClient = null,
+        bool syncSourceFromRepository = false, bool withRepository = false)
     {
         var db = TestDb.CreateInMemory();
         await TestDb.SeedEnvironmentDefinitionsAsync(db);
 
-        var app = new ManagedApplication { Name = "Sample", Slug = "sample", DeploymentMode = DeploymentMode.LegacyFilesystem };
+        Repository? repository = null;
+        if (withRepository)
+        {
+            repository = new Repository { Name = "sample-repo", Url = "https://gitlab.example.com/group/sample.git", Provider = RepositoryProvider.GitLab };
+            db.Repositories.Add(repository);
+            await db.SaveChangesAsync();
+        }
+
+        var app = new ManagedApplication
+        {
+            Name = "Sample", Slug = "sample", DeploymentMode = DeploymentMode.LegacyFilesystem, RepositoryId = repository?.Id,
+        };
         db.Applications.Add(app);
 
         // Hostname/SshUsername/SshCredentialStoreKey are only here so
@@ -52,6 +64,7 @@ public class DeploymentExecutorTests
             ComposeFilePath = "docker-compose.yml",
             IsActive = true,
             HealthCheckType = HealthCheckType.None,
+            SyncSourceFromRepository = syncSourceFromRepository,
         };
         db.ApplicationEnvironments.Add(appEnv);
         await db.SaveChangesAsync();
@@ -72,7 +85,7 @@ public class DeploymentExecutorTests
         var notifications = notificationService ?? new FakeNotificationService();
         var sut = new DeploymentExecutor(
             db, remoteExecutionProvider, healthProbe, audit, secretReferenceService ?? new FakeSecretReferenceService(), notifications,
-            configuration ?? new FakeConfiguration(), NullLogger<DeploymentExecutor>.Instance);
+            configuration ?? new FakeConfiguration(), gitProviderClient ?? new FakeGitProviderClient(), NullLogger<DeploymentExecutor>.Instance);
         return (sut, db, deployment, notifications);
     }
 
@@ -202,6 +215,93 @@ public class DeploymentExecutorTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_WhenSyncSourceFromRepositoryDisabled_NeverCallsGitProviderOrSync()
+    {
+        var composeExecutor = new FakeRemoteExecutionProvider(true, true);
+        var (sut, db, deployment, _) = await CreateSutAsync(
+            composeExecutor, new FakeHealthCheckProbe(true), syncSourceFromRepository: false, withRepository: true);
+
+        await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
+
+        var updated = await db.Deployments.FindAsync(deployment.Id);
+        Assert.Equal(DeploymentStatus.Succeeded, updated!.Status);
+        Assert.Empty(composeExecutor.SyncCalls);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenSyncSourceFromRepositoryEnabledButNoRepositoryConfigured_MarksFailed_NeverCallsCompose()
+    {
+        var composeExecutor = new FakeRemoteExecutionProvider(true, true);
+        var (sut, db, deployment, _) = await CreateSutAsync(
+            composeExecutor, new FakeHealthCheckProbe(true), syncSourceFromRepository: true, withRepository: false);
+
+        await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
+
+        var updated = await db.Deployments.FindAsync(deployment.Id);
+        Assert.Equal(DeploymentStatus.Failed, updated!.Status);
+        Assert.Contains("no Repository configured", updated.FailureReason);
+        Assert.Empty(composeExecutor.Requests);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenSyncSourceFromRepositoryEnabledAndArchiveDownloadFails_MarksFailed_NeverCallsCompose()
+    {
+        var composeExecutor = new FakeRemoteExecutionProvider(true, true);
+        var gitClient = new FakeGitProviderClient(archiveResult: GitProviderResult<byte[]>.Fail("GitLab returned 404."));
+        var (sut, db, deployment, _) = await CreateSutAsync(
+            composeExecutor, new FakeHealthCheckProbe(true), gitProviderClient: gitClient,
+            syncSourceFromRepository: true, withRepository: true);
+
+        await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
+
+        var updated = await db.Deployments.FindAsync(deployment.Id);
+        Assert.Equal(DeploymentStatus.Failed, updated!.Status);
+        Assert.Contains("Failed to download source archive", updated.FailureReason);
+        Assert.Empty(composeExecutor.Requests);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenSyncSourceFromRepositoryEnabledAndSyncFails_MarksFailed_NeverCallsCompose()
+    {
+        var composeExecutor = new FakeRemoteExecutionProvider(true, true, syncSucceeds: false);
+        var gitClient = new FakeGitProviderClient(archiveResult: GitProviderResult<byte[]>.Ok([1, 2, 3]));
+        var (sut, db, deployment, _) = await CreateSutAsync(
+            composeExecutor, new FakeHealthCheckProbe(true), gitProviderClient: gitClient,
+            syncSourceFromRepository: true, withRepository: true);
+
+        await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
+
+        var updated = await db.Deployments.FindAsync(deployment.Id);
+        Assert.Equal(DeploymentStatus.Failed, updated!.Status);
+        Assert.Contains("Source sync failed", updated.FailureReason);
+        Assert.Single(composeExecutor.SyncCalls);
+        Assert.Empty(composeExecutor.Requests);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenSyncSourceFromRepositoryEnabledAndEverythingSucceeds_SyncsBeforeComposeAndSucceeds()
+    {
+        var composeExecutor = new FakeRemoteExecutionProvider(true, true);
+        var gitClient = new FakeGitProviderClient(archiveResult: GitProviderResult<byte[]>.Ok([1, 2, 3, 4]));
+        var (sut, db, deployment, _) = await CreateSutAsync(
+            composeExecutor, new FakeHealthCheckProbe(true), gitProviderClient: gitClient,
+            syncSourceFromRepository: true, withRepository: true);
+
+        await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
+
+        var updated = await db.Deployments.FindAsync(deployment.Id);
+        Assert.Equal(DeploymentStatus.Succeeded, updated!.Status);
+        Assert.Single(composeExecutor.SyncCalls);
+        Assert.Equal("/tmp/publish", composeExecutor.SyncCalls[0].DestinationPath);
+        Assert.NotEmpty(composeExecutor.Requests);
+
+        var logs = await db.DeploymentLogEntries.Where(l => l.DeploymentId == deployment.Id).OrderBy(l => l.Sequence).ToListAsync();
+        var syncLogIndex = logs.FindIndex(l => l.Message.Contains("Source synced"));
+        var composeLogIndex = logs.FindIndex(l => l.Message.Contains("compose up"));
+        Assert.True(syncLogIndex >= 0 && composeLogIndex >= 0 && syncLogIndex < composeLogIndex);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_AlreadyRunningDeployment_IsSkipped()
     {
         var (sut, db, deployment, _) = await CreateSutAsync(new FakeRemoteExecutionProvider(true, true), new FakeHealthCheckProbe(true));
@@ -251,9 +351,10 @@ public class DeploymentExecutorTests
         Assert.Equal(DeploymentStatus.Succeeded, updated!.Status);
     }
 
-    private sealed class FakeRemoteExecutionProvider(bool downSucceeds, bool upSucceeds, string? upStdErr = null) : IRemoteExecutionProvider
+    private sealed class FakeRemoteExecutionProvider(bool downSucceeds, bool upSucceeds, string? upStdErr = null, bool syncSucceeds = true) : IRemoteExecutionProvider
     {
         public List<ComposeCommandRequest> Requests { get; } = [];
+        public List<(string DestinationPath, byte[] ArchiveBytes, IReadOnlyList<string> ExcludePatterns)> SyncCalls { get; } = [];
 
         public bool IsConfigured(TargetServer targetServer) => true;
 
@@ -289,6 +390,16 @@ public class DeploymentExecutorTests
 
         public Task<RemoteEnvironmentSnapshotResult> GetEnvironmentSnapshotAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public Task<RemoteSourceSyncResult> SyncSourceArchiveAsync(
+            TargetServer targetServer, string destinationPath, byte[] archiveBytes,
+            IReadOnlyList<string> excludePatterns, CancellationToken cancellationToken = default)
+        {
+            SyncCalls.Add((destinationPath, archiveBytes, excludePatterns));
+            return Task.FromResult(syncSucceeds
+                ? new RemoteSourceSyncResult(true, archiveBytes.Length, null)
+                : new RemoteSourceSyncResult(false, null, "sync failed"));
+        }
     }
 
     /// <summary>Never completes on its own — only responds to cancellation. Used to
@@ -326,6 +437,11 @@ public class DeploymentExecutorTests
             throw new NotSupportedException();
 
         public Task<RemoteEnvironmentSnapshotResult> GetEnvironmentSnapshotAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RemoteSourceSyncResult> SyncSourceArchiveAsync(
+            TargetServer targetServer, string destinationPath, byte[] archiveBytes,
+            IReadOnlyList<string> excludePatterns, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }
 

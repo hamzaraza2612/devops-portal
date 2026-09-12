@@ -61,6 +61,12 @@ public class ApplicationEnvironmentService(
 
         ValidateForMode(application.DeploymentMode, request, targetServer);
 
+        if (request.SyncSourceFromRepository && application.RepositoryId is null)
+        {
+            throw new ValidationException(
+                "SyncSourceFromRepository requires this application to have a Repository configured (see the Applications page).");
+        }
+
         var row = await LoadAsync(applicationId, environmentDefinitionId, cancellationToken);
         var isNew = row is null;
         row ??= new ApplicationEnvironment
@@ -81,6 +87,7 @@ public class ApplicationEnvironmentService(
         row.ContainerName = string.IsNullOrWhiteSpace(request.ContainerName) ? null : request.ContainerName.Trim();
         row.ExternalNetworkName = string.IsNullOrWhiteSpace(request.ExternalNetworkName) ? null : request.ExternalNetworkName.Trim();
         row.UseDownWithVolumesOnDeploy = request.UseDownWithVolumesOnDeploy;
+        row.SyncSourceFromRepository = request.SyncSourceFromRepository;
         row.HealthCheckType = request.HealthCheckType;
         row.HealthCheckEndpoint = string.IsNullOrWhiteSpace(request.HealthCheckEndpoint) ? null : request.HealthCheckEndpoint.Trim();
         row.HealthCheckIntervalSeconds = request.HealthCheckIntervalSeconds;
@@ -192,7 +199,7 @@ public class ApplicationEnvironmentService(
         ae.Id, ae.ApplicationId, ae.EnvironmentDefinitionId, ae.EnvironmentDefinition.Name,
         ae.TargetServerId, ae.TargetServer.Name, ae.BranchName, ae.DeploymentRootPath,
         ae.PublishSubPath, ae.BackupSubPath, ae.BackupRetentionCount, ae.ComposeFilePath,
-        ae.ComposeProjectName, ae.ServiceName, ae.ContainerName, ae.ExternalNetworkName, ae.UseDownWithVolumesOnDeploy,
+        ae.ComposeProjectName, ae.ServiceName, ae.ContainerName, ae.ExternalNetworkName, ae.UseDownWithVolumesOnDeploy, ae.SyncSourceFromRepository,
         ae.HealthCheckType, ae.HealthCheckEndpoint, ae.HealthCheckIntervalSeconds, ae.HealthCheckTimeoutSeconds,
         ae.ApplicationUrl, ae.IsActive, ae.CreatedAt, ae.UpdatedAt);
 

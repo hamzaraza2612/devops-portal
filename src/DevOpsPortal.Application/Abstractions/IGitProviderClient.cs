@@ -49,4 +49,17 @@ public interface IGitProviderClient
     /// if a token is configured, that it authenticates) — never fabricates a
     /// successful result.</summary>
     Task<GitConnectionTestResult> TestConnectionAsync(Repository repository, CancellationToken cancellationToken = default);
+
+    /// <summary>Downloads a gzipped tarball of the repository's tree at
+    /// <paramref name="refName"/> (a branch name or commit SHA) — the "obtain
+    /// source" step of a LegacyFilesystem deployment that opts into
+    /// ApplicationEnvironment.SyncSourceFromRepository. No local `git` binary is
+    /// ever shelled out to: this calls GitLab's own
+    /// `/repository/archive.tar.gz?sha=&lt;ref&gt;` REST endpoint, so the only
+    /// external dependency is the already-configured HTTP(S) connection to
+    /// GitLab. Same GitProviderResult contract as every other method here — a
+    /// network failure, an invalid ref, or a private project with no token
+    /// configured all come back as Fail, never a thrown exception.</summary>
+    Task<GitProviderResult<byte[]>> DownloadRepositoryArchiveAsync(
+        Repository repository, string refName, CancellationToken cancellationToken = default);
 }

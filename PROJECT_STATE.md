@@ -4113,6 +4113,142 @@ directly — guarding against this exact pattern being reintroduced.
 417/417 backend tests pass; no frontend changes were needed (the API's
 response shape is unchanged).
 
+## Phase 14 — Source sync from GitLab as the deployment "obtain source" step
+
+Done. Gap-analysis phase against a consolidated master requirements
+restatement (not a screenshot bug report this time): re-read
+PROJECT_STATE.md/CHANGELOG.md and the full Phase 1–13c implementation, then
+checked every requirement section against what already existed. Almost
+everything checked out as already implemented (SSH-only remote access,
+GitLab config UI already calls it an "access token" not a "password",
+DEV/QA/UAT/PRODUCTION promotion gates, CTO email approval, Credentials CRUD
+with gated reveal, Target Server CRUD + Test Connection, both Deployment
+Modes, the Jenkins build-provider abstraction, per-application Pending
+Requests, container/host monitoring). One concrete, previously-undetected
+gap: a LegacyFilesystem deployment's `ExecuteLegacyFilesystemAsync` cycled
+`docker compose down`/`up -d` at the application's configured
+`DeploymentRootPath` but never obtained or updated the source there itself
+— it silently assumed the files were already correct on the target server
+(true only because, historically, something external — a human, the legacy
+`script.sh`, or a separate CI step — put them there first). The master
+requirements are explicit that a deployment must itself "obtain or update
+source code for the selected branch/build" and that, for the Techbey
+transition specifically, the portal must "clone or pull the relevant
+GitLab repository" and "sync the checked-out files to the correct existing
+target folder."
+
+### What changed
+
+- **`ApplicationEnvironment.SyncSourceFromRepository`** (bool, default
+  `false` — migration `Phase14_SourceSyncFromRepository`): the new,
+  deliberately opt-in switch. An application-environment that already has
+  its files placed on the target server by an existing external mechanism
+  (the exact "do NOT blindly remove the existing sync mechanism until
+  repository/target layout is verified" instruction) is completely
+  unaffected unless this is explicitly turned on for it — every existing
+  configured environment keeps behaving exactly as before this phase.
+  `ApplicationEnvironmentService.UpsertAsync` requires
+  `ManagedApplication.RepositoryId` to be set before this can be turned on
+  (`ValidationException` otherwise) — surfaced as a disabled checkbox with
+  an explanatory note in `ApplicationDetailsPage.tsx`'s environment config
+  form when the application has no repository configured yet.
+- **`IGitProviderClient.DownloadRepositoryArchiveAsync`** (new interface
+  method, implemented in `GitLabProviderClient`): GETs GitLab's own
+  `/repository/archive.tar.gz?sha=<ref>` REST endpoint and returns the raw
+  gzipped tarball bytes. No local `git` binary is ever shelled out to —
+  same "only ever talk to GitLab's REST API" pattern every other method on
+  this interface already uses, same `GitProviderResult<T>` never-throws
+  contract (network failure / invalid ref / no read access on a private
+  project all come back as `Fail`, never an exception).
+- **`IRemoteExecutionProvider.SyncSourceArchiveAsync`** (new interface
+  method, implemented in `SshRemoteExecutionProvider`): uploads the
+  archive to the target server over SFTP (a second, separate connection
+  from the `exec`-based commands elsewhere in this class — SSH.NET has no
+  single client type covering both subsystems) to a `/tmp` temp path, then
+  extracts it with a fixed `tar -xzf ... --strip-components=1 -C
+  <destination>` command (GitLab's archive has one top-level
+  `<project>-<sha>/` directory, stripped so files land directly under the
+  destination) over a normal SSH exec call, then removes the temp archive.
+  Every dynamic value (destination path, temp path, exclude patterns) goes
+  through `PosixShellEscaper.Quote` — same command-injection defense as
+  every other method on this interface, no new shell-safety pattern
+  introduced. `--exclude` patterns are a fixed, non-Techbey-specific
+  default list — `appsettings*.json`, `*securesettings*.json`,
+  `config.json` — matching exactly the legacy deployment script's own
+  documented exclude behavior (PROJECT_STATE.md's Phase 2 "Legacy
+  filesystem deployment — reference notes"), so a source sync can never
+  clobber environment-specific configuration the target server itself
+  owns. `NotConfiguredRemoteExecutionProvider` gets the same honest
+  "unconfigured" stub every other method there has.
+- **`DeploymentExecutor.ExecuteLegacyFilesystemAsync`**: when
+  `appEnv.SyncSourceFromRepository` is true, downloads the archive for the
+  deployment's `Branch` (falling back to `CommitSha`) and syncs it into
+  `DeploymentRootPath/PublishSubPath` *before* resolving secrets and
+  running the compose down/up cycle — failure at either step
+  (download or sync) fails the deployment with a clear reason and never
+  reaches the compose cycle, exactly like every other precondition check
+  in this method. Both steps are logged (sanitized, like every other line
+  this executor writes) to `DeploymentLogEntry`.
+
+### Database changes
+
+Single additive migration `Phase14_SourceSyncFromRepository`: adds
+`ApplicationEnvironments.SyncSourceFromRepository` (bool, default false).
+No other schema change.
+
+### Tests
+
+430/430 backend tests pass (up from 417), 47/47 frontend tests pass. New
+backend coverage: `GitLabProviderClientTests` (archive download —
+invalid URL, blank ref, unreachable host, all graceful `Fail`),
+`SshRemoteExecutionProviderTests` (`SyncSourceArchiveAsync` not-configured
+and empty-archive paths, without a live SSH server — same pattern as
+every other method in that file), `DeploymentExecutorTests` (disabled →
+never calls the git provider or sync; enabled with no Repository
+configured → fails clearly, never calls compose; archive download failure
+→ fails clearly, never calls compose; sync failure → fails clearly, never
+calls compose; full success → sync runs and is logged strictly before the
+compose cycle), `ApplicationEnvironmentServiceTests`
+(`SyncSourceFromRepository` requires `RepositoryId`, succeeds once one is
+configured). Every other IRemoteExecutionProvider test fake across the
+suite (`HealthChecksTests`, `EnvironmentInfrastructureServiceTests`,
+`DockerComposeContainerRuntimeProviderTests`) was updated with a
+`NotSupportedException` stub for the new interface method, consistent with
+how each fake already stubs out methods it doesn't exercise.
+
+### Known limitations (this phase)
+
+- **No live GitLab instance or target server was reachable** in this
+  sandbox to exercise the real archive download + SFTP upload + `tar`
+  extraction end-to-end — this is the same "no live infrastructure in this
+  sandbox" limitation every remote-execution phase since Phase 12 has
+  carried. What was validated: the non-network GitLab API error paths
+  (invalid URL / blank ref / unreachable host), the not-configured/
+  empty-archive guard paths on the SSH provider, and the full executor
+  orchestration logic (ordering, failure propagation, logging) against a
+  fake `IRemoteExecutionProvider`/`IGitProviderClient`. **Before relying on
+  this in production**: configure a real `Repository` with a working
+  GitLab access token, turn on `SyncSourceFromRepository` for one
+  low-risk application-environment, trigger a DEV deployment, and confirm
+  (a) the correct branch/commit's files actually land under
+  `DeploymentRootPath/PublishSubPath` on the target server, (b) any
+  existing `appsettings*.json`/`*securesettings*.json`/`config.json` files
+  already there are left untouched, and (c) the container comes up
+  correctly afterward.
+- **The exclude pattern list is fixed, not yet per-application
+  configurable.** It matches the legacy script's own documented behavior
+  exactly, but a future phase could promote it to an
+  `ApplicationEnvironment` field if a real need for per-app customization
+  surfaces — not built speculatively here.
+- **GitLab-hosted merge/tag refs beyond a plain branch name or commit SHA**
+  (e.g. a GitLab "protected tag") are not specially handled — `sha=<ref>`
+  is passed through as GitLab's own archive endpoint accepts it, which
+  already supports both branch names and commit SHAs; anything GitLab's
+  endpoint itself rejects surfaces as a clear `Fail` result, never a
+  fabricated success.
+- Every other Phase 12/13/13c "Known limitations" entry is unchanged by
+  this phase.
+
 ## Production-critical gaps / next implementation
 
 **Items 1–5 below (carried forward since Phase 5/6/7) are now resolved by

@@ -280,6 +280,47 @@ public class GitLabProviderClient(HttpClient httpClient, ISecretProvider secretP
         }
     }
 
+    /// <summary>See IGitProviderClient.DownloadRepositoryArchiveAsync. GitLab's
+    /// archive endpoint returns the gzipped tarball directly (no JSON envelope) —
+    /// this reads the raw bytes rather than deserializing anything.</summary>
+    public async Task<GitProviderResult<byte[]>> DownloadRepositoryArchiveAsync(
+        Repository repository, string refName, CancellationToken cancellationToken = default)
+    {
+        if (!TryBuildProjectApiBase(repository, out var apiBase, out var buildError))
+            return GitProviderResult<byte[]>.Fail(buildError!);
+
+        if (string.IsNullOrWhiteSpace(refName))
+            return GitProviderResult<byte[]>.Fail("A branch name or commit SHA is required to download a repository archive.");
+
+        var url = $"{apiBase}/repository/archive.tar.gz?sha={Uri.EscapeDataString(refName)}";
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        await ApplyAuthAsync(repository, request, cancellationToken);
+
+        try
+        {
+            using var response = await httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                logger.LogWarning(
+                    "GitLab repository archive download for {RepositoryName}@{Ref} returned {StatusCode}", repository.Name, refName, response.StatusCode);
+                return GitProviderResult<byte[]>.Fail(
+                    $"GitLab returned {(int)response.StatusCode} {response.ReasonPhrase} downloading the archive for '{refName}' — " +
+                    "check the branch/commit name and, for private projects, that the access token has repository read access.");
+            }
+
+            var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+            if (bytes.Length == 0)
+                return GitProviderResult<byte[]>.Fail($"GitLab returned an empty archive for '{refName}'.");
+
+            return GitProviderResult<byte[]>.Ok(bytes);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            logger.LogWarning(ex, "GitLab repository archive download failed for repository {RepositoryName}", repository.Name);
+            return GitProviderResult<byte[]>.Fail("Could not reach the configured GitLab instance.");
+        }
+    }
+
     private sealed class GitLabCommitDto
     {
         [JsonPropertyName("id")]

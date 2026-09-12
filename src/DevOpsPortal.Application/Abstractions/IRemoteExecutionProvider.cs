@@ -127,6 +127,16 @@ public record RemoteEnvironmentSnapshotResult(
     string StatsJson,
     string? ErrorMessage);
 
+/// <summary>Result of syncing a downloaded source archive onto a target
+/// server's filesystem (the "obtain/update source" step of a LegacyFilesystem
+/// deployment — see ApplicationEnvironment.SyncSourceFromRepository). Never
+/// fabricates success: a failure at upload, extraction, or cleanup is
+/// reported as-is, and <c>ExtractedEntryCount</c> is null unless the target
+/// server actually reported one (via `tar`'s own verbose listing), so a
+/// caller can never mistake "the command exited 0" for "files were actually
+/// written" without evidence.</summary>
+public record RemoteSourceSyncResult(bool Success, int? ExtractedEntryCount, string? Error);
+
 /// <summary>
 /// The portal's ONLY boundary for reaching a specific TargetServer's Docker
 /// engine. This interface exists because master requirements for Phase 5
@@ -211,4 +221,24 @@ public interface IRemoteExecutionProvider
     /// Environment Infrastructure Dashboard's single-round-trip equivalent of
     /// TestConnectionAsync + GetHostMetricsAsync + DiscoverContainersAsync.</summary>
     Task<RemoteEnvironmentSnapshotResult> GetEnvironmentSnapshotAsync(TargetServer targetServer, CancellationToken cancellationToken = default);
+
+    /// <summary>Uploads <paramref name="archiveBytes"/> (a gzipped tarball, as
+    /// downloaded by <see cref="IGitProviderClient.DownloadRepositoryArchiveAsync"/>)
+    /// to the target server and extracts it into <paramref name="destinationPath"/>
+    /// — the "obtain/update source" step of a deployment that opts into
+    /// ApplicationEnvironment.SyncSourceFromRepository. <paramref name="destinationPath"/>
+    /// must already have been validated by the caller against the target server's
+    /// AllowedDeploymentRoots (same contract as <see cref="RunComposeAsync"/>'s
+    /// working directory) — this method does not re-derive that check, but it
+    /// does create the directory if missing. <paramref name="excludePatterns"/>
+    /// are `tar --exclude` glob patterns (e.g. "appsettings*.json") for files
+    /// that must never be overwritten by a source sync (environment-specific
+    /// config the target server itself owns) — every pattern is individually
+    /// quoted, never concatenated into a shell-interpreted string. GitLab's
+    /// archive has a single top-level `&lt;project&gt;-&lt;sha&gt;/` directory,
+    /// which is stripped (`--strip-components=1`) so files land directly under
+    /// destinationPath.</summary>
+    Task<RemoteSourceSyncResult> SyncSourceArchiveAsync(
+        TargetServer targetServer, string destinationPath, byte[] archiveBytes,
+        IReadOnlyList<string> excludePatterns, CancellationToken cancellationToken = default);
 }

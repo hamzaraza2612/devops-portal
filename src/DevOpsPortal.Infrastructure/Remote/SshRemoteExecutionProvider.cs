@@ -351,6 +351,71 @@ public class SshRemoteExecutionProvider(ISecretProvider secretProvider, ILogger<
         }, cancellationToken);
     }
 
+    /// <summary>Uploads the archive over SFTP (a separate connection from the
+    /// exec-based commands elsewhere in this class — SSH.NET has no single
+    /// client type covering both `exec` and `sftp` subsystems), then extracts it
+    /// with `tar` over a normal SSH command. `-v` (verbose) makes tar list every
+    /// extracted path on stdout, which is how ExtractedEntryCount is derived —
+    /// never assumed from exit code alone.</summary>
+    public async Task<RemoteSourceSyncResult> SyncSourceArchiveAsync(
+        TargetServer targetServer, string destinationPath, byte[] archiveBytes,
+        IReadOnlyList<string> excludePatterns, CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured(targetServer))
+            return new RemoteSourceSyncResult(false, null, NotConfiguredMessage(targetServer));
+
+        if (archiveBytes.Length == 0)
+            return new RemoteSourceSyncResult(false, null, "The source archive is empty.");
+
+        var remoteTempPath = $"/tmp/devopsportal-sync-{Guid.NewGuid():N}.tar.gz";
+
+        var uploadResult = await Task.Run(async () =>
+        {
+            SftpClient? client = null;
+            try
+            {
+                var connectionInfo = await BuildConnectionInfoAsync(targetServer, cancellationToken);
+                client = new SftpClient(connectionInfo);
+                client.Connect();
+                using var stream = new MemoryStream(archiveBytes);
+                client.UploadFile(stream, remoteTempPath);
+                return (Success: true, Error: (string?)null);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Source archive upload failed for target server '{TargetServerName}'", targetServer.Name);
+                return (Success: false, Error: DescribeFailure(ex));
+            }
+            finally
+            {
+                if (client is { IsConnected: true })
+                    client.Disconnect();
+                client?.Dispose();
+            }
+        }, cancellationToken);
+
+        if (!uploadResult.Success)
+            return new RemoteSourceSyncResult(false, null, uploadResult.Error);
+
+        var excludeArgs = string.Join(' ', excludePatterns.Select(p => $"--exclude={PosixShellEscaper.Quote(p)}"));
+        var extractCommand =
+            $"mkdir -p {PosixShellEscaper.Quote(destinationPath)} && " +
+            $"tar -xzf {PosixShellEscaper.Quote(remoteTempPath)} --strip-components=1 -C {PosixShellEscaper.Quote(destinationPath)} {excludeArgs} -v";
+        var extractResult = await RunRemoteCommandAsync(targetServer, extractCommand, cancellationToken);
+
+        // Best-effort cleanup of the temp archive — never overrides the actual extract outcome above.
+        await RunRemoteCommandAsync(targetServer, $"rm -f {PosixShellEscaper.Quote(remoteTempPath)}", cancellationToken);
+
+        if (!extractResult.Success)
+        {
+            return new RemoteSourceSyncResult(false, null,
+                string.IsNullOrWhiteSpace(extractResult.StandardError) ? "Failed to extract the source archive on the target server (is `tar` installed and is the destination writable?)." : extractResult.StandardError);
+        }
+
+        var extractedCount = extractResult.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
+        return new RemoteSourceSyncResult(true, extractedCount, null);
+    }
+
     private static (bool Success, string Output) RunQuick(SshClient client, string commandText)
     {
         using var command = client.CreateCommand(commandText);

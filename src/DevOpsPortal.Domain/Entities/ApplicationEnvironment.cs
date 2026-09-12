@@ -60,6 +60,16 @@ public class ApplicationEnvironment
     /// by default (master requirements §5: "Do NOT automatically apply down -v to every application").</summary>
     public bool UseDownWithVolumesOnDeploy { get; set; }
 
+    /// <summary>When true, deployment execution first downloads the configured Repository's
+    /// source archive for this deployment's branch/commit and syncs it into
+    /// DeploymentRootPath/PublishSubPath on the target server, before the compose cycle runs
+    /// — the "obtain/update source" step of the deployment flow. Requires Application.RepositoryId
+    /// to be set (enforced by ApplicationEnvironmentService.UpsertAsync). Deliberately opt-in and
+    /// off by default: an application whose files are already placed on the target server by an
+    /// existing external mechanism (e.g. the Techbey techbey-apps/techbey-apps8 transition) keeps
+    /// working completely unchanged unless this is explicitly turned on.</summary>
+    public bool SyncSourceFromRepository { get; set; }
+
     // --- Health check configuration (config only — not probed in Phase 2) ---
 
     public HealthCheckType HealthCheckType { get; set; } = HealthCheckType.None;

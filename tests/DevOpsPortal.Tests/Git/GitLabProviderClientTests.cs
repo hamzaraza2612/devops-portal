@@ -66,4 +66,47 @@ public class GitLabProviderClientTests
         Assert.False(result.Success);
         Assert.NotNull(result.ErrorMessage);
     }
+
+    [Fact]
+    public async Task DownloadRepositoryArchiveAsync_WithInvalidRepositoryUrl_ReturnsFail()
+    {
+        var sut = CreateSut();
+        var repository = new Repository { Name = "bad-url", Url = "not-a-url", Provider = RepositoryProvider.GitLab };
+
+        var result = await sut.DownloadRepositoryArchiveAsync(repository, "main");
+
+        Assert.False(result.Success);
+        Assert.NotNull(result.ErrorMessage);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task DownloadRepositoryArchiveAsync_WithBlankRef_ReturnsFail(string refName)
+    {
+        var sut = CreateSut();
+        var repository = new Repository { Name = "ok", Url = "https://gitlab.example.com/group/app", Provider = RepositoryProvider.GitLab };
+
+        var result = await sut.DownloadRepositoryArchiveAsync(repository, refName);
+
+        Assert.False(result.Success);
+        Assert.Contains("branch name or commit SHA", result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task DownloadRepositoryArchiveAsync_WhenHostUnreachable_ReturnsFailNeverThrows()
+    {
+        var sut = CreateSut();
+        var repository = new Repository
+        {
+            Name = "unreachable",
+            Url = "http://127.0.0.1:1/group/app",
+            Provider = RepositoryProvider.GitLab,
+        };
+
+        var result = await sut.DownloadRepositoryArchiveAsync(repository, "main");
+
+        Assert.False(result.Success);
+        Assert.NotNull(result.ErrorMessage);
+    }
 }

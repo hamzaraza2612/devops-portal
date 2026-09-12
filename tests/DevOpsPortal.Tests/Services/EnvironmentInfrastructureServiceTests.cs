@@ -365,5 +365,10 @@ public class EnvironmentInfrastructureServiceTests
                 includeDiscovery ? DiscoveryResult.StatsJson : string.Empty,
                 c.ErrorMessage));
         }
+
+        public Task<RemoteSourceSyncResult> SyncSourceArchiveAsync(
+            TargetServer targetServer, string destinationPath, byte[] archiveBytes,
+            IReadOnlyList<string> excludePatterns, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

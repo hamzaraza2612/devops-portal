@@ -241,6 +241,27 @@ public class SshRemoteExecutionProviderTests
         Assert.Contains("not configured", result.ErrorMessage);
     }
 
+    [Fact]
+    public async Task SyncSourceArchiveAsync_WhenNotConfigured_FailsWithoutAttemptingAnUpload()
+    {
+        var sut = new SshRemoteExecutionProvider(new FakeSecretProvider(), NullLoggerFactory.Create<SshRemoteExecutionProvider>());
+        var result = await sut.SyncSourceArchiveAsync(UnconfiguredServer(), "/tmp/app", [1, 2, 3], []);
+
+        Assert.False(result.Success);
+        Assert.Null(result.ExtractedEntryCount);
+        Assert.Contains("not configured", result.Error);
+    }
+
+    [Fact]
+    public async Task SyncSourceArchiveAsync_WithEmptyArchive_FailsWithoutAttemptingAnUpload()
+    {
+        var sut = new SshRemoteExecutionProvider(new FakeSecretProvider(), NullLoggerFactory.Create<SshRemoteExecutionProvider>());
+        var result = await sut.SyncSourceArchiveAsync(ConfiguredServer(), "/tmp/app", [], []);
+
+        Assert.False(result.Success);
+        Assert.Contains("empty", result.Error);
+    }
+
     private sealed class FakeSecretProvider : ISecretProvider
     {
         public string ProviderKey => "fake";
