@@ -228,6 +228,19 @@ public class SshRemoteExecutionProviderTests
         Assert.Contains("not configured", result.Error);
     }
 
+    [Fact]
+    public async Task GetEnvironmentSnapshotAsync_WhenNotConfigured_FailsWithoutAttemptingAnything()
+    {
+        var sut = new SshRemoteExecutionProvider(new FakeSecretProvider(), NullLoggerFactory.Create<SshRemoteExecutionProvider>());
+        var result = await sut.GetEnvironmentSnapshotAsync(UnconfiguredServer());
+
+        Assert.False(result.SshConnected);
+        Assert.False(result.DockerAvailable);
+        Assert.Equal(string.Empty, result.InspectJson);
+        Assert.Equal(string.Empty, result.StatsJson);
+        Assert.Contains("not configured", result.ErrorMessage);
+    }
+
     private sealed class FakeSecretProvider : ISecretProvider
     {
         public string ProviderKey => "fake";

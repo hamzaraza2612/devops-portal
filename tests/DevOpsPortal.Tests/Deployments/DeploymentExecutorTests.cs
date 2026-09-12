@@ -286,6 +286,9 @@ public class DeploymentExecutorTests
 
         public Task<RemoteHostMetricsResult> GetHostMetricsAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public Task<RemoteEnvironmentSnapshotResult> GetEnvironmentSnapshotAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     /// <summary>Never completes on its own — only responds to cancellation. Used to
@@ -320,6 +323,9 @@ public class DeploymentExecutorTests
             throw new NotSupportedException();
 
         public Task<RemoteHostMetricsResult> GetHostMetricsAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RemoteEnvironmentSnapshotResult> GetEnvironmentSnapshotAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }
 

@@ -112,5 +112,8 @@ public class IntegrationsHealthCheckTests
 
         public Task<RemoteHostMetricsResult> GetHostMetricsAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public Task<RemoteEnvironmentSnapshotResult> GetEnvironmentSnapshotAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

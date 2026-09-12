@@ -8,6 +8,28 @@ procedure — in short: back up first, `git pull` / pull the new image,
 (new nullable columns/tables); none has ever dropped or destructively
 altered existing data.
 
+## v1.3.1 — Fix: dashboard crash + slow loads on a real target server
+
+**Fixes a crash** reported against a real deployed environment within
+hours of v1.3.0 shipping: opening an environment threw *"A second
+operation was started on this context instance before a previous
+operation completed"*. Root cause: the Environment Infrastructure
+Dashboard ran two SSH round trips concurrently (`Task.WhenAll`), and both
+independently resolved the target server's stored credential through the
+same request-scoped database context — a real EF Core concurrency
+violation, not a flake.
+
+**Fix**: connection status, host metrics, and container discovery now all
+run within a single SSH session (`IRemoteExecutionProvider.GetEnvironmentSnapshotAsync`)
+instead of three separate ones run concurrently. This removes the crash
+at its root and — as a direct side effect — cuts each dashboard load/
+refresh from three SSH connect+auth handshakes down to one, addressing
+the "very slow" symptom reported alongside the crash. No API/DTO shape
+changed; no frontend changes were needed.
+
+417/417 backend tests pass (one new regression test asserts the dashboard
+now makes exactly one provider call, never the old three-call pattern).
+
 ## v1.3.0 — Real server/Docker discovery for the Environment Infrastructure Dashboard
 
 Closes the gap where an environment's page showed nothing more than

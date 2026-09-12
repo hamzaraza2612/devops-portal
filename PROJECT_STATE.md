@@ -4069,6 +4069,50 @@ the discovered-container/unregistered-container rendering).
   not used, to avoid a false-positive ownership claim.
 - Every other Phase 12/Phase 13 "Known limitations" entry is unchanged.
 
+### Phase 13c hotfix — DbContext concurrency crash + slow dashboard loads
+
+Reported against a real deployed environment within hours of Phase 13c
+shipping — exactly the "no real target server reachable in this sandbox"
+gap called out above. Opening an environment threw: *"A second operation
+was started on this context instance before a previous operation
+completed. This is usually caused by different threads concurrently
+using the same instance of DbContext."*
+
+**Root cause**: `EnvironmentInfrastructureService.GetInfrastructureAsync`
+ran `TestConnectionAsync` and `GetHostMetricsAsync` concurrently via
+`Task.WhenAll` to shave a little latency. Both internally resolve the
+target server's stored SSH credential through `BuildConnectionInfoAsync`
+→ `ISecretProvider.RetrieveAsync` — which for the real
+`EncryptedSecretProvider` queries `SecretValues` through the request's one
+scoped `DbContext`. Two concurrent EF Core operations against the same
+`DbContext` instance is exactly the scenario EF Core's own concurrency
+detector exists to catch — sequential-only was never optional here, and
+nothing in the earlier fake-provider-based tests could have caught it
+(the fakes never touched a `DbContext` at all).
+
+**Fix**: replaced the three separate round trips
+(`TestConnectionAsync`/`GetHostMetricsAsync`/`DiscoverContainersAsync`)
+with one new `IRemoteExecutionProvider.GetEnvironmentSnapshotAsync` that
+opens a single SSH connection and runs everything sequentially within it
+— connection/Docker/Compose status, host metrics, and (only when Docker
+is reachable) container discovery. This fixes the crash at its root (no
+concurrent calls are made at all, so there's nothing to race) and
+directly addresses the "very slow" complaint that came with the same bug
+report: one SSH connect+auth handshake per dashboard load/refresh
+instead of three. `TestConnectionAsync`/`GetHostMetricsAsync` themselves
+are untouched and still used elsewhere (the admin "Test Connection"
+panel) — only `EnvironmentInfrastructureService` was rewired to the new
+combined method.
+
+New regression test
+(`EnvironmentInfrastructureServiceTests.GetInfrastructureAsync_MakesExactlyOneRemoteCall_NeverTestConnectionAndHostMetricsConcurrently`)
+asserts `GetInfrastructureAsync` calls the provider exactly once, via
+`GetEnvironmentSnapshotAsync`, and never calls
+`TestConnectionAsync`/`GetHostMetricsAsync`/`DiscoverContainersAsync`
+directly — guarding against this exact pattern being reintroduced.
+417/417 backend tests pass; no frontend changes were needed (the API's
+response shape is unchanged).
+
 ## Production-critical gaps / next implementation
 
 **Items 1–5 below (carried forward since Phase 5/6/7) are now resolved by

@@ -274,6 +274,83 @@ public class SshRemoteExecutionProvider(ISecretProvider secretProvider, ILogger<
         }, cancellationToken);
     }
 
+    public async Task<RemoteEnvironmentSnapshotResult> GetEnvironmentSnapshotAsync(TargetServer targetServer, CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured(targetServer))
+        {
+            return new RemoteEnvironmentSnapshotResult(
+                false, null, null, false, null, false, null, null, null, null, null, string.Empty, string.Empty,
+                "SSH is not configured for this target server — Hostname, SshUsername, and a stored credential are all required.");
+        }
+
+        return await Task.Run(async () =>
+        {
+            SshClient? client = null;
+            try
+            {
+                var connectionInfo = await BuildConnectionInfoAsync(targetServer, cancellationToken);
+                client = new SshClient(connectionInfo);
+                client.Connect();
+
+                var authenticatedUser = RunQuick(client, "whoami");
+                var osInfo = RunQuick(client, "uname -a");
+                var dockerVersion = RunQuick(client, "docker version --format '{{.Server.Version}}'");
+                var composeVersion = RunQuick(client, "docker compose version --short");
+                var uptime = RunQuick(client, "uptime");
+                var loadAvg = RunQuick(client, "cat /proc/loadavg");
+                var mem = RunQuick(client, "free -b");
+                var disk = RunQuick(client, "df -Pk / 2>/dev/null || df -Pk .");
+
+                var dockerAvailable = dockerVersion.Success;
+                var composeAvailable = composeVersion.Success;
+
+                // Only worth the extra round trips when Docker itself is reachable —
+                // matches EnvironmentInfrastructureService's own "never attempt
+                // discovery against a server that isn't there" rule. On the rare
+                // case where `docker ps`/`inspect` itself fails despite `docker
+                // version` having just succeeded, an empty string here parses the
+                // same as a genuine zero-container "[]" (DockerDiscoveryParser
+                // treats both as "nothing to show", never an exception) — an
+                // acceptable degraded read for a failure this narrow, rather than
+                // adding a second error channel for it.
+                var inspectJson = string.Empty;
+                var statsJson = string.Empty;
+                if (dockerAvailable)
+                {
+                    var inspect = RunQuick(client, "ids=$(docker ps -aq); if [ -n \"$ids\" ]; then docker inspect $ids; else echo '[]'; fi");
+                    inspectJson = inspect.Output;
+                    var stats = RunQuick(client, "docker stats --no-stream --format '{{json .}}'");
+                    statsJson = stats.Output;
+                }
+
+                return new RemoteEnvironmentSnapshotResult(
+                    true,
+                    authenticatedUser.Success ? authenticatedUser.Output : null,
+                    osInfo.Success ? osInfo.Output : null,
+                    dockerAvailable, dockerAvailable ? dockerVersion.Output : null,
+                    composeAvailable, composeAvailable ? composeVersion.Output : null,
+                    uptime.Success ? uptime.Output : null,
+                    loadAvg.Success ? loadAvg.Output : null,
+                    mem.Success ? mem.Output : null,
+                    disk.Success ? disk.Output : null,
+                    inspectJson, statsJson,
+                    dockerAvailable ? null : "SSH connected, but Docker is not available (or not on PATH) for this user on the target server.");
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Environment snapshot failed for target server '{TargetServerName}'", targetServer.Name);
+                return new RemoteEnvironmentSnapshotResult(
+                    false, null, null, false, null, false, null, null, null, null, null, string.Empty, string.Empty, DescribeFailure(ex));
+            }
+            finally
+            {
+                if (client is { IsConnected: true })
+                    client.Disconnect();
+                client?.Dispose();
+            }
+        }, cancellationToken);
+    }
+
     private static (bool Success, string Output) RunQuick(SshClient client, string commandText)
     {
         using var command = client.CreateCommand(commandText);
