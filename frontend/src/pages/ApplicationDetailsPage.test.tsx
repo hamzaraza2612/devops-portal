@@ -112,6 +112,7 @@ const devEnvironment: ApplicationEnvironmentDto = {
   containerName: null,
   externalNetworkName: null,
   useDownWithVolumesOnDeploy: false,
+  syncSourceFromRepository: false,
   healthCheckType: HealthCheckType.None,
   healthCheckEndpoint: null,
   healthCheckIntervalSeconds: 30,

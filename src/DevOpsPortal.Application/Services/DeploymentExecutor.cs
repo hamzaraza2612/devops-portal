@@ -32,8 +32,18 @@ public class DeploymentExecutor(
     ISecretReferenceService secretReferenceService,
     INotificationService notificationService,
     IConfiguration configuration,
+    IGitProviderClient gitProviderClient,
     ILogger<DeploymentExecutor> logger) : IDeploymentExecutor
 {
+    /// <summary>Files a source sync must never overwrite — environment-specific
+    /// configuration the target server itself owns, not the repository (the
+    /// exact exclude set the legacy deployment script used, per
+    /// PROJECT_STATE.md's Phase 2 "Legacy filesystem deployment — reference
+    /// notes"). Applied only when ApplicationEnvironment.SyncSourceFromRepository
+    /// is explicitly turned on — see ExecuteLegacyFilesystemAsync.</summary>
+    private static readonly IReadOnlyList<string> SourceSyncExcludePatterns =
+        ["appsettings*.json", "*securesettings*.json", "config.json"];
+
     // The deployment queue is processed one job at a time (DeploymentWorker), so a
     // single stuck `docker compose up` (e.g. an image pull that never completes) would
     // otherwise stall every subsequent deployment indefinitely. Configurable via
@@ -178,6 +188,9 @@ public class DeploymentExecutor(
                 "credential are all required) — see the Servers page to configure and test connectivity before deploying.");
         }
 
+        if (appEnv.SyncSourceFromRepository)
+            await SyncSourceAsync(deployment, appEnv, log, cancellationToken);
+
         // Resolved only here, at execution time (master requirements §4) — never
         // persisted, never logged by value, and structurally environment-aware
         // (see SecretReferenceService.ResolveForDeploymentAsync): a secret scoped
@@ -215,6 +228,53 @@ public class DeploymentExecutor(
 
         if (!upResult.Success)
             throw new DeploymentExecutionException($"docker compose up failed (exit code {upResult.ExitCode}).");
+    }
+
+    /// <summary>The "obtain/update source" step of a LegacyFilesystem deployment
+    /// (master requirements: DEV/QA/UAT/Production deployment must fetch the
+    /// selected branch/commit's source, not assume it already exists on the
+    /// target server). Deliberately opt-in per ApplicationEnvironment
+    /// (SyncSourceFromRepository) — an application whose files are already
+    /// placed on the target server by an existing external mechanism (e.g. the
+    /// Techbey techbey-apps/techbey-apps8 transition) is completely unaffected
+    /// unless this is explicitly turned on for it. No local `git` binary is ever
+    /// invoked: the archive is downloaded from GitLab's REST API and streamed to
+    /// the target server over SFTP — see IGitProviderClient.DownloadRepositoryArchiveAsync
+    /// and IRemoteExecutionProvider.SyncSourceArchiveAsync.</summary>
+    private async Task SyncSourceAsync(Deployment deployment, ApplicationEnvironment appEnv, DeploymentLogWriter log, CancellationToken cancellationToken)
+    {
+        if (deployment.Application.RepositoryId is null)
+        {
+            throw new DeploymentExecutionException(
+                "This application-environment has SyncSourceFromRepository enabled, but the application has no Repository configured.");
+        }
+
+        var repository = await db.Repositories.FirstOrDefaultAsync(r => r.Id == deployment.Application.RepositoryId, cancellationToken)
+            ?? throw new DeploymentExecutionException("The application's configured repository could not be found.");
+
+        var refName = !string.IsNullOrWhiteSpace(deployment.Branch) ? deployment.Branch : deployment.CommitSha;
+        await log.WriteAsync(DeploymentLogLevel.Info, $"Downloading source archive for '{refName}' from repository '{repository.Name}'.", cancellationToken);
+
+        var archiveResult = await gitProviderClient.DownloadRepositoryArchiveAsync(repository, refName, cancellationToken);
+        if (!archiveResult.Success || archiveResult.Data is null)
+            throw new DeploymentExecutionException($"Failed to download source archive for '{refName}': {archiveResult.ErrorMessage}");
+
+        // PublishSubPath is already validated (DeploymentPathValidator.IsSafeRelativePath) as a
+        // relative path with no '.'/'..' segments — safe to concatenate onto the
+        // already-allow-listed DeploymentRootPath.
+        var destinationPath = $"{appEnv.DeploymentRootPath!.TrimEnd('/')}/{appEnv.PublishSubPath}";
+        var syncResult = await remoteExecutionProvider.SyncSourceArchiveAsync(
+            appEnv.TargetServer, destinationPath, archiveResult.Data, SourceSyncExcludePatterns, cancellationToken);
+
+        await log.WriteAsync(
+            syncResult.Success ? DeploymentLogLevel.Info : DeploymentLogLevel.Error,
+            syncResult.Success
+                ? $"Source synced to '{destinationPath}' ({syncResult.ExtractedEntryCount} entries extracted)."
+                : $"Source sync failed: {syncResult.Error}",
+            cancellationToken);
+
+        if (!syncResult.Success)
+            throw new DeploymentExecutionException($"Source sync failed: {syncResult.Error}");
     }
 
     /// <summary>ContainerImage-mode deployment (master requirements §16/§17):

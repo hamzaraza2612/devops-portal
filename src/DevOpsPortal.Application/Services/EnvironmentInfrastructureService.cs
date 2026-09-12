@@ -49,34 +49,31 @@ public class EnvironmentInfrastructureService(
                 []);
         }
 
-        var connectionTask = remoteExecutionProvider.TestConnectionAsync(server, cancellationToken);
-        var metricsTask = remoteExecutionProvider.GetHostMetricsAsync(server, cancellationToken);
-        await Task.WhenAll(connectionTask, metricsTask);
-        var connection = connectionTask.Result;
-        var metrics = metricsTask.Result;
+        // A single connected SSH session covers connection/Docker/Compose status,
+        // host metrics, and container discovery together — see
+        // RemoteEnvironmentSnapshotResult's doc comment for why this must NOT be
+        // decomposed back into separate TestConnectionAsync/GetHostMetricsAsync/
+        // DiscoverContainersAsync calls run concurrently: those each resolve the
+        // stored SSH credential through the same scoped ISecretProvider/DbContext,
+        // and concurrent DbContext access throws.
+        var snapshot = await remoteExecutionProvider.GetEnvironmentSnapshotAsync(server, cancellationToken);
 
-        var hostMetrics = connection.SshConnected ? ToHostMetricsDto(metrics) : null;
+        var hostMetrics = snapshot.SshConnected ? ToHostMetricsDto(snapshot) : null;
 
         var serverInfo = new EnvironmentServerInfoDto(
             server.Id, server.Name, server.Hostname, IsConfigured: true,
-            connection.SshConnected, connection.AuthenticatedUser, connection.OsInfo, connection.UptimeInfo,
-            connection.DockerAvailable, connection.DockerVersion, connection.ComposeAvailable, connection.ComposeVersion,
-            hostMetrics, connection.ErrorMessage, DateTimeOffset.UtcNow);
+            snapshot.SshConnected, snapshot.AuthenticatedUser, snapshot.OsInfo, snapshot.UptimeInfo,
+            snapshot.DockerAvailable, snapshot.DockerVersion, snapshot.ComposeAvailable, snapshot.ComposeVersion,
+            hostMetrics, snapshot.ErrorMessage, DateTimeOffset.UtcNow);
 
         // Never silently turn "couldn't connect"/"Docker isn't available" into an
         // empty container list that looks the same as "genuinely zero
         // containers" — the caller must be able to tell these apart from
         // serverInfo alone (master requirement §12).
-        if (!connection.SshConnected || !connection.DockerAvailable)
+        if (!snapshot.SshConnected || !snapshot.DockerAvailable)
             return new EnvironmentInfrastructureDto(environmentDefinitionId, environmentDefinition.Name, serverInfo, []);
 
-        var discovery = await remoteExecutionProvider.DiscoverContainersAsync(server, cancellationToken);
-        if (!discovery.Success)
-        {
-            var failureInfo = serverInfo with { ErrorMessage = discovery.Error ?? "Container discovery failed." };
-            return new EnvironmentInfrastructureDto(environmentDefinitionId, environmentDefinition.Name, failureInfo, []);
-        }
-
+        var discovery = new RemoteContainerDiscoveryResult(true, snapshot.InspectJson, snapshot.StatsJson, null);
         var containers = await MapDiscoveredContainersAsync(environmentDefinitionId, server.Id, discovery, cancellationToken);
         return new EnvironmentInfrastructureDto(environmentDefinitionId, environmentDefinition.Name, serverInfo, containers);
     }
@@ -186,11 +183,11 @@ public class EnvironmentInfrastructureService(
         return result;
     }
 
-    private static HostMetricsDto ToHostMetricsDto(RemoteHostMetricsResult metrics)
+    private static HostMetricsDto ToHostMetricsDto(RemoteEnvironmentSnapshotResult snapshot)
     {
-        var (load1, load5, load15) = DockerDiscoveryParser.ParseLoadAvg(metrics.LoadAvgRaw);
-        var (memTotal, memUsed, memAvailable) = DockerDiscoveryParser.ParseFreeBytes(metrics.MemRaw);
-        var (diskTotal, diskUsed, diskAvailable, diskPercent) = DockerDiscoveryParser.ParseDfKb(metrics.DiskRaw);
+        var (load1, load5, load15) = DockerDiscoveryParser.ParseLoadAvg(snapshot.LoadAvgRaw);
+        var (memTotal, memUsed, memAvailable) = DockerDiscoveryParser.ParseFreeBytes(snapshot.MemRaw);
+        var (diskTotal, diskUsed, diskAvailable, diskPercent) = DockerDiscoveryParser.ParseDfKb(snapshot.DiskRaw);
 
         return new HostMetricsDto(
             load1, load5, load15,

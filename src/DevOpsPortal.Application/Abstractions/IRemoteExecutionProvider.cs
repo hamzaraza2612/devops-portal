@@ -93,6 +93,50 @@ public record RemoteContainerActionResult(bool Success, string Message, string? 
 /// convention as everywhere else in this interface.</summary>
 public record RemoteHostMetricsResult(bool Success, string? LoadAvgRaw, string? MemRaw, string? DiskRaw, string? Error);
 
+/// <summary>One connected SSH session's worth of everything the Environment
+/// Infrastructure Dashboard needs — connection/Docker/Compose status, host
+/// metrics, and (only when Docker is reachable) whole-server container
+/// discovery — combined into a single round trip so one dashboard load/
+/// refresh costs one SSH connect+auth handshake, not three separate ones.
+///
+/// <para>This exists because composing the equivalent from
+/// <see cref="IRemoteExecutionProvider.TestConnectionAsync"/> +
+/// <see cref="IRemoteExecutionProvider.GetHostMetricsAsync"/> run
+/// concurrently (e.g. via <c>Task.WhenAll</c>) is actively unsafe, not just
+/// slower: each independently resolves the stored SSH credential through the
+/// same scoped <c>ISecretProvider</c>, which for the real
+/// <c>EncryptedSecretProvider</c> means two concurrent queries against the
+/// same scoped <c>DbContext</c> — EF Core throws "A second operation was
+/// started on this context instance before a previous operation completed."
+/// Sequential-but-separate calls would avoid the crash but still pay for
+/// three SSH handshakes; this method is the one place that does the whole
+/// job in a single connected session.</para></summary>
+public record RemoteEnvironmentSnapshotResult(
+    bool SshConnected,
+    string? AuthenticatedUser,
+    string? OsInfo,
+    bool DockerAvailable,
+    string? DockerVersion,
+    bool ComposeAvailable,
+    string? ComposeVersion,
+    string? UptimeInfo,
+    string? LoadAvgRaw,
+    string? MemRaw,
+    string? DiskRaw,
+    string InspectJson,
+    string StatsJson,
+    string? ErrorMessage);
+
+/// <summary>Result of syncing a downloaded source archive onto a target
+/// server's filesystem (the "obtain/update source" step of a LegacyFilesystem
+/// deployment — see ApplicationEnvironment.SyncSourceFromRepository). Never
+/// fabricates success: a failure at upload, extraction, or cleanup is
+/// reported as-is, and <c>ExtractedEntryCount</c> is null unless the target
+/// server actually reported one (via `tar`'s own verbose listing), so a
+/// caller can never mistake "the command exited 0" for "files were actually
+/// written" without evidence.</summary>
+public record RemoteSourceSyncResult(bool Success, int? ExtractedEntryCount, string? Error);
+
 /// <summary>
 /// The portal's ONLY boundary for reaching a specific TargetServer's Docker
 /// engine. This interface exists because master requirements for Phase 5
@@ -172,4 +216,29 @@ public interface IRemoteExecutionProvider
 
     /// <summary>See <see cref="RemoteHostMetricsResult"/>.</summary>
     Task<RemoteHostMetricsResult> GetHostMetricsAsync(TargetServer targetServer, CancellationToken cancellationToken = default);
+
+    /// <summary>See <see cref="RemoteEnvironmentSnapshotResult"/> — the
+    /// Environment Infrastructure Dashboard's single-round-trip equivalent of
+    /// TestConnectionAsync + GetHostMetricsAsync + DiscoverContainersAsync.</summary>
+    Task<RemoteEnvironmentSnapshotResult> GetEnvironmentSnapshotAsync(TargetServer targetServer, CancellationToken cancellationToken = default);
+
+    /// <summary>Uploads <paramref name="archiveBytes"/> (a gzipped tarball, as
+    /// downloaded by <see cref="IGitProviderClient.DownloadRepositoryArchiveAsync"/>)
+    /// to the target server and extracts it into <paramref name="destinationPath"/>
+    /// — the "obtain/update source" step of a deployment that opts into
+    /// ApplicationEnvironment.SyncSourceFromRepository. <paramref name="destinationPath"/>
+    /// must already have been validated by the caller against the target server's
+    /// AllowedDeploymentRoots (same contract as <see cref="RunComposeAsync"/>'s
+    /// working directory) — this method does not re-derive that check, but it
+    /// does create the directory if missing. <paramref name="excludePatterns"/>
+    /// are `tar --exclude` glob patterns (e.g. "appsettings*.json") for files
+    /// that must never be overwritten by a source sync (environment-specific
+    /// config the target server itself owns) — every pattern is individually
+    /// quoted, never concatenated into a shell-interpreted string. GitLab's
+    /// archive has a single top-level `&lt;project&gt;-&lt;sha&gt;/` directory,
+    /// which is stripped (`--strip-components=1`) so files land directly under
+    /// destinationPath.</summary>
+    Task<RemoteSourceSyncResult> SyncSourceArchiveAsync(
+        TargetServer targetServer, string destinationPath, byte[] archiveBytes,
+        IReadOnlyList<string> excludePatterns, CancellationToken cancellationToken = default);
 }

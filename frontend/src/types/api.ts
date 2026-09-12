@@ -247,6 +247,7 @@ export interface ApplicationEnvironmentDto {
   containerName: string | null;
   externalNetworkName: string | null;
   useDownWithVolumesOnDeploy: boolean;
+  syncSourceFromRepository: boolean;
   healthCheckType: HealthCheckType;
   healthCheckEndpoint: string | null;
   healthCheckIntervalSeconds: number;
@@ -270,6 +271,7 @@ export interface UpsertApplicationEnvironmentRequest {
   containerName: string | null;
   externalNetworkName: string | null;
   useDownWithVolumesOnDeploy: boolean;
+  syncSourceFromRepository: boolean;
   healthCheckType: HealthCheckType;
   healthCheckEndpoint: string | null;
   healthCheckIntervalSeconds: number;

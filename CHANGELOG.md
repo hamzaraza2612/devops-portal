@@ -8,6 +8,59 @@ procedure — in short: back up first, `git pull` / pull the new image,
 (new nullable columns/tables); none has ever dropped or destructively
 altered existing data.
 
+## v1.4.0 — Deployments can now obtain their own source from GitLab
+
+A gap-analysis pass against the full master requirements (not a bug
+report) found one real, previously-missed gap: a LegacyFilesystem
+deployment ran `docker compose down`/`up -d` at the application's
+configured path but never itself fetched or updated the source there —
+it silently assumed the files were already correct, which only worked
+because something external (a person, the legacy script, a separate CI
+step) had already put them there. Deployments are supposed to obtain the
+selected branch/commit's source themselves.
+
+**New, opt-in per application-environment**: turn on "Sync source from the
+application's GitLab repository before each deploy" (requires the
+application to have a Repository configured) and a DEV/QA/UAT/PRODUCTION
+deployment now downloads the deployment's branch/commit as a tarball from
+GitLab's own REST API and extracts it onto the target server (over SFTP +
+a fixed, safely-quoted `tar` command) before the compose cycle runs —
+never overwriting `appsettings*.json`/`*securesettings*.json`/
+`config.json`, matching the legacy deployment script's own exclude
+behavior exactly. **Off by default**: every existing application-
+environment's deployments behave exactly as before this release unless
+this is explicitly turned on.
+
+430/430 backend tests pass (up from 417), 47/47 frontend tests pass.
+
+**Known limitation**: no live GitLab instance or target server was
+reachable in this release's build environment to exercise the real
+download/upload/extract path end-to-end — see PROJECT_STATE.md's Phase 14
+"Known limitations" for exactly what was verified and the recommended
+manual verification steps before production reliance.
+
+## v1.3.1 — Fix: dashboard crash + slow loads on a real target server
+
+**Fixes a crash** reported against a real deployed environment within
+hours of v1.3.0 shipping: opening an environment threw *"A second
+operation was started on this context instance before a previous
+operation completed"*. Root cause: the Environment Infrastructure
+Dashboard ran two SSH round trips concurrently (`Task.WhenAll`), and both
+independently resolved the target server's stored credential through the
+same request-scoped database context — a real EF Core concurrency
+violation, not a flake.
+
+**Fix**: connection status, host metrics, and container discovery now all
+run within a single SSH session (`IRemoteExecutionProvider.GetEnvironmentSnapshotAsync`)
+instead of three separate ones run concurrently. This removes the crash
+at its root and — as a direct side effect — cuts each dashboard load/
+refresh from three SSH connect+auth handshakes down to one, addressing
+the "very slow" symptom reported alongside the crash. No API/DTO shape
+changed; no frontend changes were needed.
+
+417/417 backend tests pass (one new regression test asserts the dashboard
+now makes exactly one provider call, never the old three-call pattern).
+
 ## v1.3.0 — Real server/Docker discovery for the Environment Infrastructure Dashboard
 
 Closes the gap where an environment's page showed nothing more than

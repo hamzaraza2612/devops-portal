@@ -100,6 +100,7 @@ export function ApplicationDetailsPage() {
             canSeeUrl={hasEnvironmentAccess(user?.permissions ?? [], tier)}
             canManage={canManageEnvironments}
             targetServers={targetServers}
+            hasRepository={Boolean(application.repositoryName)}
             onChanged={reload}
           />
         ))}
@@ -134,6 +135,7 @@ function EnvironmentCard({
   canSeeUrl,
   canManage,
   targetServers,
+  hasRepository,
   onChanged,
 }: {
   tier: EnvironmentTier;
@@ -149,6 +151,7 @@ function EnvironmentCard({
   canSeeUrl: boolean;
   canManage: boolean;
   targetServers: TargetServerDto[];
+  hasRepository: boolean;
   onChanged: () => void;
 }) {
   const { can } = useAuth();
@@ -266,6 +269,7 @@ function EnvironmentCard({
           environmentDefinitionId={environmentDef.id}
           environmentConfig={environmentConfig}
           targetServers={targetServers}
+          hasRepository={hasRepository}
           onSubmitted={() => {
             setShowConfigForm(false);
             onChanged();
@@ -292,6 +296,7 @@ function ApplicationEnvironmentConfigForm({
   environmentDefinitionId,
   environmentConfig,
   targetServers,
+  hasRepository,
   onSubmitted,
   onCancel,
 }: {
@@ -299,6 +304,7 @@ function ApplicationEnvironmentConfigForm({
   environmentDefinitionId: string;
   environmentConfig?: ApplicationEnvironmentDto;
   targetServers: TargetServerDto[];
+  hasRepository: boolean;
   onSubmitted: () => void;
   onCancel: () => void;
 }) {
@@ -316,6 +322,7 @@ function ApplicationEnvironmentConfigForm({
   const [containerName, setContainerName] = useState(environmentConfig?.containerName ?? '');
   const [externalNetworkName, setExternalNetworkName] = useState(environmentConfig?.externalNetworkName ?? '');
   const [useDownWithVolumesOnDeploy, setUseDownWithVolumesOnDeploy] = useState(environmentConfig?.useDownWithVolumesOnDeploy ?? false);
+  const [syncSourceFromRepository, setSyncSourceFromRepository] = useState(environmentConfig?.syncSourceFromRepository ?? false);
   const [healthCheckType, setHealthCheckType] = useState<HealthCheckType>(environmentConfig?.healthCheckType ?? HealthCheckType.None);
   const [healthCheckEndpoint, setHealthCheckEndpoint] = useState(environmentConfig?.healthCheckEndpoint ?? '');
   const [healthCheckIntervalSeconds, setHealthCheckIntervalSeconds] = useState(String(environmentConfig?.healthCheckIntervalSeconds ?? 30));
@@ -338,6 +345,7 @@ function ApplicationEnvironmentConfigForm({
       containerName: containerName.trim() || null,
       externalNetworkName: externalNetworkName.trim() || null,
       useDownWithVolumesOnDeploy,
+      syncSourceFromRepository,
       healthCheckType,
       healthCheckEndpoint: healthCheckEndpoint.trim() || null,
       healthCheckIntervalSeconds: Number(healthCheckIntervalSeconds) || 30,
@@ -417,6 +425,16 @@ function ApplicationEnvironmentConfigForm({
         <label className="mt-1 flex items-center gap-1.5 text-xs text-slate-600 sm:col-span-2">
           <input type="checkbox" checked={useDownWithVolumesOnDeploy} onChange={(e) => setUseDownWithVolumesOnDeploy(e.target.checked)} />
           Use "down -v" (destroy volumes) before each deploy
+        </label>
+        <label className="mt-1 flex items-center gap-1.5 text-xs text-slate-600 sm:col-span-2">
+          <input
+            type="checkbox"
+            checked={syncSourceFromRepository}
+            disabled={!hasRepository}
+            onChange={(e) => setSyncSourceFromRepository(e.target.checked)}
+          />
+          Sync source from the application's GitLab repository before each deploy
+          {!hasRepository && <span className="text-slate-400"> (configure a repository for this application first)</span>}
         </label>
       </div>
       <div className="mt-3 flex gap-2">

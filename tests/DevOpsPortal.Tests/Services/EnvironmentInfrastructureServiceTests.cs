@@ -58,7 +58,7 @@ public class EnvironmentInfrastructureServiceTests
         Assert.False(result.Server.SshConnected);
         Assert.Contains("SSH connection failed", result.Server.ErrorMessage);
         Assert.Empty(result.Containers);
-        Assert.Equal(0, remote.DiscoverCallCount);
+        Assert.Equal(0, remote.SnapshotIncludedDiscoveryCount);
     }
 
     [Fact]
@@ -79,7 +79,7 @@ public class EnvironmentInfrastructureServiceTests
         Assert.True(result.Server.SshConnected);
         Assert.False(result.Server.DockerAvailable);
         Assert.Empty(result.Containers);
-        Assert.Equal(0, remote.DiscoverCallCount);
+        Assert.Equal(0, remote.SnapshotIncludedDiscoveryCount);
     }
 
     [Fact]
@@ -117,6 +117,33 @@ public class EnvironmentInfrastructureServiceTests
         var unmapped = result.Containers.Single(c => c.Name == "some-other-container");
         Assert.False(unmapped.IsMapped);
         Assert.Null(unmapped.ApplicationName);
+    }
+
+    [Fact]
+    public async Task GetInfrastructureAsync_MakesExactlyOneRemoteCall_NeverTestConnectionAndHostMetricsConcurrently()
+    {
+        // Regression test for a live crash: TestConnectionAsync and
+        // GetHostMetricsAsync each resolve the target server's stored SSH
+        // credential through the same scoped ISecretProvider/DbContext -
+        // running them concurrently (e.g. via Task.WhenAll) throws "A second
+        // operation was started on this context instance before a previous
+        // operation completed" against the real EncryptedSecretProvider.
+        // GetInfrastructureAsync must use the single combined
+        // GetEnvironmentSnapshotAsync call and never call TestConnectionAsync/
+        // GetHostMetricsAsync/DiscoverContainersAsync itself.
+        var db = TestDb.CreateInMemory();
+        var (userId, serverId) = await SeedAdminWithServerAsync(db);
+        var envId = await AssignServerToDevAsync(db, serverId);
+        var remote = new FakeInfraRemoteExecutionProvider();
+        var currentUser = new FakeCurrentUserServiceWithId(userId);
+        var sut = new EnvironmentInfrastructureService(db, currentUser, new AuditService(db, currentUser), remote);
+
+        await sut.GetInfrastructureAsync(envId);
+
+        Assert.Equal(1, remote.SnapshotCallCount);
+        Assert.Equal(0, remote.TestConnectionCallCount);
+        Assert.Equal(0, remote.GetHostMetricsCallCount);
+        Assert.Equal(0, remote.DiscoverCallCount);
     }
 
     [Fact]
@@ -265,6 +292,10 @@ public class EnvironmentInfrastructureServiceTests
         public int DiscoverCallCount { get; private set; }
         public bool ActionWasCalled { get; private set; }
         public bool LogsWereFetched { get; private set; }
+        public int SnapshotCallCount { get; private set; }
+        public int SnapshotIncludedDiscoveryCount { get; private set; }
+        public int TestConnectionCallCount { get; private set; }
+        public int GetHostMetricsCallCount { get; private set; }
 
         public bool IsConfigured(TargetServer targetServer) => Configured;
 
@@ -283,8 +314,11 @@ public class EnvironmentInfrastructureServiceTests
         public Task<RemoteContainerStatsResult> GetContainerStatsAsync(TargetServer targetServer, string containerName, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
-            Task.FromResult(ConnectionResult);
+        public Task<RemoteConnectionTestResult> TestConnectionAsync(TargetServer targetServer, CancellationToken cancellationToken = default)
+        {
+            TestConnectionCallCount++;
+            return Task.FromResult(ConnectionResult);
+        }
 
         public Task<RemoteContainerDiscoveryResult> DiscoverContainersAsync(TargetServer targetServer, CancellationToken cancellationToken = default)
         {
@@ -299,7 +333,42 @@ public class EnvironmentInfrastructureServiceTests
             return Task.FromResult(ActionResult);
         }
 
-        public Task<RemoteHostMetricsResult> GetHostMetricsAsync(TargetServer targetServer, CancellationToken cancellationToken = default) =>
-            Task.FromResult(HostMetricsResult);
+        public Task<RemoteHostMetricsResult> GetHostMetricsAsync(TargetServer targetServer, CancellationToken cancellationToken = default)
+        {
+            GetHostMetricsCallCount++;
+            return Task.FromResult(HostMetricsResult);
+        }
+
+        /// <summary>Composes from ConnectionResult/HostMetricsResult/DiscoveryResult
+        /// (rather than an independent field) so every existing test that sets
+        /// those up still exercises the same scenario now that
+        /// EnvironmentInfrastructureService calls this single combined method
+        /// instead of TestConnectionAsync+GetHostMetricsAsync+DiscoverContainersAsync
+        /// separately. Mirrors the real SshRemoteExecutionProvider's own rule:
+        /// discovery only runs (tracked via SnapshotIncludedDiscoveryCount, kept
+        /// distinct from DiscoverCallCount which tracks the separate standalone
+        /// DiscoverContainersAsync method) when the connection succeeded AND
+        /// Docker is available.</summary>
+        public Task<RemoteEnvironmentSnapshotResult> GetEnvironmentSnapshotAsync(TargetServer targetServer, CancellationToken cancellationToken = default)
+        {
+            SnapshotCallCount++;
+            var c = ConnectionResult;
+            var m = HostMetricsResult;
+            var includeDiscovery = c.SshConnected && c.DockerAvailable;
+            if (includeDiscovery) SnapshotIncludedDiscoveryCount++;
+
+            return Task.FromResult(new RemoteEnvironmentSnapshotResult(
+                c.SshConnected, c.AuthenticatedUser, c.OsInfo, c.DockerAvailable, c.DockerVersion,
+                c.ComposeAvailable, c.ComposeVersion, c.UptimeInfo,
+                m.LoadAvgRaw, m.MemRaw, m.DiskRaw,
+                includeDiscovery ? DiscoveryResult.InspectJson : string.Empty,
+                includeDiscovery ? DiscoveryResult.StatsJson : string.Empty,
+                c.ErrorMessage));
+        }
+
+        public Task<RemoteSourceSyncResult> SyncSourceArchiveAsync(
+            TargetServer targetServer, string destinationPath, byte[] archiveBytes,
+            IReadOnlyList<string> excludePatterns, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }
