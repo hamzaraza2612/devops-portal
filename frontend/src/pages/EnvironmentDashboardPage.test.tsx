@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { EnvironmentDashboardPage } from './EnvironmentDashboardPage';
@@ -78,7 +79,7 @@ describe('EnvironmentDashboardPage — Environment Infrastructure Dashboard', ()
       containers: [],
     } satisfies EnvironmentInfrastructureDto);
 
-    renderPage([Permissions.DeploymentsView, Permissions.ContainersView]);
+    renderPage([Permissions.DeploymentsView, Permissions.ContainersView, Permissions.DeploymentsDeployDev]);
 
     expect(await screen.findByText(/No target server is assigned/)).toBeInTheDocument();
     expect(screen.queryByText(/No containers found/)).not.toBeInTheDocument();
@@ -98,7 +99,7 @@ describe('EnvironmentDashboardPage — Environment Infrastructure Dashboard', ()
       containers: [],
     } satisfies EnvironmentInfrastructureDto);
 
-    renderPage([Permissions.DeploymentsView, Permissions.ContainersView]);
+    renderPage([Permissions.DeploymentsView, Permissions.ContainersView, Permissions.DeploymentsDeployDev]);
 
     expect(await screen.findByText(/Unable to connect to DEV-Techbey via SSH/)).toBeInTheDocument();
     expect(screen.queryByText(/No containers found/)).not.toBeInTheDocument();
@@ -130,11 +131,49 @@ describe('EnvironmentDashboardPage — Environment Infrastructure Dashboard', ()
       ],
     } satisfies EnvironmentInfrastructureDto);
 
-    renderPage([Permissions.DeploymentsView, Permissions.ContainersView]);
+    renderPage([Permissions.DeploymentsView, Permissions.ContainersView, Permissions.DeploymentsDeployDev]);
 
     expect(await screen.findByText('DmsApi')).toBeInTheDocument();
     expect(screen.getByText('mystery-container')).toBeInTheDocument();
     expect(screen.getByText('Unregistered container')).toBeInTheDocument();
+  });
+
+  it('filters the container list by name/image/application via the search box', async () => {
+    vi.mocked(EnvironmentsApi.infrastructure).mockResolvedValue({
+      environmentDefinitionId: 'dev-id',
+      environmentName: 'DEV',
+      server: {
+        targetServerId: 'srv-1', targetServerName: 'DEV-Techbey', hostname: '10.0.0.5', isConfigured: true, sshConnected: true,
+        authenticatedUser: 'deploy', osInfo: 'Linux', uptimeInfo: 'up 1 day', dockerAvailable: true, dockerVersion: '24.0.0',
+        composeAvailable: true, composeVersion: '2.20.0',
+        metrics: { load1: 0.1, load5: 0.2, load15: 0.3, memTotalBytes: 1000, memUsedBytes: 500, memAvailableBytes: 500, diskTotalBytes: 1000, diskUsedBytes: 200, diskAvailableBytes: 800, diskUsePercent: 20 },
+        errorMessage: null,
+        retrievedAt: '2026-01-01T00:00:00Z',
+      },
+      containers: [
+        {
+          containerId: 'c1', name: 'dmsapi-web-1', image: 'dmsapi', imageTag: '1.0', state: ContainerState.Running,
+          dockerHealthStatus: 'healthy', createdAt: '2026-01-01T00:00:00Z', startedAt: '2026-01-01T00:00:00Z', restartCount: 0,
+          ports: [], stats: null, isMapped: true, applicationId: 'app-1', applicationName: 'DmsApi', environmentDefinitionId: 'dev-id', canRecreateWithVolumes: false,
+        },
+        {
+          containerId: 'c2', name: 'mystery-container', image: 'mystery', imageTag: null, state: ContainerState.Running,
+          dockerHealthStatus: null, createdAt: '2026-01-01T00:00:00Z', startedAt: null, restartCount: 0,
+          ports: [], stats: null, isMapped: false, applicationId: null, applicationName: null, environmentDefinitionId: null, canRecreateWithVolumes: false,
+        },
+      ],
+    } satisfies EnvironmentInfrastructureDto);
+
+    const user = userEvent.setup();
+    renderPage([Permissions.DeploymentsView, Permissions.ContainersView, Permissions.DeploymentsDeployDev]);
+
+    expect(await screen.findByText('dmsapi-web-1')).toBeInTheDocument();
+    expect(screen.getByText('mystery-container')).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText('Search by name, image, or application…'), 'mystery');
+
+    expect(screen.queryByText('dmsapi-web-1')).not.toBeInTheDocument();
+    expect(screen.getByText('mystery-container')).toBeInTheDocument();
   });
 
   it('renders nothing for the infrastructure section when the user lacks ContainersView', async () => {

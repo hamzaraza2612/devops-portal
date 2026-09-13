@@ -184,9 +184,18 @@ function InfrastructureBody({
   setOpenLogsFor: (id: string | null) => void;
 }) {
   const { server, containers } = data;
+  const [search, setSearch] = useState('');
   const running = containers.filter((c) => c.state === ContainerState.Running).length;
   const stopped = containers.filter((c) => c.state === ContainerState.Exited || c.state === ContainerState.Created).length;
   const unhealthy = containers.filter((c) => c.state === ContainerState.Unhealthy).length;
+  const query = search.trim().toLowerCase();
+  const visibleContainers = query
+    ? containers.filter((c) =>
+        c.name.toLowerCase().includes(query) ||
+        c.image.toLowerCase().includes(query) ||
+        (c.applicationName?.toLowerCase().includes(query) ?? false),
+      )
+    : containers;
 
   return (
     <Card>
@@ -248,12 +257,27 @@ function InfrastructureBody({
             <Row label="Refreshed" value={formatRelative(server.retrievedAt)} />
           </dl>
 
-          <h3 className="mt-5 mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Containers ({containers.length})</h3>
+          <div className="mt-5 mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Containers ({query ? `${visibleContainers.length} of ${containers.length}` : containers.length})
+            </h3>
+            {containers.length > 0 && (
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by name, image, or application…"
+                className="w-full max-w-xs rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-slate-500 focus:outline-none"
+              />
+            )}
+          </div>
           {containers.length === 0 ? (
             <EmptyState title="No containers found on this server." />
+          ) : visibleContainers.length === 0 ? (
+            <EmptyState title={`No containers match "${search.trim()}".`} />
           ) : (
             <ul className="space-y-2">
-              {containers.map((c) => (
+              {visibleContainers.map((c) => (
                 <ContainerRow
                   key={c.containerId}
                   container={c}

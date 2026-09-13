@@ -68,14 +68,20 @@ export const DeployPermissionByEnvironment: Record<EnvironmentTier, Permission> 
   PRODUCTION: Permissions.DeploymentsDeployProduction,
 };
 
-/** Whether the user holds at least one permission tied to this specific
- * environment tier (promote/approve/deploy) or the blanket deployments.view
- * read permission — used to decide whether to show that environment's
- * application URL and pipeline card. Mirrors the boundary that already
- * exists everywhere else in the read APIs (deployments.view is a global,
- * not per-environment, read permission — see PROJECT_STATE.md Phase 4 notes). */
+/** Whether the user holds at least one permission tied to this SPECIFIC
+ * environment tier (promote/approve/deploy) — used to decide whether to show
+ * that environment's nav link, pipeline card, application URL, and pending-
+ * request tab. Deliberately does NOT treat the blanket deployments.view
+ * permission as "access to everything": deployments.view is granted to
+ * anyone with access to *any* environment (see AppDbContextExtensions.cs's
+ * "base tier" bundle), so treating it as universal access here would show
+ * every environment tab to every user regardless of which one(s) they were
+ * actually granted — exactly the bug this function exists to prevent. A
+ * Production-approval-only user (CanApproveProduction, no PRODUCTION
+ * UserEnvironmentAccess row) still correctly sees PRODUCTION via
+ * ApprovePermissionByEnvironment, since that's the one legitimate case of
+ * environment-specific access not backed by a UserEnvironmentAccess row. */
 export function hasEnvironmentAccess(permissions: readonly string[], tier: EnvironmentTier): boolean {
-  if (permissions.includes(Permissions.DeploymentsView)) return true;
   const candidates = [
     PromotePermissionByEnvironment[tier],
     ApprovePermissionByEnvironment[tier],

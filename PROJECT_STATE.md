@@ -4113,6 +4113,53 @@ directly — guarding against this exact pattern being reintroduced.
 417/417 backend tests pass; no frontend changes were needed (the API's
 response shape is unchanged).
 
+## Phase 14b — Fix: frontend showed every environment tier regardless of per-environment access; container search
+
+Reported live: a user granted access to only one environment could see every
+environment tier (DEV/QA/UAT/PRODUCTION) in the sidebar nav, the Environments
+list page, and each Environment Dashboard's tabs — a real regression, not a
+misunderstanding.
+
+**Root cause**: `frontend/src/auth/permissions.ts`'s `hasEnvironmentAccess`
+short-circuited to `true` for *every* tier whenever the caller held the
+blanket `deployments.view` permission. That permission code was deliberately
+global back when it belonged to a real Role/Permission catalog (a handful of
+roles held it), but Phase 12's authorization simplification changed what
+grants it: `AppDbContextExtensions.GetRolesAndPermissionsAsync`'s "base tier"
+bundle now adds `deployments.view` to **any** user who has access to *any
+single* environment. Once that changed, the frontend's old shortcut silently
+turned into "anyone with access to one environment sees all of them" — a
+pure frontend bug; the backend's own per-environment checks
+(`HasEnvironmentAccessAsync`, wired into every read/write path since Phase
+12) were never affected and correctly scoped data server-side the whole
+time, so this was a UI-only leak (showing tabs/nav for environments a user
+had no real access to, not returning that environment's actual data).
+
+**Fix**: removed the `deployments.view` shortcut entirely.
+`hasEnvironmentAccess` now derives a tier's visibility purely from whether
+the caller holds one of that specific tier's promote/approve/deploy
+permission codes — which, per `PermissionsByEnvironmentName` server-side,
+is already a strict superset covering every real case: a user with a
+`UserEnvironmentAccess` row for a tier always holds at least that tier's
+deploy permission, and a Production-approval-only user (`CanApproveProduction`
+with no PRODUCTION environment row) is still correctly covered via
+`DeploymentsApproveProduction`. No backend change was needed — this was
+purely a frontend gating bug.
+
+**Container search**: added a search box (name/image/application, live
+filter) above the container list on the Environment Infrastructure
+Dashboard, since a real server can host many containers.
+
+**Tests**: `permissions.test.ts`'s test that previously *asserted* the buggy
+behavior ("deployments.view alone grants every tier") was replaced with a
+regression test asserting the opposite, plus a new test modeling exactly
+what the backend actually issues for a DEV-only user (base tier bundle +
+`deployments.deploy.dev`) confirming it sees DEV only. Three
+`EnvironmentDashboardPage.test.tsx` fixtures that relied on the old
+shortcut were updated to include a real per-tier permission. New test for
+the container search box. 50/50 frontend tests pass (up from 47); no
+backend changes, so 430/430 backend tests are unaffected.
+
 ## Phase 14 — Source sync from GitLab as the deployment "obtain source" step
 
 Done. Gap-analysis phase against a consolidated master requirements
