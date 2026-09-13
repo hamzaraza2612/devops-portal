@@ -54,4 +54,14 @@ public class RepositoriesController(IRepositoryService repositoryService) : Cont
     [RequirePermission(PermissionCodes.RepositoriesManage)]
     public async Task<IActionResult> TestConnection(Guid id, CancellationToken cancellationToken) =>
         Ok(await repositoryService.TestConnectionAsync(id, cancellationToken));
+
+    /// <summary>"Discover applications from this repository" — a monorepo-style
+    /// scan (master requirements: the source folder should come from the repo
+    /// itself, never typed in by hand). Gated the same as every other
+    /// repository-inspection action (RepositoriesManage), since it's an admin
+    /// action that reaches out to GitLab.</summary>
+    [HttpGet("{id:guid}/discover-applications")]
+    [RequirePermission(PermissionCodes.RepositoriesManage)]
+    public async Task<IActionResult> DiscoverApplications(Guid id, [FromQuery] string? branch, CancellationToken cancellationToken) =>
+        Ok(await repositoryService.DiscoverApplicationsAsync(id, branch, cancellationToken));
 }

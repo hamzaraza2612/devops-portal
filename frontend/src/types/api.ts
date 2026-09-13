@@ -329,6 +329,20 @@ export interface RepositoryConnectionTestResultDto {
   testedAt: string;
 }
 
+export interface DiscoveredRepositoryFolderDto {
+  path: string;
+  hasComposeFile: boolean;
+  existingApplicationId: string | null;
+  existingApplicationName: string | null;
+}
+
+export interface DiscoverApplicationsResultDto {
+  success: boolean;
+  branch: string | null;
+  folders: DiscoveredRepositoryFolderDto[];
+  errorMessage: string | null;
+}
+
 // --- Target servers (SSH) ---
 
 export interface AllowedDeploymentRootDto {

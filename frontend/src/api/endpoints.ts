@@ -35,6 +35,7 @@ import type {
   LoginRequest,
   LoginResponse,
   PagedResult,
+  DiscoverApplicationsResultDto,
   PromotionRequestDto,
   RecreateWithVolumesRequest,
   ReleaseDto,
@@ -202,6 +203,10 @@ export const RepositoriesApi = {
     api.put<RepositoryDto>(`/repositories/${id}/access-token`, body),
   /** Master requirements §3 "Test GitLab Connection" — actually reaches GitLab; never fabricated. */
   testConnection: (id: string) => api.post<RepositoryConnectionTestResultDto>(`/repositories/${id}/test-connection`),
+  /** "Discover applications from this repository" — scans a monorepo-style repository
+   * (one folder per app) so the source folder never has to be typed in by hand. */
+  discoverApplications: (id: string, branch?: string) =>
+    api.get<DiscoverApplicationsResultDto>(`/repositories/${id}/discover-applications${branch ? `?branch=${encodeURIComponent(branch)}` : ''}`),
 };
 
 export const TargetServersApi = {

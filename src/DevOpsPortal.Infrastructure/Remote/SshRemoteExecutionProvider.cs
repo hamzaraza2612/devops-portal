@@ -356,10 +356,18 @@ public class SshRemoteExecutionProvider(ISecretProvider secretProvider, ILogger<
     /// client type covering both `exec` and `sftp` subsystems), then extracts it
     /// with `tar` over a normal SSH command. `-v` (verbose) makes tar list every
     /// extracted path on stdout, which is how ExtractedEntryCount is derived —
-    /// never assumed from exit code alone.</summary>
+    /// never assumed from exit code alone. When <paramref name="sourcePath"/> is
+    /// set (a monorepo subdirectory), only that subdirectory's contents are
+    /// extracted via a `--wildcards` member pattern (GNU tar's `*` matches `/`
+    /// by default, so `*/&lt;sourcePath&gt;/*` matches the subdirectory at any
+    /// depth under the archive's own top-level `&lt;project&gt;-&lt;sha&gt;/`
+    /// folder) with `--strip-components` sized to drop both that top-level
+    /// folder and sourcePath itself, landing sourcePath's own contents directly
+    /// under destinationPath — a zero-match extraction (sourcePath not found in
+    /// the repository) is treated as a failure, never a silent no-op.</summary>
     public async Task<RemoteSourceSyncResult> SyncSourceArchiveAsync(
         TargetServer targetServer, string destinationPath, byte[] archiveBytes,
-        IReadOnlyList<string> excludePatterns, CancellationToken cancellationToken = default)
+        IReadOnlyList<string> excludePatterns, string? sourcePath, CancellationToken cancellationToken = default)
     {
         if (!IsConfigured(targetServer))
             return new RemoteSourceSyncResult(false, null, NotConfiguredMessage(targetServer));
@@ -398,9 +406,22 @@ public class SshRemoteExecutionProvider(ISecretProvider secretProvider, ILogger<
             return new RemoteSourceSyncResult(false, null, uploadResult.Error);
 
         var excludeArgs = string.Join(' ', excludePatterns.Select(p => $"--exclude={PosixShellEscaper.Quote(p)}"));
-        var extractCommand =
-            $"mkdir -p {PosixShellEscaper.Quote(destinationPath)} && " +
-            $"tar -xzf {PosixShellEscaper.Quote(remoteTempPath)} --strip-components=1 -C {PosixShellEscaper.Quote(destinationPath)} {excludeArgs} -v";
+        string extractCommand;
+        if (!string.IsNullOrWhiteSpace(sourcePath))
+        {
+            var stripComponents = 1 + sourcePath.Split('/', StringSplitOptions.RemoveEmptyEntries).Length;
+            var memberPattern = $"*/{sourcePath}/*";
+            extractCommand =
+                $"mkdir -p {PosixShellEscaper.Quote(destinationPath)} && " +
+                $"tar -xzf {PosixShellEscaper.Quote(remoteTempPath)} --wildcards --strip-components={stripComponents} " +
+                $"-C {PosixShellEscaper.Quote(destinationPath)} {excludeArgs} -v {PosixShellEscaper.Quote(memberPattern)}";
+        }
+        else
+        {
+            extractCommand =
+                $"mkdir -p {PosixShellEscaper.Quote(destinationPath)} && " +
+                $"tar -xzf {PosixShellEscaper.Quote(remoteTempPath)} --strip-components=1 -C {PosixShellEscaper.Quote(destinationPath)} {excludeArgs} -v";
+        }
         var extractResult = await RunRemoteCommandAsync(targetServer, extractCommand, cancellationToken);
 
         // Best-effort cleanup of the temp archive — never overrides the actual extract outcome above.
@@ -413,6 +434,12 @@ public class SshRemoteExecutionProvider(ISecretProvider secretProvider, ILogger<
         }
 
         var extractedCount = extractResult.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
+        if (!string.IsNullOrWhiteSpace(sourcePath) && extractedCount == 0)
+        {
+            return new RemoteSourceSyncResult(false, 0,
+                $"No files were extracted — '{sourcePath}' does not appear to exist in this repository at the deployed ref.");
+        }
+
         return new RemoteSourceSyncResult(true, extractedCount, null);
     }
 
