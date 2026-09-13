@@ -10,6 +10,18 @@ public record GitCommitInfo(string Sha, string Message, string? AuthorName, stri
 /// or FAILED with a useful error message — never fabricated.</summary>
 public record GitConnectionTestResult(bool Connected, string? AuthenticatedAs, string? ProjectName, string? ErrorMessage);
 
+/// <summary>One top-level folder found in a monorepo-style repository (the
+/// techbey-apps/techbey-apps8 layout: one subdirectory per application, each
+/// with its own compose file) — the result of scanning the repository tree
+/// for "Discover applications from this repository" (master requirements:
+/// "whatever folder is in the repo becomes the source folder", read from
+/// GitLab itself rather than typed in by an admin). <c>HasComposeFile</c> is
+/// true only when a `docker-compose.yml`/`docker-compose.yaml` file was
+/// found directly inside that folder — folders without one are still
+/// returned (so nothing is silently hidden) but are not deployable
+/// candidates.</summary>
+public record GitRepositoryFolder(string Path, bool HasComposeFile);
+
 /// <summary>Wraps a provider call that may legitimately fail (network, auth, branch not
 /// found) without that being an application error — callers show ErrorMessage rather
 /// than treating this as an exception.</summary>
@@ -61,5 +73,14 @@ public interface IGitProviderClient
     /// network failure, an invalid ref, or a private project with no token
     /// configured all come back as Fail, never a thrown exception.</summary>
     Task<GitProviderResult<byte[]>> DownloadRepositoryArchiveAsync(
+        Repository repository, string refName, CancellationToken cancellationToken = default);
+
+    /// <summary>Lists this repository's top-level folders at <paramref name="refName"/>
+    /// and reports which ones contain a compose file directly inside them — the
+    /// "Discover applications from this repository" scan for a monorepo-style
+    /// layout (one folder per application). Read-only: only ever calls GitLab's
+    /// repository-tree API, never clones or downloads anything. Same
+    /// GitProviderResult contract as every other method here.</summary>
+    Task<GitProviderResult<IReadOnlyList<GitRepositoryFolder>>> ListRepositoryFoldersAsync(
         Repository repository, string refName, CancellationToken cancellationToken = default);
 }

@@ -29,3 +29,16 @@ public record SetRepositoryAccessTokenRequest(string Value);
 
 public record RepositoryConnectionTestResultDto(
     bool Connected, string? AuthenticatedAs, string? ProjectName, string? ErrorMessage, DateTimeOffset TestedAt);
+
+/// <summary>One top-level folder found while scanning a repository for
+/// "Discover applications" (monorepo-style layout — one folder per
+/// application, e.g. the Techbey techbey-apps/techbey-apps8 transition).
+/// <c>ExistingApplicationId</c>/<c>ExistingApplicationName</c> are set when a
+/// ManagedApplication already exists with this exact (RepositoryId,
+/// SourcePath) pair — shown as "already linked" rather than offered again as
+/// a new candidate.</summary>
+public record DiscoveredRepositoryFolderDto(
+    string Path, bool HasComposeFile, Guid? ExistingApplicationId, string? ExistingApplicationName);
+
+public record DiscoverApplicationsResultDto(
+    bool Success, string? Branch, IReadOnlyList<DiscoveredRepositoryFolderDto> Folders, string? ErrorMessage);

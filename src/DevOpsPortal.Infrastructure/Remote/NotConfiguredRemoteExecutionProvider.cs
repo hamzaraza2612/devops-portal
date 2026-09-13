@@ -63,7 +63,7 @@ public class NotConfiguredRemoteExecutionProvider(ILogger<NotConfiguredRemoteExe
 
     public Task<RemoteSourceSyncResult> SyncSourceArchiveAsync(
         TargetServer targetServer, string destinationPath, byte[] archiveBytes,
-        IReadOnlyList<string> excludePatterns, CancellationToken cancellationToken = default) =>
+        IReadOnlyList<string> excludePatterns, string? sourcePath, CancellationToken cancellationToken = default) =>
         Task.FromResult(new RemoteSourceSyncResult(false, null, UnconfiguredMessage(targetServer)));
 
     private static string UnconfiguredMessage(TargetServer targetServer) =>

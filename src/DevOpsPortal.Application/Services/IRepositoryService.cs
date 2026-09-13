@@ -20,4 +20,12 @@ public interface IRepositoryService
     /// the configured GitLab instance and reports CONNECTED or FAILED with a
     /// useful error message — never fabricates a successful result.</summary>
     Task<RepositoryConnectionTestResultDto> TestConnectionAsync(Guid id, CancellationToken cancellationToken = default);
+
+    /// <summary>Scans the repository's top-level folders at <paramref name="branch"/>
+    /// (falling back to Repository.DefaultBranch, then "main") — "Discover
+    /// applications from this repository" for a monorepo-style layout, so an
+    /// admin never has to type a source folder name by hand. Never creates
+    /// anything itself; the caller uses the result to pre-fill
+    /// CreateApplicationRequest.SourcePath for a folder they choose.</summary>
+    Task<DiscoverApplicationsResultDto> DiscoverApplicationsAsync(Guid id, string? branch, CancellationToken cancellationToken = default);
 }

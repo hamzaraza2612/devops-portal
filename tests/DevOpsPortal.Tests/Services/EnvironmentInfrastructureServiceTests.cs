@@ -368,7 +368,7 @@ public class EnvironmentInfrastructureServiceTests
 
         public Task<RemoteSourceSyncResult> SyncSourceArchiveAsync(
             TargetServer targetServer, string destinationPath, byte[] archiveBytes,
-            IReadOnlyList<string> excludePatterns, CancellationToken cancellationToken = default) =>
+            IReadOnlyList<string> excludePatterns, string? sourcePath, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }
 }

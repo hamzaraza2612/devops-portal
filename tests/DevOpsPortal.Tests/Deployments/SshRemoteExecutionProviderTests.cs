@@ -245,7 +245,7 @@ public class SshRemoteExecutionProviderTests
     public async Task SyncSourceArchiveAsync_WhenNotConfigured_FailsWithoutAttemptingAnUpload()
     {
         var sut = new SshRemoteExecutionProvider(new FakeSecretProvider(), NullLoggerFactory.Create<SshRemoteExecutionProvider>());
-        var result = await sut.SyncSourceArchiveAsync(UnconfiguredServer(), "/tmp/app", [1, 2, 3], []);
+        var result = await sut.SyncSourceArchiveAsync(UnconfiguredServer(), "/tmp/app", [1, 2, 3], [], null);
 
         Assert.False(result.Success);
         Assert.Null(result.ExtractedEntryCount);
@@ -256,7 +256,7 @@ public class SshRemoteExecutionProviderTests
     public async Task SyncSourceArchiveAsync_WithEmptyArchive_FailsWithoutAttemptingAnUpload()
     {
         var sut = new SshRemoteExecutionProvider(new FakeSecretProvider(), NullLoggerFactory.Create<SshRemoteExecutionProvider>());
-        var result = await sut.SyncSourceArchiveAsync(ConfiguredServer(), "/tmp/app", [], []);
+        var result = await sut.SyncSourceArchiveAsync(ConfiguredServer(), "/tmp/app", [], [], null);
 
         Assert.False(result.Success);
         Assert.Contains("empty", result.Error);

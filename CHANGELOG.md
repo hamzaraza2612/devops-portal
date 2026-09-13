@@ -8,6 +8,45 @@ procedure — in short: back up first, `git pull` / pull the new image,
 (new nullable columns/tables); none has ever dropped or destructively
 altered existing data.
 
+## v1.5.0 — Discover applications from a monorepo-style GitLab repository
+
+The Techbey source layout is one shared GitLab repository with a
+subdirectory per application (matching the existing techbey-apps/
+techbey-apps8 on-disk layout), not one repository per application — v1.4.0's
+source-sync feature assumed the latter and would have synced an entire
+monorepo into a single application's deployment folder.
+
+**New: "Discover from repository"** on the Applications page — pick a
+configured repository and branch, scan it, and see every top-level folder;
+one click on a folder with a `docker-compose.yml` pre-fills the Create
+Application form (name/slug/repository/source path) so nothing has to be
+typed by hand. A source sync for such an application now extracts only its
+own subdirectory from the repository archive onto the target server — the
+rest of the monorepo is never written there at all.
+
+438/438 backend tests pass (up from 417 pre-v1.4.0), 52/52 frontend tests
+pass. See PROJECT_STATE.md's Phase 14c for manual verification steps
+against a real GitLab monorepo before production reliance.
+
+## v1.4.1 — Fix: a user with one environment's access could see every environment
+
+**Fixes a real authorization-surface bug**, reported live: granting a user
+access to only one environment (e.g. DEV) still showed them every
+environment tab in the sidebar nav, the Environments page, and each
+Environment Dashboard. Root cause: the frontend's `hasEnvironmentAccess`
+treated the blanket `deployments.view` permission as "sees everything" —
+correct back when it belonged to a real Role/Permission catalog, but wrong
+since the authorization simplification made `deployments.view` part of the
+bundle **anyone** with access to even one environment receives. The backend
+was never affected — every read/write path already independently checks the
+specific environment being accessed — so no real data ever leaked, but the
+UI offered tabs/links for environments a user shouldn't even see listed.
+
+**Also added**: a container search box (filter by name/image/application)
+on the Environment Infrastructure Dashboard.
+
+50/50 frontend tests pass (up from 47); no backend changes.
+
 ## v1.4.0 — Deployments can now obtain their own source from GitLab
 
 A gap-analysis pass against the full master requirements (not a bug

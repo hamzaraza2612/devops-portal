@@ -4113,6 +4113,157 @@ directly — guarding against this exact pattern being reintroduced.
 417/417 backend tests pass; no frontend changes were needed (the API's
 response shape is unchanged).
 
+## Phase 14c — Monorepo application discovery + scoped source sync
+
+User-driven follow-up, clarified explicitly before implementation (this is
+a real architecture addition, not a reflexive extension of Phase 14): the
+Techbey source layout is a **single shared GitLab repository** with one
+top-level folder per application (matching the existing
+`/mnt/data/techbey-apps`/`techbey-apps8` on-disk layout), not one
+repository per application. Phase 14's `SyncSourceFromRepository` assumed
+one-repo-per-app and would have extracted an *entire* monorepo into a
+single application's deployment root — wrong for this layout. Fixed by
+making `ManagedApplication.SourcePath` (an existing, previously-unwired
+field from Phase 2's original monorepo-support design) load-bearing, and
+adding a "Discover applications from this repository" scan so an admin
+never has to type a source folder name by hand — it comes from GitLab
+itself.
+
+### What changed
+
+- **`IGitProviderClient.ListRepositoryFoldersAsync`** (new, `GitLabProviderClient`
+  impl): lists a repository's top-level folders at a given branch via
+  GitLab's `/repository/tree?recursive=true` REST endpoint (paginated,
+  capped at 2000 entries) and reports which ones contain a
+  `docker-compose.yml`/`.yaml` directly inside them. Read-only — never
+  clones or downloads anything, cheaper than archive-downloading just to
+  see folder names.
+- **`IRepositoryService.DiscoverApplicationsAsync`** (+ `GET
+  /api/repositories/{id}/discover-applications?branch=`, admin-only,
+  `RepositoriesManage`): wraps the folder scan, falling back to the
+  repository's own `DefaultBranch` then `"main"` when no branch is given,
+  and marks each folder as already linked to an existing
+  `ManagedApplication` when one exists with that exact
+  (RepositoryId, SourcePath) pair — never offered twice.
+- **`IRemoteExecutionProvider.SyncSourceArchiveAsync`** gained a
+  `sourcePath` parameter (`SshRemoteExecutionProvider`): when set, the
+  remote `tar` extraction uses a `--wildcards` member pattern
+  (`*/<sourcePath>/*`, GNU tar's `*` matches `/` by default) with
+  `--strip-components` sized to drop both the archive's own top-level
+  `<project>-<sha>/` folder and `sourcePath` itself — so only that
+  subdirectory's contents land under the deployment's `DeploymentRootPath`,
+  everything else in the repository is never written to the target server
+  at all. A zero-match extraction (the configured SourcePath doesn't exist
+  in the repository at the deployed ref) is treated as a failure, never a
+  silent no-op that would leave a deployment "succeeding" with nothing
+  actually synced.
+- **`DeploymentExecutor.SyncSourceAsync`** now passes
+  `deployment.Application.SourcePath` through unchanged — null for the
+  existing one-repo-per-app case (whole-archive extraction, Phase 14's
+  original behavior, completely unaffected), set for the monorepo case.
+- **Frontend — "Discover from repository"** (`ApplicationsListPage.tsx`):
+  pick a configured Repository + optional branch, scan, and see every
+  top-level folder — folders with a compose file get a one-click "Create
+  application" that pre-fills the existing Create form's Name/Slug/
+  Repository/SourcePath from the folder (still just a normal Create
+  submission — nothing is created by the scan itself); folders without a
+  compose file are still shown (never hidden), labeled "not deployable";
+  folders already linked to an application link to it instead of offering
+  Create again.
+
+### Database changes
+
+None — `ManagedApplication.SourcePath` already existed (Phase 2); this
+phase only makes it load-bearing for deployment execution and discoverable
+from the UI. No migration.
+
+### Tests
+
+438/438 backend tests pass (up from 430), 52/52 frontend tests pass (up
+from 50). New backend coverage: `GitLabProviderClientTests`
+(`ListRepositoryFoldersAsync` — invalid URL, blank ref, unreachable host,
+all graceful `Fail`), `RepositoryServiceTests`
+(`DiscoverApplicationsAsync` — folders returned with existing-application
+linkage correctly detected, GitLab failure surfaced without throwing,
+branch fallback to `DefaultBranch` then `"main"`),
+`DeploymentExecutorTests` (`Application.SourcePath` reaches
+`SyncSourceArchiveAsync` unchanged). Every `IRemoteExecutionProvider` test
+fake across the suite updated for the new `sourcePath` parameter. New
+`ApplicationsListPage.test.tsx`: scanning a repository and pre-filling the
+Create form from a discovered folder (including the already-linked and
+no-compose-file display cases), and a failed-scan error state.
+
+### Known limitations (this phase)
+
+- **No live GitLab instance or target server was reachable** in this
+  sandbox to exercise the real tree-scan or wildcard-extraction paths
+  end-to-end — same limitation as every remote-execution phase since Phase
+  12. What was validated: the non-network GitLab API error paths, the
+  discovery service's existing-application-linkage logic against a fake
+  `IGitProviderClient`, and the executor's SourcePath pass-through against
+  a fake `IRemoteExecutionProvider`. **Before relying on this in
+  production**: run "Discover from repository" against the real Techbey
+  monorepo once it's configured, confirm the listed folders match what's
+  actually there, create one application from a discovered folder, turn on
+  `SyncSourceFromRepository` for it, and confirm a DEV deployment extracts
+  only that folder's contents onto the target server (not the rest of the
+  monorepo).
+- **The `--wildcards` GNU tar extraction path is unverified against a real
+  target server's `tar` implementation.** Every mainstream Linux
+  distribution's default `tar` (GNU tar) supports `--wildcards` and
+  `--strip-components`, matching the flags this codebase already used for
+  the non-monorepo case — but this specific combination was only verified
+  by code review and the executor's own unit tests (against a fake remote
+  provider), not a live SSH session. Verify as part of the manual
+  verification step above.
+
+## Phase 14b — Fix: frontend showed every environment tier regardless of per-environment access; container search
+
+Reported live: a user granted access to only one environment could see every
+environment tier (DEV/QA/UAT/PRODUCTION) in the sidebar nav, the Environments
+list page, and each Environment Dashboard's tabs — a real regression, not a
+misunderstanding.
+
+**Root cause**: `frontend/src/auth/permissions.ts`'s `hasEnvironmentAccess`
+short-circuited to `true` for *every* tier whenever the caller held the
+blanket `deployments.view` permission. That permission code was deliberately
+global back when it belonged to a real Role/Permission catalog (a handful of
+roles held it), but Phase 12's authorization simplification changed what
+grants it: `AppDbContextExtensions.GetRolesAndPermissionsAsync`'s "base tier"
+bundle now adds `deployments.view` to **any** user who has access to *any
+single* environment. Once that changed, the frontend's old shortcut silently
+turned into "anyone with access to one environment sees all of them" — a
+pure frontend bug; the backend's own per-environment checks
+(`HasEnvironmentAccessAsync`, wired into every read/write path since Phase
+12) were never affected and correctly scoped data server-side the whole
+time, so this was a UI-only leak (showing tabs/nav for environments a user
+had no real access to, not returning that environment's actual data).
+
+**Fix**: removed the `deployments.view` shortcut entirely.
+`hasEnvironmentAccess` now derives a tier's visibility purely from whether
+the caller holds one of that specific tier's promote/approve/deploy
+permission codes — which, per `PermissionsByEnvironmentName` server-side,
+is already a strict superset covering every real case: a user with a
+`UserEnvironmentAccess` row for a tier always holds at least that tier's
+deploy permission, and a Production-approval-only user (`CanApproveProduction`
+with no PRODUCTION environment row) is still correctly covered via
+`DeploymentsApproveProduction`. No backend change was needed — this was
+purely a frontend gating bug.
+
+**Container search**: added a search box (name/image/application, live
+filter) above the container list on the Environment Infrastructure
+Dashboard, since a real server can host many containers.
+
+**Tests**: `permissions.test.ts`'s test that previously *asserted* the buggy
+behavior ("deployments.view alone grants every tier") was replaced with a
+regression test asserting the opposite, plus a new test modeling exactly
+what the backend actually issues for a DEV-only user (base tier bundle +
+`deployments.deploy.dev`) confirming it sees DEV only. Three
+`EnvironmentDashboardPage.test.tsx` fixtures that relied on the old
+shortcut were updated to include a real per-tier permission. New test for
+the container search box. 50/50 frontend tests pass (up from 47); no
+backend changes, so 430/430 backend tests are unaffected.
+
 ## Phase 14 — Source sync from GitLab as the deployment "obtain source" step
 
 Done. Gap-analysis phase against a consolidated master requirements

@@ -237,8 +237,14 @@ public interface IRemoteExecutionProvider
     /// quoted, never concatenated into a shell-interpreted string. GitLab's
     /// archive has a single top-level `&lt;project&gt;-&lt;sha&gt;/` directory,
     /// which is stripped (`--strip-components=1`) so files land directly under
-    /// destinationPath.</summary>
+    /// destinationPath. <paramref name="sourcePath"/> is null for a repository
+    /// dedicated to one application (the whole archive is extracted, as above);
+    /// when set (ManagedApplication.SourcePath — a monorepo subdirectory, e.g.
+    /// the techbey-apps/techbey-apps8 "one folder per app" layout), only that
+    /// subdirectory's contents are extracted into destinationPath — everything
+    /// else in the repository is left untouched, never written to the target
+    /// server at all.</summary>
     Task<RemoteSourceSyncResult> SyncSourceArchiveAsync(
         TargetServer targetServer, string destinationPath, byte[] archiveBytes,
-        IReadOnlyList<string> excludePatterns, CancellationToken cancellationToken = default);
+        IReadOnlyList<string> excludePatterns, string? sourcePath, CancellationToken cancellationToken = default);
 }

@@ -141,6 +141,43 @@ public partial class RepositoryService(
         return new RepositoryConnectionTestResultDto(result.Connected, result.AuthenticatedAs, result.ProjectName, result.ErrorMessage, testedAt);
     }
 
+    public async Task<DiscoverApplicationsResultDto> DiscoverApplicationsAsync(
+        Guid id, string? branch, CancellationToken cancellationToken = default)
+    {
+        var repo = await db.Repositories.FirstOrDefaultAsync(r => r.Id == id, cancellationToken)
+            ?? throw new NotFoundException("Repository", id);
+
+        var effectiveBranch = !string.IsNullOrWhiteSpace(branch) ? branch.Trim()
+            : !string.IsNullOrWhiteSpace(repo.DefaultBranch) ? repo.DefaultBranch
+            : "main";
+
+        var result = await gitProviderClient.ListRepositoryFoldersAsync(repo, effectiveBranch, cancellationToken);
+        if (!result.Success || result.Data is null)
+            return new DiscoverApplicationsResultDto(false, effectiveBranch, [], result.ErrorMessage);
+
+        // Existing (RepositoryId, SourcePath) pairs, so a folder already linked to
+        // a ManagedApplication is shown as such rather than offered again as new.
+        var existingBySourcePath = await db.Applications
+            .Where(a => a.RepositoryId == id)
+            .Select(a => new { a.Id, a.Name, a.SourcePath })
+            .ToDictionaryAsync(a => a.SourcePath ?? string.Empty, cancellationToken);
+
+        var folders = result.Data
+            .Select(f =>
+            {
+                existingBySourcePath.TryGetValue(f.Path, out var existing);
+                return new DiscoveredRepositoryFolderDto(f.Path, f.HasComposeFile, existing?.Id, existing?.Name);
+            })
+            .ToList();
+
+        await auditService.LogAsync(
+            "repository.discover_applications", AuditResult.Success, "Repository", repo.Id.ToString(),
+            details: $"Scanned '{repo.Name}'@{effectiveBranch}: {folders.Count} folder(s), {folders.Count(f => f.HasComposeFile)} with a compose file",
+            cancellationToken: cancellationToken);
+
+        return new DiscoverApplicationsResultDto(true, effectiveBranch, folders, null);
+    }
+
     /// <summary>Rejects anything but a plain http(s) URL — in particular, URLs with
     /// embedded userinfo credentials (https://user:pass@host/...), the exact
     /// anti-pattern the legacy deploy script uses for its own (interactive,

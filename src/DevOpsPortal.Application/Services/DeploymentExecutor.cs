@@ -264,7 +264,7 @@ public class DeploymentExecutor(
         // already-allow-listed DeploymentRootPath.
         var destinationPath = $"{appEnv.DeploymentRootPath!.TrimEnd('/')}/{appEnv.PublishSubPath}";
         var syncResult = await remoteExecutionProvider.SyncSourceArchiveAsync(
-            appEnv.TargetServer, destinationPath, archiveResult.Data, SourceSyncExcludePatterns, cancellationToken);
+            appEnv.TargetServer, destinationPath, archiveResult.Data, SourceSyncExcludePatterns, deployment.Application.SourcePath, cancellationToken);
 
         await log.WriteAsync(
             syncResult.Success ? DeploymentLogLevel.Info : DeploymentLogLevel.Error,

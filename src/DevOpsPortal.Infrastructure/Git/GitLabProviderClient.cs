@@ -321,6 +321,89 @@ public class GitLabProviderClient(HttpClient httpClient, ISecretProvider secretP
         }
     }
 
+    /// <summary>See IGitProviderClient.ListRepositoryFoldersAsync. Uses GitLab's
+    /// `/repository/tree?recursive=true` endpoint (paginated, capped) rather than
+    /// downloading/extracting an archive just to see folder names — much
+    /// cheaper for a scan that may be run repeatedly while an admin browses a
+    /// large monorepo.</summary>
+    public async Task<GitProviderResult<IReadOnlyList<GitRepositoryFolder>>> ListRepositoryFoldersAsync(
+        Repository repository, string refName, CancellationToken cancellationToken = default)
+    {
+        if (!TryBuildProjectApiBase(repository, out var apiBase, out var buildError))
+            return GitProviderResult<IReadOnlyList<GitRepositoryFolder>>.Fail(buildError!);
+
+        if (string.IsNullOrWhiteSpace(refName))
+            return GitProviderResult<IReadOnlyList<GitRepositoryFolder>>.Fail("A branch name or commit SHA is required to list repository folders.");
+
+        const int perPage = 100;
+        const int maxPages = 20; // hard cap: 2000 entries — plenty for a monorepo scan, avoids unbounded pagination
+        var entries = new List<GitLabTreeEntryDto>();
+
+        for (var page = 1; page <= maxPages; page++)
+        {
+            var url = $"{apiBase}/repository/tree?ref={Uri.EscapeDataString(refName)}&recursive=true&per_page={perPage}&page={page}";
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            await ApplyAuthAsync(repository, request, cancellationToken);
+
+            try
+            {
+                using var response = await httpClient.SendAsync(request, cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    logger.LogWarning(
+                        "GitLab repository tree listing for {RepositoryName}@{Ref} returned {StatusCode}", repository.Name, refName, response.StatusCode);
+                    return GitProviderResult<IReadOnlyList<GitRepositoryFolder>>.Fail(
+                        $"GitLab returned {(int)response.StatusCode} {response.ReasonPhrase} listing the repository tree for '{refName}'.");
+                }
+
+                var pageEntries = await response.Content.ReadFromJsonAsync<List<GitLabTreeEntryDto>>(cancellationToken) ?? [];
+                entries.AddRange(pageEntries);
+                if (pageEntries.Count < perPage)
+                    break;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                logger.LogWarning(ex, "GitLab repository tree listing failed for repository {RepositoryName}", repository.Name);
+                return GitProviderResult<IReadOnlyList<GitRepositoryFolder>>.Fail("Could not reach the configured GitLab instance.");
+            }
+        }
+
+        var topLevelFolders = entries
+            .Where(e => e.Type == "tree" && !string.IsNullOrEmpty(e.Path) && !e.Path.Contains('/'))
+            .Select(e => e.Path)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var composeFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "docker-compose.yml", "docker-compose.yaml" };
+        var folders = topLevelFolders
+            .Select(folder => new GitRepositoryFolder(
+                folder,
+                entries.Any(e =>
+                    e.Type == "blob" &&
+                    e.Path.StartsWith(folder + "/", StringComparison.Ordinal) &&
+                    !e.Path[(folder.Length + 1)..].Contains('/') &&
+                    composeFileNames.Contains(e.Name))))
+            .ToList();
+
+        return GitProviderResult<IReadOnlyList<GitRepositoryFolder>>.Ok(folders);
+    }
+
+    private sealed class GitLabTreeEntryDto
+    {
+        [JsonPropertyName("id")]
+        public string Id { get; set; } = string.Empty;
+
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = string.Empty;
+
+        [JsonPropertyName("type")]
+        public string Type { get; set; } = string.Empty;
+
+        [JsonPropertyName("path")]
+        public string Path { get; set; } = string.Empty;
+    }
+
     private sealed class GitLabCommitDto
     {
         [JsonPropertyName("id")]

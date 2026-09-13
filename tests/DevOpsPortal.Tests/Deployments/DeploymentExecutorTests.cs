@@ -21,7 +21,7 @@ public class DeploymentExecutorTests
         IRemoteExecutionProvider remoteExecutionProvider, IHealthCheckProbe healthProbe,
         ISecretReferenceService? secretReferenceService = null, FakeNotificationService? notificationService = null,
         IConfiguration? configuration = null, IGitProviderClient? gitProviderClient = null,
-        bool syncSourceFromRepository = false, bool withRepository = false)
+        bool syncSourceFromRepository = false, bool withRepository = false, string? applicationSourcePath = null)
     {
         var db = TestDb.CreateInMemory();
         await TestDb.SeedEnvironmentDefinitionsAsync(db);
@@ -37,6 +37,7 @@ public class DeploymentExecutorTests
         var app = new ManagedApplication
         {
             Name = "Sample", Slug = "sample", DeploymentMode = DeploymentMode.LegacyFilesystem, RepositoryId = repository?.Id,
+            SourcePath = applicationSourcePath,
         };
         db.Applications.Add(app);
 
@@ -302,6 +303,27 @@ public class DeploymentExecutorTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_WhenApplicationHasSourcePath_PassesItThroughToSyncSourceArchiveAsync()
+    {
+        // Monorepo layout (master requirements: techbey-apps/techbey-apps8 —
+        // one folder per application in a single shared repository):
+        // ManagedApplication.SourcePath must reach the remote sync call
+        // unchanged so only that subdirectory is extracted, never the whole repo.
+        var composeExecutor = new FakeRemoteExecutionProvider(true, true);
+        var gitClient = new FakeGitProviderClient(archiveResult: GitProviderResult<byte[]>.Ok([1, 2, 3, 4]));
+        var (sut, db, deployment, _) = await CreateSutAsync(
+            composeExecutor, new FakeHealthCheckProbe(true), gitProviderClient: gitClient,
+            syncSourceFromRepository: true, withRepository: true, applicationSourcePath: "dmsapi");
+
+        await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
+
+        var updated = await db.Deployments.FindAsync(deployment.Id);
+        Assert.Equal(DeploymentStatus.Succeeded, updated!.Status);
+        Assert.Single(composeExecutor.SyncCalls);
+        Assert.Equal("dmsapi", composeExecutor.SyncCalls[0].SourcePath);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_AlreadyRunningDeployment_IsSkipped()
     {
         var (sut, db, deployment, _) = await CreateSutAsync(new FakeRemoteExecutionProvider(true, true), new FakeHealthCheckProbe(true));
@@ -354,7 +376,7 @@ public class DeploymentExecutorTests
     private sealed class FakeRemoteExecutionProvider(bool downSucceeds, bool upSucceeds, string? upStdErr = null, bool syncSucceeds = true) : IRemoteExecutionProvider
     {
         public List<ComposeCommandRequest> Requests { get; } = [];
-        public List<(string DestinationPath, byte[] ArchiveBytes, IReadOnlyList<string> ExcludePatterns)> SyncCalls { get; } = [];
+        public List<(string DestinationPath, byte[] ArchiveBytes, IReadOnlyList<string> ExcludePatterns, string? SourcePath)> SyncCalls { get; } = [];
 
         public bool IsConfigured(TargetServer targetServer) => true;
 
@@ -393,9 +415,9 @@ public class DeploymentExecutorTests
 
         public Task<RemoteSourceSyncResult> SyncSourceArchiveAsync(
             TargetServer targetServer, string destinationPath, byte[] archiveBytes,
-            IReadOnlyList<string> excludePatterns, CancellationToken cancellationToken = default)
+            IReadOnlyList<string> excludePatterns, string? sourcePath, CancellationToken cancellationToken = default)
         {
-            SyncCalls.Add((destinationPath, archiveBytes, excludePatterns));
+            SyncCalls.Add((destinationPath, archiveBytes, excludePatterns, sourcePath));
             return Task.FromResult(syncSucceeds
                 ? new RemoteSourceSyncResult(true, archiveBytes.Length, null)
                 : new RemoteSourceSyncResult(false, null, "sync failed"));
@@ -441,7 +463,7 @@ public class DeploymentExecutorTests
 
         public Task<RemoteSourceSyncResult> SyncSourceArchiveAsync(
             TargetServer targetServer, string destinationPath, byte[] archiveBytes,
-            IReadOnlyList<string> excludePatterns, CancellationToken cancellationToken = default) =>
+            IReadOnlyList<string> excludePatterns, string? sourcePath, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }
 

@@ -136,7 +136,10 @@ public class FakeSecretProvider : ISecretProvider
 /// "graceful failure" path without any real network access. Pass
 /// promoteBranchResult to configure PromoteBranchAsync's outcome for tests
 /// that specifically exercise branch promotion (success or a named failure).</summary>
-public class FakeGitProviderClient(GitProviderResult<string>? promoteBranchResult = null, GitProviderResult<byte[]>? archiveResult = null) : IGitProviderClient
+public class FakeGitProviderClient(
+    GitProviderResult<string>? promoteBranchResult = null,
+    GitProviderResult<byte[]>? archiveResult = null,
+    GitProviderResult<IReadOnlyList<GitRepositoryFolder>>? foldersResult = null) : IGitProviderClient
 {
     public Task<GitProviderResult<GitCommitInfo>> GetLatestCommitAsync(
         Repository repository, string branch, CancellationToken cancellationToken = default) =>
@@ -156,4 +159,8 @@ public class FakeGitProviderClient(GitProviderResult<string>? promoteBranchResul
     public Task<GitProviderResult<byte[]>> DownloadRepositoryArchiveAsync(
         Repository repository, string refName, CancellationToken cancellationToken = default) =>
         Task.FromResult(archiveResult ?? GitProviderResult<byte[]>.Fail("Fake provider: not reachable in tests."));
+
+    public Task<GitProviderResult<IReadOnlyList<GitRepositoryFolder>>> ListRepositoryFoldersAsync(
+        Repository repository, string refName, CancellationToken cancellationToken = default) =>
+        Task.FromResult(foldersResult ?? GitProviderResult<IReadOnlyList<GitRepositoryFolder>>.Fail("Fake provider: not reachable in tests."));
 }
