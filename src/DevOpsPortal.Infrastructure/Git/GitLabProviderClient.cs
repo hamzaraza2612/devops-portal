@@ -317,7 +317,15 @@ public class GitLabProviderClient(HttpClient httpClient, ISecretProvider secretP
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
             logger.LogWarning(ex, "GitLab repository archive download failed for repository {RepositoryName}", repository.Name);
-            return GitProviderResult<byte[]>.Fail("Could not reach the configured GitLab instance.");
+            // A TaskCanceledException whose cause is NOT our own cancellationToken means
+            // HttpClient's own Timeout fired mid-download — a genuinely different problem
+            // (and fix) from GitLab being unreachable, so don't report it as the latter.
+            var message = ex is TaskCanceledException && !cancellationToken.IsCancellationRequested
+                ? $"Downloading the repository archive for '{refName}' timed out after {httpClient.Timeout.TotalSeconds:0}s. " +
+                  "The archive may be too large (old deployment backups committed into the repository often bloat it), " +
+                  "or the GitLab instance is slow to respond."
+                : "Could not reach the configured GitLab instance.";
+            return GitProviderResult<byte[]>.Fail(message);
         }
     }
 

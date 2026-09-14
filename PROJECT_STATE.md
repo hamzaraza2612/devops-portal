@@ -4330,6 +4330,64 @@ interaction and appears after clicking "Edit" alone, without also
 clicking the server name. 55/55 frontend tests pass (up from 54); no
 backend changes.
 
+### Phase 14c follow-up 3 — real deployment failed downloading a monorepo's source archive
+
+Live report, with a screenshot of a failed deployment
+(Acquiringdataextraction/DEV) that had already discovered its application
+and started running, failing after exactly 10 seconds with "Failed to
+download source archive for 'DEV': Could not reach the configured GitLab
+instance." User pushback correctly pointed out the contradiction: the same
+GitLab instance had just answered the repository-discovery and commit-
+lookup calls used to create the application moments earlier, so "unreachable"
+couldn't be the real story.
+
+**Root cause**: `DependencyInjection.cs` registered the `IGitProviderClient`
+`HttpClient` (`GitLabProviderClient`) with `client.Timeout =
+TimeSpan.FromSeconds(10)` — fine for the small calls this client also makes
+(commit lookups, the Phase 14c folder-listing scans), but nowhere near
+enough to download an entire repository archive. For Techbey's real
+monorepo the archive is inflated further by every application's own
+`Backups/` folder (old deployment snapshots, committed into the repo per
+the Legacy filesystem deployment convention documented earlier in this
+file). The 10-second ceiling fired mid-download on every real deployment,
+and the failure was caught by the same generic
+`catch (HttpRequestException or TaskCanceledException)` block used for an
+actual DNS/connection failure, reporting the identical "Could not reach the
+configured GitLab instance." message for two completely different
+problems — hiding the real cause from both the user and the deployment log.
+
+**Fix**:
+- Raised the `IGitProviderClient` HttpClient's `Timeout` from 10s to 120s
+  in `DependencyInjection.cs`. This affects every call through the client
+  (commit lookups, folder listing, branch promotion, archive download) —
+  a wait that used to fail fast on a genuine outage will now take up to
+  120s instead, which is judged an acceptable trade for real archive
+  downloads no longer timing out by design.
+- `GitLabProviderClient.DownloadRepositoryArchiveAsync` now distinguishes
+  its own client-side timeout from the caller's cancellation
+  (`ex is TaskCanceledException && !cancellationToken.IsCancellationRequested`)
+  and reports a specific message naming the configured timeout and the
+  likely cause (an oversized archive, e.g. from committed `Backups/`
+  history) instead of reusing the generic unreachable message.
+- New regression test
+  (`DownloadRepositoryArchiveAsync_WhenClientTimesOut_ReturnsTimeoutSpecificMessage_NotGenericUnreachable`)
+  simulates a client-side timeout via a fake handler and asserts the
+  timeout-specific message is returned, not the generic one.
+
+441/441 backend tests pass (up from 440); no frontend changes.
+
+**Not changed in this fix, left as a possible future improvement**: the
+archive is still downloaded in full for every deployment, even though a
+monorepo deployment only ever needs one application's folder (already
+extracted client-side on the target server via the Phase 14c
+`sourcePath`-scoped `--wildcards` tar extraction). GitLab's
+`/repository/archive.tar.gz` endpoint has no server-side path-scoping
+parameter, so shrinking the download itself would require either GitLab's
+sparse/partial-archive support (not verified available on the user's
+instance) or switching this path to a shallow `git clone` instead of the
+REST archive API — a larger change, out of scope for this fix, and not
+requested.
+
 ### Known limitations (this phase)
 
 - **No live GitLab instance or target server was reachable** in this

@@ -8,6 +8,33 @@ procedure — in short: back up first, `git pull` / pull the new image,
 (new nullable columns/tables); none has ever dropped or destructively
 altered existing data.
 
+## v1.5.4 — Fix: real deployments failed downloading a monorepo's source archive
+
+**Fixes a live deployment failure** reported with a screenshot: a
+deployment request that had discovered its application and started running
+failed after exactly 10 seconds with "Failed to download source archive for
+'DEV': Could not reach the configured GitLab instance." — despite the same
+GitLab instance answering the repository-discovery and commit-lookup calls
+made moments earlier for the very same application.
+
+Root cause: the shared `HttpClient` used for every GitLab API call
+(`IGitProviderClient`) had its `Timeout` hardcoded to 10 seconds. That's
+plenty for the small calls (commit lookups, folder listings) but nowhere
+near enough to download an entire repository archive — for Techbey's real
+monorepo, inflated further by old deployment snapshots committed into each
+application's `Backups/` folder. The timeout fired mid-download every time
+and was reported through the same generic "unreachable" message used for an
+actual connection failure, which hid the real cause.
+
+**Fixed:**
+- Raised the `IGitProviderClient` `HttpClient.Timeout` from 10s to 120s.
+- `DownloadRepositoryArchiveAsync` now reports a distinct, specific message
+  when the client's own timeout — not the caller's cancellation — is what
+  ended the request, instead of reusing "Could not reach the configured
+  GitLab instance."
+
+441/441 backend tests pass (up from 440); no frontend changes.
+
 ## v1.5.3 — Fix: "Allowed deployment roots" was invisible from the Edit view
 
 **Fixes a discoverability bug** reported live with a screenshot: the Target

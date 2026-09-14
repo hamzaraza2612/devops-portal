@@ -38,9 +38,16 @@ public static class DependencyInjection
         services.AddSingleton<IAuthorizationHandler, PermissionAuthorizationHandler>();
         services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
 
+        // 120s (not the 10s this used to be): most calls through this client — commit
+        // lookups, tree listings — finish in well under a second, but
+        // DownloadRepositoryArchiveAsync pulls the *entire* repository as a tarball
+        // (for a real monorepo, potentially large once old deployment Backups/ history
+        // is included) and a 10s ceiling was cutting that off mid-download every time,
+        // surfacing as a misleading "Could not reach the configured GitLab instance."
+        // on every real deployment.
         services.AddHttpClient<IGitProviderClient, GitLabProviderClient>(client =>
         {
-            client.Timeout = TimeSpan.FromSeconds(10);
+            client.Timeout = TimeSpan.FromSeconds(120);
             client.DefaultRequestHeaders.Add("User-Agent", "DevOpsPortal");
         });
 
