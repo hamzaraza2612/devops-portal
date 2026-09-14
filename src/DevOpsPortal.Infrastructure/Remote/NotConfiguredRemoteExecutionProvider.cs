@@ -66,6 +66,11 @@ public class NotConfiguredRemoteExecutionProvider(ILogger<NotConfiguredRemoteExe
         IReadOnlyList<string> excludePatterns, string? sourcePath, CancellationToken cancellationToken = default) =>
         Task.FromResult(new RemoteSourceSyncResult(false, null, UnconfiguredMessage(targetServer)));
 
+    public Task<RemoteBackupResult> BackupPathAsync(
+        TargetServer targetServer, string sourcePath, string backupRootPath, string backupFolderName,
+        int? retentionCount, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new RemoteBackupResult(false, false, UnconfiguredMessage(targetServer)));
+
     private static string UnconfiguredMessage(TargetServer targetServer) =>
         $"No remote execution mechanism is configured for target server '{targetServer.Name}'. " +
         "Remote Docker/Compose access is not yet implemented for this portal deployment — see PROJECT_STATE.md.";

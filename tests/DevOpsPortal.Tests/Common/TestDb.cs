@@ -139,7 +139,8 @@ public class FakeSecretProvider : ISecretProvider
 public class FakeGitProviderClient(
     GitProviderResult<string>? promoteBranchResult = null,
     GitProviderResult<byte[]>? archiveResult = null,
-    GitProviderResult<IReadOnlyList<GitRepositoryFolder>>? foldersResult = null) : IGitProviderClient
+    GitProviderResult<IReadOnlyList<GitRepositoryFolder>>? foldersResult = null,
+    GitProviderResult<IReadOnlyList<string>>? branchesResult = null) : IGitProviderClient
 {
     public Task<GitProviderResult<GitCommitInfo>> GetLatestCommitAsync(
         Repository repository, string branch, CancellationToken cancellationToken = default) =>
@@ -163,4 +164,8 @@ public class FakeGitProviderClient(
     public Task<GitProviderResult<IReadOnlyList<GitRepositoryFolder>>> ListRepositoryFoldersAsync(
         Repository repository, string refName, CancellationToken cancellationToken = default) =>
         Task.FromResult(foldersResult ?? GitProviderResult<IReadOnlyList<GitRepositoryFolder>>.Fail("Fake provider: not reachable in tests."));
+
+    public Task<GitProviderResult<IReadOnlyList<string>>> GetBranchesAsync(
+        Repository repository, CancellationToken cancellationToken = default) =>
+        Task.FromResult(branchesResult ?? GitProviderResult<IReadOnlyList<string>>.Fail("Fake provider: not reachable in tests."));
 }

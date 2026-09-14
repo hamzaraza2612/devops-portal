@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApplicationDetailsPage } from './ApplicationDetailsPage';
-import { ApplicationsApi, DeploymentsApi, EnvironmentsApi, PromotionsApi, TargetServersApi } from '../api/endpoints';
+import { ApplicationsApi, DeploymentsApi, EnvironmentsApi, PromotionsApi, RepositoriesApi, TargetServersApi } from '../api/endpoints';
 import { AuthContext, type AuthContextValue } from '../auth/AuthContext';
 import { Permissions } from '../auth/permissions';
 import {
@@ -37,6 +37,7 @@ vi.mock('../api/endpoints', () => ({
   DeploymentsApi: { list: vi.fn() },
   PromotionsApi: { listPending: vi.fn() },
   TargetServersApi: { list: vi.fn() },
+  RepositoriesApi: { listBranches: vi.fn() },
 }));
 
 function authValue(permissions: string[]): AuthContextValue {
@@ -357,6 +358,37 @@ describe('ApplicationDetailsPage', () => {
       await user.selectOptions(screen.getByLabelText('Target server'), 'server-2');
 
       expect(screen.getByLabelText('Deployment root path')).toHaveValue('/custom/path');
+    });
+
+    it('offers a live branch picker once the application has a linked repository, instead of a free-text field', async () => {
+      vi.mocked(ApplicationsApi.get).mockResolvedValue({ ...application, repositoryId: 'repo-1', repositoryName: 'loop' });
+      vi.mocked(EnvironmentsApi.list).mockResolvedValue(environmentDefs);
+      vi.mocked(ApplicationsApi.environments).mockResolvedValue([]);
+      vi.mocked(TargetServersApi.list).mockResolvedValue([techbeyServer]);
+      vi.mocked(RepositoriesApi.listBranches).mockResolvedValue({ success: true, branches: ['main', 'DEV', 'QA'], errorMessage: null });
+      const user = userEvent.setup();
+      renderPage([Permissions.ApplicationsManage]);
+
+      const configureButtons = await screen.findAllByRole('button', { name: 'Configure environment' });
+      await user.click(configureButtons[0]);
+
+      expect(await screen.findByRole('option', { name: 'main' })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'QA' })).toBeInTheDocument();
+      expect(RepositoriesApi.listBranches).toHaveBeenCalledWith('repo-1');
+    });
+
+    it('defaults "down -v before each deploy" to checked for a brand-new configuration', async () => {
+      vi.mocked(ApplicationsApi.get).mockResolvedValue(application);
+      vi.mocked(EnvironmentsApi.list).mockResolvedValue(environmentDefs);
+      vi.mocked(ApplicationsApi.environments).mockResolvedValue([]);
+      vi.mocked(TargetServersApi.list).mockResolvedValue([techbeyServer]);
+      const user = userEvent.setup();
+      renderPage([Permissions.ApplicationsManage]);
+
+      const configureButtons = await screen.findAllByRole('button', { name: 'Configure environment' });
+      await user.click(configureButtons[0]);
+
+      expect(screen.getByLabelText('Use "down -v" (destroy volumes) before each deploy')).toBeChecked();
     });
   });
 });

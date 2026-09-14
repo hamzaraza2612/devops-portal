@@ -178,6 +178,17 @@ public partial class RepositoryService(
         return new DiscoverApplicationsResultDto(true, effectiveBranch, folders, null);
     }
 
+    public async Task<RepositoryBranchesResultDto> GetBranchesAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var repo = await db.Repositories.FirstOrDefaultAsync(r => r.Id == id, cancellationToken)
+            ?? throw new NotFoundException("Repository", id);
+
+        var result = await gitProviderClient.GetBranchesAsync(repo, cancellationToken);
+        return result.Success
+            ? new RepositoryBranchesResultDto(true, result.Data ?? [], null)
+            : new RepositoryBranchesResultDto(false, [], result.ErrorMessage);
+    }
+
     /// <summary>Rejects anything but a plain http(s) URL — in particular, URLs with
     /// embedded userinfo credentials (https://user:pass@host/...), the exact
     /// anti-pattern the legacy deploy script uses for its own (interactive,

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ApplicationsApi, DeploymentsApi, EnvironmentsApi, PromotionsApi, TargetServersApi } from '../api/endpoints';
+import { ApplicationsApi, DeploymentsApi, EnvironmentsApi, PromotionsApi, RepositoriesApi, TargetServersApi } from '../api/endpoints';
 import { ActionButton } from '../components/ActionButton';
 import { Can, Card, EmptyState, ErrorBanner, LoadingSpinner, PageHeader } from '../components/Common';
 import { ApprovalStatusBadge, ContainerStateBadge, DeploymentStatusBadge } from '../components/StatusBadge';
@@ -101,6 +101,7 @@ export function ApplicationDetailsPage() {
             canManage={canManageEnvironments}
             targetServers={targetServers}
             hasRepository={Boolean(application.repositoryName)}
+            applicationRepositoryId={application.repositoryId}
             applicationSlug={application.slug}
             applicationSourcePath={application.sourcePath}
             onChanged={reload}
@@ -138,6 +139,7 @@ function EnvironmentCard({
   canManage,
   targetServers,
   hasRepository,
+  applicationRepositoryId,
   applicationSlug,
   applicationSourcePath,
   onChanged,
@@ -156,6 +158,7 @@ function EnvironmentCard({
   canManage: boolean;
   targetServers: TargetServerDto[];
   hasRepository: boolean;
+  applicationRepositoryId: string | null;
   applicationSlug: string;
   applicationSourcePath: string | null;
   onChanged: () => void;
@@ -276,6 +279,7 @@ function EnvironmentCard({
           environmentConfig={environmentConfig}
           targetServers={targetServers}
           hasRepository={hasRepository}
+          applicationRepositoryId={applicationRepositoryId}
           tier={tier}
           defaultTargetServerId={environmentDef.primaryTargetServerId}
           applicationSlug={applicationSlug}
@@ -315,6 +319,31 @@ function suggestDeploymentRootPath(
   return `${base}/${folder}`;
 }
 
+type RepositoryBranchesState =
+  | { status: 'idle' | 'loading' }
+  | { status: 'loaded'; branches: string[] }
+  | { status: 'error'; error: string };
+
+/** Fetches the live branch list for a repository — the "developer just gives
+ * a repo link, the portal shows every real branch to pick from" flow — so a
+ * branch name is chosen from what's actually there instead of typed in and
+ * hoped to exist. Built on the same useAsyncData every other data fetch in
+ * this app uses, rather than a bespoke fetch-on-mount hook. Falls back to an
+ * idle/error state (never throws) when the application has no linked
+ * repository or the GitLab call fails; the caller degrades to a plain text
+ * input in either case. */
+function useRepositoryBranches(repositoryId: string | null): RepositoryBranchesState {
+  const { data, isLoading, error } = useAsyncData(
+    () => (repositoryId ? RepositoriesApi.listBranches(repositoryId) : Promise.resolve(null)),
+    [repositoryId],
+  );
+
+  if (!repositoryId) return { status: 'idle' };
+  if (isLoading) return { status: 'loading' };
+  if (error || !data) return { status: 'error', error: error ?? 'Failed to load branches.' };
+  return data.success ? { status: 'loaded', branches: data.branches } : { status: 'error', error: data.errorMessage ?? 'Failed to load branches.' };
+}
+
 /** Create/edit the per-application, per-environment deployment configuration
  * (target server, paths, compose/service/container names, health check,
  * application URL). Reuses the existing UpsertApplicationEnvironmentRequest
@@ -339,6 +368,7 @@ function ApplicationEnvironmentConfigForm({
   environmentConfig,
   targetServers,
   hasRepository,
+  applicationRepositoryId,
   tier,
   defaultTargetServerId,
   applicationSlug,
@@ -351,6 +381,7 @@ function ApplicationEnvironmentConfigForm({
   environmentConfig?: ApplicationEnvironmentDto;
   targetServers: TargetServerDto[];
   hasRepository: boolean;
+  applicationRepositoryId: string | null;
   tier: EnvironmentTier;
   defaultTargetServerId: string | null;
   applicationSlug: string;
@@ -360,6 +391,7 @@ function ApplicationEnvironmentConfigForm({
 }) {
   const [targetServerId, setTargetServerId] = useState(environmentConfig?.targetServerId ?? defaultTargetServerId ?? '');
   const [branchName, setBranchName] = useState(environmentConfig?.branchName ?? tier);
+  const availableBranches = useRepositoryBranches(applicationRepositoryId);
   const [deploymentRootPath, setDeploymentRootPath] = useState(
     environmentConfig?.deploymentRootPath ??
       suggestDeploymentRootPath(targetServers, defaultTargetServerId ?? '', applicationSlug, applicationSourcePath),
@@ -374,7 +406,11 @@ function ApplicationEnvironmentConfigForm({
   const [serviceName, setServiceName] = useState(environmentConfig?.serviceName ?? '');
   const [containerName, setContainerName] = useState(environmentConfig?.containerName ?? '');
   const [externalNetworkName, setExternalNetworkName] = useState(environmentConfig?.externalNetworkName ?? '');
-  const [useDownWithVolumesOnDeploy, setUseDownWithVolumesOnDeploy] = useState(environmentConfig?.useDownWithVolumesOnDeploy ?? false);
+  // Defaults to on for a brand-new configuration (matches the manual deployment
+  // process this portal replaces, which always ran "down -v" before syncing new
+  // source) — still a normal, freely-editable checkbox, and an existing saved
+  // configuration always keeps whatever it was already set to.
+  const [useDownWithVolumesOnDeploy, setUseDownWithVolumesOnDeploy] = useState(environmentConfig?.useDownWithVolumesOnDeploy ?? true);
   const [syncSourceFromRepository, setSyncSourceFromRepository] = useState(environmentConfig?.syncSourceFromRepository ?? hasRepository);
   const [healthCheckType, setHealthCheckType] = useState<HealthCheckType>(environmentConfig?.healthCheckType ?? HealthCheckType.None);
   const [healthCheckEndpoint, setHealthCheckEndpoint] = useState(environmentConfig?.healthCheckEndpoint ?? '');
@@ -431,7 +467,20 @@ function ApplicationEnvironmentConfigForm({
           </select>
         </Field>
         <Field label="Branch">
-          <input value={branchName} onChange={(e) => setBranchName(e.target.value)} className={configInputClass} placeholder="Optional" />
+          {availableBranches.status === 'loaded' && availableBranches.branches.length > 0 ? (
+            <select value={branchName} onChange={(e) => setBranchName(e.target.value)} className={configInputClass}>
+              {!availableBranches.branches.includes(branchName) && <option value={branchName}>{branchName || 'Select…'}</option>}
+              {availableBranches.branches.map((b) => (
+                <option key={b} value={b}>{b}</option>
+              ))}
+            </select>
+          ) : (
+            <input value={branchName} onChange={(e) => setBranchName(e.target.value)} className={configInputClass} placeholder="Optional" />
+          )}
+          {availableBranches.status === 'loading' && <p className="mt-0.5 text-[11px] text-slate-400">Loading branches from the repository…</p>}
+          {availableBranches.status === 'error' && (
+            <p className="mt-0.5 text-[11px] text-slate-400">Couldn't load branches from the repository ({availableBranches.error}) — type one instead.</p>
+          )}
         </Field>
         <Field label="Deployment root path">
           <input value={deploymentRootPath} onChange={(e) => setDeploymentRootPath(e.target.value)} className={configInputClass} placeholder="/mnt/data/…" />

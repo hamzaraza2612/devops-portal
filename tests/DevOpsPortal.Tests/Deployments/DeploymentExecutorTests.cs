@@ -303,6 +303,71 @@ public class DeploymentExecutorTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_WhenSyncSourceFromRepositoryEnabled_BacksUpBeforeDownloadingAndSyncing()
+    {
+        var composeExecutor = new FakeRemoteExecutionProvider(true, true);
+        var gitClient = new FakeGitProviderClient(archiveResult: GitProviderResult<byte[]>.Ok([1, 2, 3, 4]));
+        var (sut, db, deployment, _) = await CreateSutAsync(
+            composeExecutor, new FakeHealthCheckProbe(true), gitProviderClient: gitClient,
+            syncSourceFromRepository: true, withRepository: true);
+
+        await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
+
+        var updated = await db.Deployments.FindAsync(deployment.Id);
+        Assert.Equal(DeploymentStatus.Succeeded, updated!.Status);
+        Assert.Single(composeExecutor.BackupCalls);
+        Assert.Equal("/tmp/publish", composeExecutor.BackupCalls[0].SourcePath);
+        Assert.Equal("/tmp/Backups", composeExecutor.BackupCalls[0].BackupRootPath);
+
+        var logs = await db.DeploymentLogEntries.Where(l => l.DeploymentId == deployment.Id).OrderBy(l => l.Sequence).ToListAsync();
+        var backupLogIndex = logs.FindIndex(l => l.Message.Contains("Backed up") || l.Message.Contains("No existing deployment found to back up"));
+        var downloadLogIndex = logs.FindIndex(l => l.Message.Contains("Downloading source archive"));
+        var syncLogIndex = logs.FindIndex(l => l.Message.Contains("Source synced"));
+        Assert.True(backupLogIndex >= 0 && downloadLogIndex >= 0 && syncLogIndex >= 0);
+        Assert.True(backupLogIndex < downloadLogIndex && downloadLogIndex < syncLogIndex);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenBackupFails_FailsDeploymentWithoutDownloadingSourceOrRunningCompose()
+    {
+        // A failed backup must never be silently skipped — proceeding to overwrite the
+        // deployed files with no rollback snapshot would be unrecoverable on a bad deploy.
+        var composeExecutor = new FakeRemoteExecutionProvider(true, true, backupSucceeds: false);
+        var gitClient = new FakeGitProviderClient(archiveResult: GitProviderResult<byte[]>.Ok([1, 2, 3, 4]));
+        var (sut, db, deployment, _) = await CreateSutAsync(
+            composeExecutor, new FakeHealthCheckProbe(true), gitProviderClient: gitClient,
+            syncSourceFromRepository: true, withRepository: true);
+
+        await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
+
+        var updated = await db.Deployments.FindAsync(deployment.Id);
+        Assert.Equal(DeploymentStatus.Failed, updated!.Status);
+        Assert.Contains("Backup failed", updated.FailureReason);
+        Assert.Empty(composeExecutor.SyncCalls);
+        Assert.Empty(composeExecutor.Requests);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenBackupHasNothingToBackUp_LogsNoExistingDeploymentAndStillSucceeds()
+    {
+        // First-ever deployment for an application-environment: nothing deployed yet to
+        // back up — a real outcome, never a failure.
+        var composeExecutor = new FakeRemoteExecutionProvider(true, true, backupTaken: false);
+        var gitClient = new FakeGitProviderClient(archiveResult: GitProviderResult<byte[]>.Ok([1, 2, 3, 4]));
+        var (sut, db, deployment, _) = await CreateSutAsync(
+            composeExecutor, new FakeHealthCheckProbe(true), gitProviderClient: gitClient,
+            syncSourceFromRepository: true, withRepository: true);
+
+        await sut.ExecuteAsync(deployment.Id, CancellationToken.None);
+
+        var updated = await db.Deployments.FindAsync(deployment.Id);
+        Assert.Equal(DeploymentStatus.Succeeded, updated!.Status);
+
+        var logs = await db.DeploymentLogEntries.Where(l => l.DeploymentId == deployment.Id).OrderBy(l => l.Sequence).ToListAsync();
+        Assert.Contains(logs, l => l.Message.Contains("No existing deployment found to back up"));
+    }
+
+    [Fact]
     public async Task ExecuteAsync_WhenApplicationHasSourcePath_PassesItThroughToSyncSourceArchiveAsync()
     {
         // Monorepo layout (master requirements: techbey-apps/techbey-apps8 —
@@ -373,10 +438,12 @@ public class DeploymentExecutorTests
         Assert.Equal(DeploymentStatus.Succeeded, updated!.Status);
     }
 
-    private sealed class FakeRemoteExecutionProvider(bool downSucceeds, bool upSucceeds, string? upStdErr = null, bool syncSucceeds = true) : IRemoteExecutionProvider
+    private sealed class FakeRemoteExecutionProvider(
+        bool downSucceeds, bool upSucceeds, string? upStdErr = null, bool syncSucceeds = true, bool backupSucceeds = true, bool backupTaken = true) : IRemoteExecutionProvider
     {
         public List<ComposeCommandRequest> Requests { get; } = [];
         public List<(string DestinationPath, byte[] ArchiveBytes, IReadOnlyList<string> ExcludePatterns, string? SourcePath)> SyncCalls { get; } = [];
+        public List<(string SourcePath, string BackupRootPath, string BackupFolderName, int? RetentionCount)> BackupCalls { get; } = [];
 
         public bool IsConfigured(TargetServer targetServer) => true;
 
@@ -422,6 +489,16 @@ public class DeploymentExecutorTests
                 ? new RemoteSourceSyncResult(true, archiveBytes.Length, null)
                 : new RemoteSourceSyncResult(false, null, "sync failed"));
         }
+
+        public Task<RemoteBackupResult> BackupPathAsync(
+            TargetServer targetServer, string sourcePath, string backupRootPath, string backupFolderName,
+            int? retentionCount, CancellationToken cancellationToken = default)
+        {
+            BackupCalls.Add((sourcePath, backupRootPath, backupFolderName, retentionCount));
+            return Task.FromResult(backupSucceeds
+                ? new RemoteBackupResult(true, backupTaken, null)
+                : new RemoteBackupResult(false, false, "backup failed"));
+        }
     }
 
     /// <summary>Never completes on its own — only responds to cancellation. Used to
@@ -464,6 +541,11 @@ public class DeploymentExecutorTests
         public Task<RemoteSourceSyncResult> SyncSourceArchiveAsync(
             TargetServer targetServer, string destinationPath, byte[] archiveBytes,
             IReadOnlyList<string> excludePatterns, string? sourcePath, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RemoteBackupResult> BackupPathAsync(
+            TargetServer targetServer, string sourcePath, string backupRootPath, string backupFolderName,
+            int? retentionCount, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }
 

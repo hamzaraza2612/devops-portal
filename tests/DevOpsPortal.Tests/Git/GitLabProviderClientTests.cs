@@ -256,6 +256,52 @@ public class GitLabProviderClientTests
         Assert.DoesNotContain("Could not reach", result.ErrorMessage);
     }
 
+    [Fact]
+    public async Task GetBranchesAsync_ReturnsSortedDistinctBranchNames()
+    {
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            var url = request.RequestUri!.ToString();
+            Assert.Contains("/repository/branches", url);
+            return JsonResponse([
+                new { name = "QA" },
+                new { name = "main" },
+                new { name = "DEV" },
+            ]);
+        });
+        var sut = CreateSut(handler);
+        var repository = new Repository { Name = "loop", Url = "https://gitlab.techbey.pk/release-management/application_releases/loop.git", Provider = RepositoryProvider.GitLab };
+
+        var result = await sut.GetBranchesAsync(repository);
+
+        Assert.True(result.Success);
+        Assert.Equal(["DEV", "main", "QA"], result.Data);
+    }
+
+    [Fact]
+    public async Task GetBranchesAsync_WithInvalidRepositoryUrl_ReturnsFail()
+    {
+        var sut = CreateSut();
+        var repository = new Repository { Name = "bad-url", Url = "not-a-url", Provider = RepositoryProvider.GitLab };
+
+        var result = await sut.GetBranchesAsync(repository);
+
+        Assert.False(result.Success);
+        Assert.NotNull(result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task GetBranchesAsync_WhenHostUnreachable_ReturnsFailNeverThrows()
+    {
+        var sut = CreateSut();
+        var repository = new Repository { Name = "unreachable", Url = "http://127.0.0.1:1/group/app", Provider = RepositoryProvider.GitLab };
+
+        var result = await sut.GetBranchesAsync(repository);
+
+        Assert.False(result.Success);
+        Assert.NotNull(result.ErrorMessage);
+    }
+
     private static HttpResponseMessage JsonResponse(IReadOnlyList<object> entries) => new(HttpStatusCode.OK)
     {
         Content = new StringContent(JsonSerializer.Serialize(entries), Encoding.UTF8, "application/json"),

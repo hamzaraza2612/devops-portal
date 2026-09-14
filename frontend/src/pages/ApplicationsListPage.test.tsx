@@ -11,7 +11,7 @@ import { DeploymentMode, RepositoryProvider, type RepositoryDto } from '../types
 vi.mock('../api/endpoints', () => ({
   ApplicationsApi: { list: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
   DeploymentsApi: { list: vi.fn() },
-  RepositoriesApi: { list: vi.fn(), discoverApplications: vi.fn() },
+  RepositoriesApi: { list: vi.fn() },
 }));
 
 function authValue(permissions: string[]): AuthContextValue {
@@ -39,63 +39,39 @@ function renderPage(permissions: string[]) {
 }
 
 const repository: RepositoryDto = {
-  id: 'repo-1', name: 'monorepo', url: 'https://gitlab.example.com/group/monorepo.git', provider: RepositoryProvider.GitLab,
+  id: 'repo-1', name: 'loop', url: 'https://gitlab.techbey.pk/release-management/application_releases/loop.git', provider: RepositoryProvider.GitLab,
   description: null, defaultBranch: 'main', username: null, hasAccessToken: true, accessTokenEnvVarName: null,
   isActive: true, createdAt: '2026-01-01T00:00:00Z',
 };
 
-describe('ApplicationsListPage — Discover applications from repository', () => {
+describe('ApplicationsListPage — New application', () => {
   beforeEach(() => {
     vi.mocked(ApplicationsApi.list).mockResolvedValue([]);
     vi.mocked(DeploymentsApi.list).mockResolvedValue([]);
     vi.mocked(RepositoriesApi.list).mockResolvedValue([repository]);
   });
 
-  it('scans a repository and pre-fills the Create form from a discovered folder', async () => {
-    vi.mocked(RepositoriesApi.discoverApplications).mockResolvedValue({
-      success: true,
-      branch: 'main',
-      errorMessage: null,
-      folders: [
-        { path: 'dmsapi', hasComposeFile: true, existingApplicationId: null, existingApplicationName: null },
-        { path: 'hrms', hasComposeFile: true, existingApplicationId: 'app-existing', existingApplicationName: 'HRMS' },
-        { path: 'docs', hasComposeFile: false, existingApplicationId: null, existingApplicationName: null },
-      ],
-    });
+  /** Regression test: the portal used to require a separate "Discover from
+   * repository" scan (and a per-folder "not deployable" verdict) before an
+   * application could be created — real feedback was that the developer's
+   * actual workflow is one dedicated Git repository per application (a repo
+   * link handed off per app, e.g. .../application_releases/loop.git), so
+   * that scan step was removed. Creating an application is now a single,
+   * always-visible form: just Name/Slug/Repository. */
+  it('creates an application directly, with no discovery step in the way', async () => {
     const user = userEvent.setup();
     renderPage([Permissions.ApplicationsManage]);
 
-    await user.click(await screen.findByRole('button', { name: 'Discover from repository' }));
-    await user.click(screen.getByRole('button', { name: 'Scan' }));
+    expect(screen.queryByRole('button', { name: 'Discover from repository' })).not.toBeInTheDocument();
 
-    expect(await screen.findByText('dmsapi')).toBeInTheDocument();
-    expect(screen.getByText(/Already linked to 'HRMS'/)).toBeInTheDocument();
-    expect(screen.getByText('docs')).toBeInTheDocument();
-    expect(screen.getByText(/no compose file found/)).toBeInTheDocument();
-
+    await user.click(await screen.findByRole('button', { name: 'New Application' }));
+    await user.type(screen.getByLabelText('Name'), 'Loop');
+    await user.type(screen.getByLabelText('Slug'), 'loop');
+    await user.selectOptions(screen.getByLabelText('Repository'), 'repo-1');
     await user.click(screen.getByRole('button', { name: 'Create application' }));
 
-    expect(screen.getByLabelText('Name')).toHaveValue('Dmsapi');
-    expect(screen.getByLabelText('Slug')).toHaveValue('dmsapi');
-    expect(screen.getByLabelText('Source path')).toHaveValue('dmsapi');
-    expect(screen.getByText(/Pre-filled from 'dmsapi'/)).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Create application' }));
     expect(ApplicationsApi.create).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'Dmsapi', slug: 'dmsapi', repositoryId: 'repo-1', sourcePath: 'dmsapi', deploymentMode: DeploymentMode.LegacyFilesystem }),
+      expect.objectContaining({ name: 'Loop', slug: 'loop', repositoryId: 'repo-1', deploymentMode: DeploymentMode.LegacyFilesystem }),
     );
-  });
-
-  it('shows a clear error when the scan fails, never a silent empty result', async () => {
-    vi.mocked(RepositoriesApi.discoverApplications).mockResolvedValue({
-      success: false, branch: 'main', folders: [], errorMessage: 'GitLab returned 401 Unauthorized.',
-    });
-    const user = userEvent.setup();
-    renderPage([Permissions.ApplicationsManage]);
-
-    await user.click(await screen.findByRole('button', { name: 'Discover from repository' }));
-    await user.click(screen.getByRole('button', { name: 'Scan' }));
-
-    expect(await screen.findByText('GitLab returned 401 Unauthorized.')).toBeInTheDocument();
   });
 });

@@ -443,6 +443,64 @@ public class SshRemoteExecutionProvider(ISecretProvider secretProvider, ILogger<
         return new RemoteSourceSyncResult(true, extractedCount, null);
     }
 
+    /// <summary>`sourcePath` not existing or being empty is reported as
+    /// BACKUP_SKIPPED, never a shell error — `[ -d ... ]` and `ls -A` are the
+    /// only way to tell "nothing deployed yet" from "backup failed" without a
+    /// non-zero exit code that would otherwise be indistinguishable from a real
+    /// `cp` failure. Retention pruning (when retentionCount is set and positive)
+    /// runs as a second command after the backup itself succeeds — never
+    /// combined into one command, so a pruning failure can never be mistaken for
+    /// the backup itself having failed.</summary>
+    public async Task<RemoteBackupResult> BackupPathAsync(
+        TargetServer targetServer, string sourcePath, string backupRootPath, string backupFolderName,
+        int? retentionCount, CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured(targetServer))
+            return new RemoteBackupResult(false, false, NotConfiguredMessage(targetServer));
+
+        var backupDestination = $"{backupRootPath.TrimEnd('/')}/{backupFolderName}";
+        var backupCommand =
+            $"mkdir -p {PosixShellEscaper.Quote(backupRootPath)} && " +
+            $"if [ -d {PosixShellEscaper.Quote(sourcePath)} ] && [ -n \"$(ls -A {PosixShellEscaper.Quote(sourcePath)} 2>/dev/null)\" ]; then " +
+            $"mkdir -p {PosixShellEscaper.Quote(backupDestination)} && " +
+            $"cp -a {PosixShellEscaper.Quote(sourcePath.TrimEnd('/'))}/. {PosixShellEscaper.Quote(backupDestination)}/ && echo BACKUP_TAKEN; " +
+            $"else echo BACKUP_SKIPPED; fi";
+
+        var backupResult = await RunRemoteCommandAsync(targetServer, backupCommand, cancellationToken);
+        if (!backupResult.Success)
+        {
+            return new RemoteBackupResult(false, false,
+                string.IsNullOrWhiteSpace(backupResult.StandardError) ? "Failed to back up the existing deployment before syncing new source." : backupResult.StandardError);
+        }
+
+        var backupTaken = backupResult.StandardOutput.Contains("BACKUP_TAKEN", StringComparison.Ordinal);
+
+        if (backupTaken && retentionCount is > 0)
+        {
+            // GNU `head -n -N` (negative count) — already relied on elsewhere in this
+            // class's GNU-tar usage, so consistent with this codebase's "target
+            // servers run GNU/Linux" assumption. Only ever deletes subfolders of the
+            // already-validated backupRootPath, sorted by name (backupFolderName is
+            // always a caller-generated timestamp, so lexicographic order is
+            // chronological order) — never touches anything outside it.
+            var pruneCommand =
+                $"cd {PosixShellEscaper.Quote(backupRootPath)} && " +
+                $"ls -1 | sort | head -n -{retentionCount.Value} | xargs -r -I{{}} rm -rf -- {{}}";
+            var pruneResult = await RunRemoteCommandAsync(targetServer, pruneCommand, cancellationToken);
+            if (!pruneResult.Success)
+            {
+                logger.LogWarning(
+                    "Backup retention pruning failed for target server '{TargetServerName}' at '{BackupRootPath}': {Error}",
+                    targetServer.Name, backupRootPath, pruneResult.StandardError);
+                // Not fatal — the backup itself already succeeded, and leaving an extra
+                // old snapshot around is far safer than failing the whole deployment
+                // over a pruning step.
+            }
+        }
+
+        return new RemoteBackupResult(true, backupTaken, null);
+    }
+
     private static (bool Success, string Output) RunQuick(SshClient client, string commandText)
     {
         using var command = client.CreateCommand(commandText);

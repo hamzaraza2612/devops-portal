@@ -4412,6 +4412,110 @@ requested.
   provider), not a live SSH session. Verify as part of the manual
   verification step above.
 
+## Phase 15 — Real backups, real branches, one repo per app (live workflow correction)
+
+User-driven follow-up, given with specific real repository links
+(`.../release-management/application_releases/loop.git`,
+`.../application_releases/new_ops_portal.git`): the developer hand-off
+process at this deployment is **one dedicated GitLab repository per
+application**, not the monorepo-with-folders layout Phase 14c's discovery
+feature targeted. The developer gives a repo link and a branch; that
+branch's HEAD already holds the deployable build. The manual deployment
+process this portal replaces always: (1) took a dated backup of the
+currently-deployed files, (2) rsynced the new build in (excluding
+`appsettings*.json`/`*securesettings*.json`), (3) ran
+`docker compose down -v`. Steps 2 and 3 already existed
+(`SourceSyncExcludePatterns`, `UseDownWithVolumesOnDeploy`); step 1 —
+the backup — was the one piece of the real process this portal had never
+actually implemented, despite `ApplicationEnvironment.BackupSubPath`/
+`BackupRetentionCount` existing as configurable fields since Phase 2.
+
+**1. Real backups before every source sync** — the actual gap fixed here.
+`IRemoteExecutionProvider.BackupPathAsync` (new) copies
+`DeploymentRootPath/PublishSubPath`'s current contents into
+`DeploymentRootPath/BackupSubPath/<yyyyMMdd-HHmmss>/` via a single SSH
+`cp -a` command (guarded by `[ -d ... ] && [ -n "$(ls -A ...)" ]` so a
+first-ever deployment — nothing to back up yet — is reported as
+`Success=true, BackupTaken=false`, never a failure). `BackupRetentionCount`
+is now honored: when set and positive, a second SSH command prunes backup
+subfolders beyond the most recent N (`ls -1 | sort | head -n -N | xargs rm
+-rf`, relying on GNU coreutils' negative `-n` — already an assumption this
+codebase makes for `--wildcards` tar extraction, so no new dependency). A
+pruning failure is logged but never fails the deployment (the backup itself
+already succeeded); a backup failure IS fatal — `DeploymentExecutor.
+SyncSourceAsync` now calls `BackupPathAsync` before downloading the archive
+at all, and throws `DeploymentExecutionException` if it fails, so a source
+sync can never proceed without a rollback snapshot to fall back to.
+`SshRemoteExecutionProviderTests` covers the not-configured path (same
+limitation as every SSH-dependent test — no live server in this sandbox);
+`DeploymentExecutorTests` covers backup-before-download-before-sync log
+ordering, a fatal backup failure short-circuiting before any compose
+command runs, and the "nothing to back up yet" first-deployment case.
+
+**2. Real branch picker** — `IGitProviderClient.GetBranchesAsync` (GitLab
+`/repository/branches`, paginated like the existing tree-listing helper) +
+`GET /repositories/{id}/branches` (gated `RepositoriesView`, not
+`RepositoriesManage` — reading a branch list to configure an application
+you already manage shouldn't require repository-admin rights). The
+per-environment configuration form's Branch field is now a live-populated
+`<select>` once the application has a linked repository (fetched via the
+existing `useAsyncData` hook — no bespoke fetch-on-mount hook needed),
+falling back to the previous plain text input when there's no linked
+repository or the GitLab call fails. A branch is now chosen from what
+GitLab actually has, never typed in and hoped to exist.
+
+**3. `down -v` defaults to on for a brand-new configuration** — per
+explicit instruction (this deployment's manual process always ran
+`docker compose down -v`, not a plain `down`, before syncing new source).
+Still a normal, freely-editable checkbox (`UseDownWithVolumesOnDeploy`
+itself is unchanged — still per-app opt-in, never forced), and an existing
+saved configuration keeps whatever it was already set to; only a
+never-before-configured environment's form now starts checked instead of
+unchecked.
+
+**4. Removed "Discover from repository"** from the Applications page —
+explicitly requested ("docker compose file detect wala chakr hata do,
+simple kro"): it scans for a monorepo folder layout that doesn't match the
+real one-repo-per-app workflow, and was reported as unwanted friction on
+every visit to the page. Only the UI entry point (button + panel) was
+removed from `ApplicationsListPage.tsx`; the underlying scan endpoint
+(`GET /repositories/{id}/discover-applications`), `RepositoryService.
+DiscoverApplicationsAsync`, and their tests are deliberately left in place
+— unused by the current UI, but available again without re-implementation
+if some future application really does live in a monorepo. Creating an
+application is now always a single, unconditionally-visible form
+(Name/Slug/Deployment mode/Repository/Source path/Description) with no
+prerequisite scan step.
+
+449/449 backend tests pass (up from 441 after v1.5.4's fix); 56/56 frontend
+tests pass (up from 55 — 2 discovery-flow tests removed with the panel, 3
+added: live branch-picker loading, `down -v` default, and a smoke test for
+the simplified Create-application form). `dotnet build`/`npm run build`
+clean; `npm run lint` shows only the 2 pre-existing unrelated warnings.
+
+### Known limitations (this phase)
+
+- **No live GitLab instance or target server was reachable** in this
+  sandbox — same limitation as every phase since Phase 12/14c. What was
+  validated: `GetBranchesAsync`'s pagination and error paths against a
+  fake `HttpMessageHandler`, `BackupPathAsync`'s not-configured path, and
+  the full backup→download→sync orchestration in `DeploymentExecutor`
+  against fake providers. **Before relying on this in production**: run a
+  real deployment with `SyncSourceFromRepository` enabled against one of
+  the real per-app repositories (e.g. `loop.git`) and confirm (a) the
+  Branch dropdown on that application's environment configuration form
+  populates with GitLab's real branches, (b) a first deployment logs "No
+  existing deployment found to back up", (c) a second deployment onto the
+  same environment actually creates a dated folder under `BackupSubPath`
+  containing the first deployment's files, and (d) with
+  `BackupRetentionCount` set to e.g. 2, a third deployment prunes the
+  oldest backup folder.
+- **`BackupPathAsync`'s `cp -a` preserves permissions/ownership/symlinks**
+  (GNU `cp -a` semantics) but was only verified by code review, not a live
+  SSH session — verify as part of the manual check above, particularly
+  that the SSH user has read access to every file being backed up and
+  write access to `BackupSubPath`.
+
 ## Phase 14b — Fix: frontend showed every environment tier regardless of per-environment access; container search
 
 Reported live: a user granted access to only one environment could see every

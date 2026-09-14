@@ -174,4 +174,33 @@ public class RepositoryServiceTests
 
         Assert.Equal("main", result.Branch);
     }
+
+    [Fact]
+    public async Task GetBranchesAsync_ReturnsBranchNamesFromGitLab()
+    {
+        var gitClient = new FakeGitProviderClient(branchesResult: GitProviderResult<IReadOnlyList<string>>.Ok(["main", "DEV", "QA"]));
+        var sut = CreateSut(out _, gitClient);
+        var repo = await sut.CreateAsync(new CreateRepositoryRequest(
+            "loop", "https://gitlab.techbey.pk/release-management/application_releases/loop.git", RepositoryProvider.GitLab, null, null, null, null));
+
+        var result = await sut.GetBranchesAsync(repo.Id);
+
+        Assert.True(result.Success);
+        Assert.Equal(["main", "DEV", "QA"], result.Branches);
+    }
+
+    [Fact]
+    public async Task GetBranchesAsync_WhenGitLabCallFails_ReturnsFailureWithoutThrowing()
+    {
+        var gitClient = new FakeGitProviderClient(branchesResult: GitProviderResult<IReadOnlyList<string>>.Fail("GitLab returned 401."));
+        var sut = CreateSut(out _, gitClient);
+        var repo = await sut.CreateAsync(new CreateRepositoryRequest(
+            "loop", "https://gitlab.techbey.pk/release-management/application_releases/loop.git", RepositoryProvider.GitLab, null, null, null, null));
+
+        var result = await sut.GetBranchesAsync(repo.Id);
+
+        Assert.False(result.Success);
+        Assert.Empty(result.Branches);
+        Assert.Contains("401", result.ErrorMessage);
+    }
 }

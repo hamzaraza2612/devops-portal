@@ -262,6 +262,17 @@ public class SshRemoteExecutionProviderTests
         Assert.Contains("empty", result.Error);
     }
 
+    [Fact]
+    public async Task BackupPathAsync_WhenNotConfigured_FailsWithoutAttemptingAnything()
+    {
+        var sut = new SshRemoteExecutionProvider(new FakeSecretProvider(), NullLoggerFactory.Create<SshRemoteExecutionProvider>());
+        var result = await sut.BackupPathAsync(UnconfiguredServer(), "/tmp/app/publish", "/tmp/app/Backups", "20260101-000000", null);
+
+        Assert.False(result.Success);
+        Assert.False(result.BackupTaken);
+        Assert.Contains("not configured", result.Error);
+    }
+
     private sealed class FakeSecretProvider : ISecretProvider
     {
         public string ProviderKey => "fake";

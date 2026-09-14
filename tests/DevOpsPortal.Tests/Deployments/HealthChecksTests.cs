@@ -120,5 +120,10 @@ public class IntegrationsHealthCheckTests
             TargetServer targetServer, string destinationPath, byte[] archiveBytes,
             IReadOnlyList<string> excludePatterns, string? sourcePath, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public Task<RemoteBackupResult> BackupPathAsync(
+            TargetServer targetServer, string sourcePath, string backupRootPath, string backupFolderName,
+            int? retentionCount, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

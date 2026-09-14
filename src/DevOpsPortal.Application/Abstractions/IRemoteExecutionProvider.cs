@@ -137,6 +137,14 @@ public record RemoteEnvironmentSnapshotResult(
 /// written" without evidence.</summary>
 public record RemoteSourceSyncResult(bool Success, int? ExtractedEntryCount, string? Error);
 
+/// <summary>Result of taking a rollback snapshot before a source sync
+/// overwrites a deployment's published files (see
+/// <see cref="IRemoteExecutionProvider.BackupPathAsync"/>). <c>BackupTaken</c>
+/// is false (while <c>Success</c> is still true) when the path being backed
+/// up had nothing in it yet — a brand-new application-environment's
+/// first-ever deployment, not a failure.</summary>
+public record RemoteBackupResult(bool Success, bool BackupTaken, string? Error);
+
 /// <summary>
 /// The portal's ONLY boundary for reaching a specific TargetServer's Docker
 /// engine. This interface exists because master requirements for Phase 5
@@ -247,4 +255,24 @@ public interface IRemoteExecutionProvider
     Task<RemoteSourceSyncResult> SyncSourceArchiveAsync(
         TargetServer targetServer, string destinationPath, byte[] archiveBytes,
         IReadOnlyList<string> excludePatterns, string? sourcePath, CancellationToken cancellationToken = default);
+
+    /// <summary>Copies the current contents of <paramref name="sourcePath"/> into
+    /// a new dated subfolder of <paramref name="backupRootPath"/> — the "always
+    /// take a backup before overwriting the deployed files" step of a
+    /// LegacyFilesystem deployment that syncs source from a repository (see
+    /// DeploymentExecutor.SyncSourceAsync), matching the manual deployment
+    /// script this portal replaces. A missing or empty <paramref name="sourcePath"/>
+    /// (the application-environment's first-ever deployment — nothing to back up
+    /// yet) is reported as <c>Success = true, BackupTaken = false</c>, never a
+    /// failure. <paramref name="backupRootPath"/> must already have been
+    /// validated by the caller (it is always derived from an already-allow-listed
+    /// DeploymentRootPath), same contract as <see cref="SyncSourceArchiveAsync"/>'s
+    /// destinationPath. When <paramref name="retentionCount"/> is set and positive,
+    /// backup subfolders beyond the most recent <paramref name="retentionCount"/>
+    /// (sorted by name — the caller always names them so lexicographic order is
+    /// chronological order) are deleted after this backup completes; a null or
+    /// non-positive value prunes nothing.</summary>
+    Task<RemoteBackupResult> BackupPathAsync(
+        TargetServer targetServer, string sourcePath, string backupRootPath, string backupFolderName,
+        int? retentionCount, CancellationToken cancellationToken = default);
 }
