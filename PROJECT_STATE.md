@@ -4236,6 +4236,74 @@ contents are never themselves requested, however large they might be on a
 real repository. 439/439 backend tests pass (up from 438); no frontend
 changes were needed (the API response shape is unchanged).
 
+### Phase 14c follow-up — pre-fill the New configuration form from convention, not blank inputs
+
+User feedback after the discovery-scan hotfix: even after "Create
+application" from a discovered folder, configuring each environment
+(DEV/QA/UAT/PRODUCTION) still required typing Target server, Branch,
+Deployment root path, Compose file path, Publish subpath, and Backup
+subpath by hand for every single environment of every application —
+despite the Techbey convention being completely uniform (one shared DEV
+target server for every app, `/mnt/data/techbey-apps/<folder>` for every
+deployment root, `docker-compose.yml`/`publish`/`Backups` for every
+compose/publish/backup path, and a branch per environment name matching
+the real GitLab branches shown in the user's own screenshot).
+
+Two real gaps, not just "more input than ideal":
+1. `ApplicationEnvironmentConfigForm`'s **New configuration** state
+   initializers used `environmentConfig?.composeFilePath ?? ''` (and the
+   same pattern for PublishSubPath/BackupSubPath) — showing blank inputs
+   even though the `ApplicationEnvironment` entity itself already declares
+   real defaults (`"docker-compose.yml"`, `"publish"`, `"Backups"`)
+   server-side. The form simply never surfaced those defaults for a brand
+   new row.
+2. Nothing connected `EnvironmentDefinition.PrimaryTargetServerId` (the
+   environment-level "which server is DEV/QA/UAT/PRODUCTION" association,
+   already settable once on the Environments admin page since Phase 13c)
+   or `TargetServer.AllowedDeploymentRoots` (the existing per-server base
+   directory allow-list) to this form at all — so even when both were
+   already configured, every application still needed its Target server
+   and Deployment root path typed in by hand, one environment at a time.
+
+**Fix — every field with a real convention now pre-fills, all still
+freely editable:**
+- **Target server** defaults to `environmentDef.primaryTargetServerId`
+  (the "New configuration" panel opens with the environment's own
+  already-configured server pre-selected — nothing to pick for the common
+  case where every application shares one server per environment).
+- **Branch** defaults to the environment tier name itself (`"DEV"`,
+  `"QA"`, `"UAT"`, `"PRODUCTION"`) — matches a real branch-per-environment
+  GitLab layout exactly (confirmed against the user's own repository
+  screenshot, which shows a `DEV` branch selector).
+- **Deployment root path** is suggested as `<TargetServer's first active
+  AllowedDeploymentRoot>/<Application.SourcePath or Slug>` the moment a
+  target server is selected (whether from the new default above or
+  changed manually) — `suggestDeploymentRootPath` (frontend,
+  `ApplicationDetailsPage.tsx`) never overwrites a value the admin already
+  typed (only fills when the field is currently empty), and degrades to
+  an empty suggestion (nothing filled) for any target server with no
+  active allowed root configured, rather than fabricating a guessed path.
+- **Compose file path / Publish subpath / Backup subpath** now default to
+  `"docker-compose.yml"`/`"publish"`/`"Backups"` for a brand-new
+  configuration — matching `ApplicationEnvironment`'s own server-side
+  defaults instead of showing blank inputs for values that already have
+  one.
+- **Sync source from repository** now defaults to checked (rather than
+  unchecked) for a new configuration when the application has a
+  repository configured — matching the explicit "clone it yourself, sync
+  it to the target folder" requirement as the expected path going
+  forward, not an opt-in most admins would otherwise never discover.
+
+No backend change — every one of these is a frontend-only default; the
+existing `UpsertApplicationEnvironmentRequest` endpoint and validation are
+untouched. New tests in `ApplicationDetailsPage.test.tsx`: a full
+pre-fill assertion (target server/branch/deployment root path/compose/
+publish/backup paths all correct on first render of a brand-new DEV
+configuration) and a regression test confirming a manually-typed
+deployment root path is never clobbered when the admin changes the target
+server afterward. 54/54 frontend tests pass (up from 52); no backend
+changes, 439/439 backend tests unaffected.
+
 ### Known limitations (this phase)
 
 - **No live GitLab instance or target server was reachable** in this
