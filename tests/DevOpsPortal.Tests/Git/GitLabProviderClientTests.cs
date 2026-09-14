@@ -230,6 +230,32 @@ public class GitLabProviderClientTests
         Assert.Equal(3, requestedUrls.Count);
     }
 
+    /// <summary>Regression test for a real production bug: HttpClient.Timeout for this
+    /// client was hardcoded to 10s, which is fine for small calls (commit lookups, tree
+    /// listings) but was cutting off every real archive download for a real monorepo
+    /// (large due to committed deployment Backups/ history), surfacing as the misleading
+    /// "Could not reach the configured GitLab instance." — indistinguishable from GitLab
+    /// actually being down, even though discovery/commit-lookup calls against the exact
+    /// same GitLab instance succeeded moments earlier. This proves a client-side timeout
+    /// (simulated with a 1ms HttpClient.Timeout against a handler that never completes)
+    /// now gets its own distinct message instead of the generic unreachable one.</summary>
+    [Fact]
+    public async Task DownloadRepositoryArchiveAsync_WhenClientTimesOut_ReturnsTimeoutSpecificMessage_NotGenericUnreachable()
+    {
+        var handler = new FakeHttpMessageHandler(_ => throw new TaskCanceledException(
+            "The request was canceled due to the configured HttpClient.Timeout.",
+            new TimeoutException()));
+        var httpClient = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(1) };
+        var sut = new GitLabProviderClient(httpClient, new FakeSecretProvider(), NullLogger<GitLabProviderClient>.Instance);
+        var repository = new Repository { Name = "monorepo", Url = "https://gitlab.example.com/group/monorepo", Provider = RepositoryProvider.GitLab };
+
+        var result = await sut.DownloadRepositoryArchiveAsync(repository, "DEV");
+
+        Assert.False(result.Success);
+        Assert.Contains("timed out", result.ErrorMessage);
+        Assert.DoesNotContain("Could not reach", result.ErrorMessage);
+    }
+
     private static HttpResponseMessage JsonResponse(IReadOnlyList<object> entries) => new(HttpStatusCode.OK)
     {
         Content = new StringContent(JsonSerializer.Serialize(entries), Encoding.UTF8, "application/json"),
