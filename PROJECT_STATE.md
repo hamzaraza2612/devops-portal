@@ -4304,6 +4304,32 @@ deployment root path is never clobbered when the admin changes the target
 server afterward. 54/54 frontend tests pass (up from 52); no backend
 changes, 439/439 backend tests unaffected.
 
+### Phase 14c follow-up 2 — "Allowed deployment roots" was undiscoverable from the Edit view
+
+Live report, with a screenshot showing the Target Servers admin page's
+"Edit target server" panel open — Name/Hostname/SSH fields, Test
+Connection, Set SSH credential — with no "Allowed deployment roots"
+section anywhere on screen, explaining a `DeploymentRootPath '...' is not
+under any allowed deployment root` validation error the user had no way
+to resolve from that view.
+
+**Root cause**: `TargetServersPage.tsx`'s `TargetServerCard` gated the
+"Allowed deployment roots" section (including "Add allowed root") behind
+a completely separate `expanded` toggle — set only by clicking the
+server's own name text — independent of the `showEditForm` toggle the
+"Edit" button controls. An admin who used the obvious "Edit" button to
+configure a server never saw the allowed-roots section at all, since
+nothing on that screen indicated a second, different click target existed.
+
+**Fix**: the allowed-roots section now renders when *either* toggle is
+on (`expanded || showEditForm`) — clicking "Edit" (the natural way to
+configure a server) now also shows "Allowed deployment roots", alongside
+the existing behavior of clicking the server's name. New regression test
+(`TargetServersPage.test.tsx`) asserts the section is absent before any
+interaction and appears after clicking "Edit" alone, without also
+clicking the server name. 55/55 frontend tests pass (up from 54); no
+backend changes.
+
 ### Known limitations (this phase)
 
 - **No live GitLab instance or target server was reachable** in this

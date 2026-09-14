@@ -8,6 +8,21 @@ procedure — in short: back up first, `git pull` / pull the new image,
 (new nullable columns/tables); none has ever dropped or destructively
 altered existing data.
 
+## v1.5.3 — Fix: "Allowed deployment roots" was invisible from the Edit view
+
+**Fixes a discoverability bug** reported live with a screenshot: the Target
+Servers admin page's "Edit target server" panel showed no way at all to
+add an "Allowed deployment root" — explaining a confusing
+`DeploymentRootPath is not under any allowed deployment root` validation
+error with no visible path to fix it.
+
+Root cause: the "Allowed deployment roots" section was gated behind a
+separate toggle (clicking the server's own name), independent of the
+"Edit" button's toggle — an admin who used "Edit" never saw it. Fixed by
+showing the section under either toggle.
+
+55/55 frontend tests pass (up from 54); no backend changes.
+
 ## v1.5.2 — New environment configuration now pre-fills from convention
 
 Following v1.5.1's discovery-scan fix, feedback was that configuring each

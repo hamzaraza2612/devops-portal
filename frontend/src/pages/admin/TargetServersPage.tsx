@@ -274,7 +274,7 @@ function TargetServerCard({
         </div>
       )}
 
-      {expanded && (
+      {(expanded || showEditForm) && (
         <div className="mt-3 border-t border-slate-100 pt-3">
           <p className="text-xs font-medium text-slate-600">Allowed deployment roots</p>
           {server.allowedDeploymentRoots.length === 0 ? (
