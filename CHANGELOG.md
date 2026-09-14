@@ -8,6 +8,30 @@ procedure — in short: back up first, `git pull` / pull the new image,
 (new nullable columns/tables); none has ever dropped or destructively
 altered existing data.
 
+## v1.5.1 — Fix: repository scan found zero deployable folders on a real monorepo
+
+**Fixes a crash-adjacent bug** reported live against the real `techbey-apps`
+GitLab repository: every one of its ~40 application folders — each
+confirmed to have `docker-compose.yml` directly inside it — was reported as
+"not deployable" by the new v1.5.0 "Discover from repository" scan.
+
+Root cause: the scan made one recursive `GET /repository/tree?recursive=true`
+call with a 2000-entry safety cap. GitLab's recursive walk is depth-first,
+and every application folder here has a `Backups/` subdirectory holding
+potentially thousands of historical deployment snapshots — the scan
+exhausted its entry cap deep inside the very first folder's `Backups/`
+tree and never reached a single `docker-compose.yml`.
+
+Fixed by replacing the one recursive call with a non-recursive top-level
+listing plus one non-recursive direct-children listing per folder — neither
+call can ever descend into a subdirectory, so there's no cap to exhaust
+inside one, however large it is. A new test reproduces the exact bug shape
+(a compose file sitting beside a huge sibling directory) against a mocked
+HTTP handler, not just the non-network error paths this area's tests
+already covered.
+
+439/439 backend tests pass (up from 430 pre-v1.5.0); no frontend changes.
+
 ## v1.5.0 — Discover applications from a monorepo-style GitLab repository
 
 The Techbey source layout is one shared GitLab repository with a

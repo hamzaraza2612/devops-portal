@@ -4193,6 +4193,49 @@ fake across the suite updated for the new `sourcePath` parameter. New
 Create form from a discovered folder (including the already-linked and
 no-compose-file display cases), and a failed-scan error state.
 
+### Phase 14c hotfix — every folder reported "no compose file found" against the real Techbey repository
+
+Reported live within a day of shipping, with a screenshot of the real
+`techbey-apps` GitLab repository (DEV branch) proving every one of its ~40
+application folders — each confirmed to have `docker-compose.yml` sitting
+directly inside it — came back marked "not deployable."
+
+**Root cause**: `ListRepositoryFoldersAsync`'s first version made one
+`GET /repository/tree?recursive=true` call to see the whole repository in
+one shot, capped at 2000 entries as a safety bound. GitLab's recursive
+tree walk is depth-first: for a folder like `dmsapi`, it does not
+necessarily list `dmsapi`'s own direct children (`Backups`, `docker-compose.yml`,
+`publish`) together before descending — it can walk all the way into
+`dmsapi/Backups/...` (every application here keeps historical deployment
+snapshots there, easily thousands of files per app) before reaching the
+sibling `docker-compose.yml`. With ~40 real application folders each
+carrying a heavy `Backups/` tree, the 2000-entry cap was exhausted deep
+inside the very first folder's `Backups/` and the scan never reached a
+single compose file — for any folder, hence "every folder not deployable"
+rather than a partial result.
+
+**Fix**: replaced the one recursive call with two kinds of non-recursive
+call — a top-level listing (folder names only) and, per folder, a listing
+of *only that folder's own direct children* (`GET /repository/tree?path=<folder>`)
+to check for a compose file. Neither call is ever recursive, so the scan
+can never descend into `Backups`/`publish`/any subdirectory at all,
+regardless of how large it is — there is no longer a page-cap trap to fall
+into. N+1 requests (N = top-level folder count, capped at 500) instead of
+one big call, but each request is small and the count matches what an
+admin-triggered "Discover" scan can reasonably afford.
+
+New regression test
+(`GitLabProviderClientTests.ListRepositoryFoldersAsync_FindsComposeFileEvenWhenItsSiblingFolderIsHuge_NeverRecursingIntoSiblings`)
+uses a real mocked `HttpMessageHandler` (not just the non-network error
+paths every other test here covers) to reproduce the exact shape of the
+bug: a `dmsapi` folder whose own `docker-compose.yml` sits alongside a
+`Backups` subdirectory, asserting (a) the compose file is found, (b) no
+request ever includes `recursive=true`, and (c) exactly 3 requests are
+made total (top-level + one per folder) — proving `Backups`'/`publish`'s
+contents are never themselves requested, however large they might be on a
+real repository. 439/439 backend tests pass (up from 438); no frontend
+changes were needed (the API response shape is unchanged).
+
 ### Known limitations (this phase)
 
 - **No live GitLab instance or target server was reachable** in this
