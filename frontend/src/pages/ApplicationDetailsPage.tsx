@@ -101,6 +101,8 @@ export function ApplicationDetailsPage() {
             canManage={canManageEnvironments}
             targetServers={targetServers}
             hasRepository={Boolean(application.repositoryName)}
+            applicationSlug={application.slug}
+            applicationSourcePath={application.sourcePath}
             onChanged={reload}
           />
         ))}
@@ -136,6 +138,8 @@ function EnvironmentCard({
   canManage,
   targetServers,
   hasRepository,
+  applicationSlug,
+  applicationSourcePath,
   onChanged,
 }: {
   tier: EnvironmentTier;
@@ -152,6 +156,8 @@ function EnvironmentCard({
   canManage: boolean;
   targetServers: TargetServerDto[];
   hasRepository: boolean;
+  applicationSlug: string;
+  applicationSourcePath: string | null;
   onChanged: () => void;
 }) {
   const { can } = useAuth();
@@ -270,6 +276,10 @@ function EnvironmentCard({
           environmentConfig={environmentConfig}
           targetServers={targetServers}
           hasRepository={hasRepository}
+          tier={tier}
+          defaultTargetServerId={environmentDef.primaryTargetServerId}
+          applicationSlug={applicationSlug}
+          applicationSourcePath={applicationSourcePath}
           onSubmitted={() => {
             setShowConfigForm(false);
             onChanged();
@@ -287,16 +297,52 @@ const healthCheckTypeLabels: Record<HealthCheckType, string> = {
   [HealthCheckType.TcpPort]: 'TCP port',
 };
 
+/** Best-effort suggestion only — every field it fills stays a normal editable
+ * input, never locked. Matches the Techbey convention (one shared base
+ * directory per target server, one subfolder per application, folder name ==
+ * SourcePath/Slug) but degrades to an empty string (nothing filled in) for
+ * any target server that has no active AllowedDeploymentRoot configured, so
+ * it never fabricates a path for an installation that doesn't follow that
+ * convention. */
+function suggestDeploymentRootPath(
+  targetServers: TargetServerDto[], serverId: string, applicationSlug: string, applicationSourcePath: string | null,
+): string {
+  const server = targetServers.find((s) => s.id === serverId);
+  const activeRoot = server?.allowedDeploymentRoots.find((r) => r.isActive);
+  if (!activeRoot) return '';
+  const base = activeRoot.rootPath.replace(/\/+$/, '');
+  const folder = applicationSourcePath || applicationSlug;
+  return `${base}/${folder}`;
+}
+
 /** Create/edit the per-application, per-environment deployment configuration
  * (target server, paths, compose/service/container names, health check,
  * application URL). Reuses the existing UpsertApplicationEnvironmentRequest
- * endpoint — no new backend behavior, just UI that was previously missing. */
+ * endpoint — no new backend behavior, just UI that was previously missing.
+ *
+ * For a brand-new configuration, every field that has a sensible convention
+ * is pre-filled rather than left blank: target server defaults to this
+ * environment's PrimaryTargetServerId (set once, admin-side, on the
+ * Environments page — every application then inherits it); branch defaults
+ * to the environment tier name (DEV/QA/UAT/PRODUCTION — matches a real
+ * branch-per-environment GitLab layout); deployment root path is suggested
+ * from the target server's own configured AllowedDeploymentRoot plus the
+ * application's folder name; compose file/publish/backup subpaths default to
+ * exactly what ApplicationEnvironment itself defaults to server-side
+ * ("docker-compose.yml"/"publish"/"Backups") instead of showing empty inputs
+ * for values that already have a real default. Every one of these stays a
+ * normal, freely-editable field — this only saves typing, it never removes
+ * the ability to override anything. */
 function ApplicationEnvironmentConfigForm({
   applicationId,
   environmentDefinitionId,
   environmentConfig,
   targetServers,
   hasRepository,
+  tier,
+  defaultTargetServerId,
+  applicationSlug,
+  applicationSourcePath,
   onSubmitted,
   onCancel,
 }: {
@@ -305,29 +351,46 @@ function ApplicationEnvironmentConfigForm({
   environmentConfig?: ApplicationEnvironmentDto;
   targetServers: TargetServerDto[];
   hasRepository: boolean;
+  tier: EnvironmentTier;
+  defaultTargetServerId: string | null;
+  applicationSlug: string;
+  applicationSourcePath: string | null;
   onSubmitted: () => void;
   onCancel: () => void;
 }) {
-  const [targetServerId, setTargetServerId] = useState(environmentConfig?.targetServerId ?? '');
-  const [branchName, setBranchName] = useState(environmentConfig?.branchName ?? '');
-  const [deploymentRootPath, setDeploymentRootPath] = useState(environmentConfig?.deploymentRootPath ?? '');
-  const [publishSubPath, setPublishSubPath] = useState(environmentConfig?.publishSubPath ?? '');
-  const [backupSubPath, setBackupSubPath] = useState(environmentConfig?.backupSubPath ?? '');
+  const [targetServerId, setTargetServerId] = useState(environmentConfig?.targetServerId ?? defaultTargetServerId ?? '');
+  const [branchName, setBranchName] = useState(environmentConfig?.branchName ?? tier);
+  const [deploymentRootPath, setDeploymentRootPath] = useState(
+    environmentConfig?.deploymentRootPath ??
+      suggestDeploymentRootPath(targetServers, defaultTargetServerId ?? '', applicationSlug, applicationSourcePath),
+  );
+  const [publishSubPath, setPublishSubPath] = useState(environmentConfig?.publishSubPath ?? 'publish');
+  const [backupSubPath, setBackupSubPath] = useState(environmentConfig?.backupSubPath ?? 'Backups');
   const [backupRetentionCount, setBackupRetentionCount] = useState(
     environmentConfig?.backupRetentionCount != null ? String(environmentConfig.backupRetentionCount) : '',
   );
-  const [composeFilePath, setComposeFilePath] = useState(environmentConfig?.composeFilePath ?? '');
+  const [composeFilePath, setComposeFilePath] = useState(environmentConfig?.composeFilePath ?? 'docker-compose.yml');
   const [composeProjectName, setComposeProjectName] = useState(environmentConfig?.composeProjectName ?? '');
   const [serviceName, setServiceName] = useState(environmentConfig?.serviceName ?? '');
   const [containerName, setContainerName] = useState(environmentConfig?.containerName ?? '');
   const [externalNetworkName, setExternalNetworkName] = useState(environmentConfig?.externalNetworkName ?? '');
   const [useDownWithVolumesOnDeploy, setUseDownWithVolumesOnDeploy] = useState(environmentConfig?.useDownWithVolumesOnDeploy ?? false);
-  const [syncSourceFromRepository, setSyncSourceFromRepository] = useState(environmentConfig?.syncSourceFromRepository ?? false);
+  const [syncSourceFromRepository, setSyncSourceFromRepository] = useState(environmentConfig?.syncSourceFromRepository ?? hasRepository);
   const [healthCheckType, setHealthCheckType] = useState<HealthCheckType>(environmentConfig?.healthCheckType ?? HealthCheckType.None);
   const [healthCheckEndpoint, setHealthCheckEndpoint] = useState(environmentConfig?.healthCheckEndpoint ?? '');
   const [healthCheckIntervalSeconds, setHealthCheckIntervalSeconds] = useState(String(environmentConfig?.healthCheckIntervalSeconds ?? 30));
   const [healthCheckTimeoutSeconds, setHealthCheckTimeoutSeconds] = useState(String(environmentConfig?.healthCheckTimeoutSeconds ?? 10));
   const [applicationUrl, setApplicationUrl] = useState(environmentConfig?.applicationUrl ?? '');
+
+  function handleTargetServerChange(newServerId: string) {
+    setTargetServerId(newServerId);
+    // Only auto-fill when the field is still empty — never overwrite something
+    // the admin already typed or that came from an existing configuration.
+    if (!deploymentRootPath.trim()) {
+      const suggestion = suggestDeploymentRootPath(targetServers, newServerId, applicationSlug, applicationSourcePath);
+      if (suggestion) setDeploymentRootPath(suggestion);
+    }
+  }
 
   const canSubmit = targetServerId && composeFilePath.trim();
 
@@ -360,7 +423,7 @@ function ApplicationEnvironmentConfigForm({
       <h4 className="text-xs font-semibold text-slate-900">{environmentConfig ? 'Edit configuration' : 'New configuration'}</h4>
       <div className="mt-2 grid gap-2 sm:grid-cols-2">
         <Field label="Target server">
-          <select value={targetServerId} onChange={(e) => setTargetServerId(e.target.value)} className={configInputClass}>
+          <select value={targetServerId} onChange={(e) => handleTargetServerChange(e.target.value)} className={configInputClass}>
             <option value="">Select…</option>
             {targetServers.map((server) => (
               <option key={server.id} value={server.id}>{server.name}</option>

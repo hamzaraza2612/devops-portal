@@ -8,6 +8,31 @@ procedure — in short: back up first, `git pull` / pull the new image,
 (new nullable columns/tables); none has ever dropped or destructively
 altered existing data.
 
+## v1.5.2 — New environment configuration now pre-fills from convention
+
+Following v1.5.1's discovery-scan fix, feedback was that configuring each
+application's DEV/QA/UAT/PRODUCTION environment still required typing
+Target server, Branch, Deployment root path, and the compose/publish/backup
+paths by hand every single time — despite the Techbey layout being
+completely uniform.
+
+**New configuration now pre-fills, still freely editable:**
+- Target server defaults to that environment's already-configured
+  `PrimaryTargetServerId` (set once on the Environments admin page).
+- Branch defaults to the environment tier name (`DEV`/`QA`/`UAT`/`PRODUCTION`).
+- Deployment root path is suggested from the target server's configured
+  base directory plus the application's folder name, the moment a server
+  is selected — never overwrites something already typed.
+- Compose file path / publish subpath / backup subpath default to
+  `docker-compose.yml`/`publish`/`Backups` (matching what the underlying
+  data model already defaults to server-side, previously shown as blank
+  inputs on a new configuration).
+- "Sync source from repository" now defaults on for a new configuration
+  when the application has a repository configured.
+
+Frontend-only change — no backend/API changes. 54/54 frontend tests pass
+(up from 52); 439/439 backend tests unaffected.
+
 ## v1.5.1 — Fix: repository scan found zero deployable folders on a real monorepo
 
 **Fixes a crash-adjacent bug** reported live against the real `techbey-apps`

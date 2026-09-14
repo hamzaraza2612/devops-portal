@@ -10,10 +10,12 @@ import {
   ContainerState,
   DeploymentMode,
   HealthCheckType,
+  SshAuthMethod,
   type ApplicationDto,
   type ApplicationEnvironmentDto,
   type ContainerEnvironmentStatusDto,
   type EnvironmentDefinitionDto,
+  type TargetServerDto,
 } from '../types/api';
 
 vi.mock('../api/endpoints', () => ({
@@ -304,6 +306,57 @@ describe('ApplicationDetailsPage', () => {
       await user.click(await screen.findByRole('button', { name: 'Logs' }));
 
       expect(await screen.findByText('not a container of this application environment')).toBeInTheDocument();
+    });
+  });
+
+  describe('new environment configuration — pre-filled from convention', () => {
+    const techbeyServer: TargetServerDto = {
+      id: 'server-dev', name: 'DEV-Techbey', description: null, hostname: '10.0.0.5', sshPort: 22,
+      sshUsername: 'deploy', sshAuthMethod: SshAuthMethod.Password, hasSshCredential: true, hasSshPassphrase: false,
+      isActive: true, createdAt: '2025-01-01T00:00:00Z',
+      allowedDeploymentRoots: [{ id: 'root-1', targetServerId: 'server-dev', rootPath: '/mnt/data/techbey-apps', description: null, isActive: true }],
+    };
+
+    it('pre-fills target server, deployment root path, branch, compose/publish/backup paths — nothing typed by hand', async () => {
+      vi.mocked(ApplicationsApi.get).mockResolvedValue({ ...application, sourcePath: 'dmsapi' });
+      vi.mocked(EnvironmentsApi.list).mockResolvedValue([
+        { ...environmentDefs[0], primaryTargetServerId: 'server-dev', primaryTargetServerName: 'DEV-Techbey' },
+        ...environmentDefs.slice(1),
+      ]);
+      vi.mocked(ApplicationsApi.environments).mockResolvedValue([]); // DEV not configured yet for this application
+      vi.mocked(TargetServersApi.list).mockResolvedValue([techbeyServer]);
+      const user = userEvent.setup();
+      renderPage([Permissions.ApplicationsManage]);
+
+      const configureButtons = await screen.findAllByRole('button', { name: 'Configure environment' });
+      await user.click(configureButtons[0]); // DEV is the first EnvironmentTiers entry
+
+      expect(screen.getByLabelText('Target server')).toHaveValue('server-dev');
+      expect(screen.getByLabelText('Branch')).toHaveValue('DEV');
+      expect(screen.getByLabelText('Deployment root path')).toHaveValue('/mnt/data/techbey-apps/dmsapi');
+      expect(screen.getByLabelText('Compose file path')).toHaveValue('docker-compose.yml');
+      expect(screen.getByLabelText('Publish subpath')).toHaveValue('publish');
+      expect(screen.getByLabelText('Backup subpath')).toHaveValue('Backups');
+    });
+
+    it('never overwrites a deployment root path the admin already typed when switching target server', async () => {
+      const secondServer: TargetServerDto = { ...techbeyServer, id: 'server-2', name: 'Other-Server', allowedDeploymentRoots: [
+        { id: 'root-2', targetServerId: 'server-2', rootPath: '/srv/apps', description: null, isActive: true },
+      ] };
+      vi.mocked(ApplicationsApi.get).mockResolvedValue({ ...application, sourcePath: 'dmsapi' });
+      vi.mocked(EnvironmentsApi.list).mockResolvedValue(environmentDefs); // no PrimaryTargetServerId set anywhere
+      vi.mocked(ApplicationsApi.environments).mockResolvedValue([]);
+      vi.mocked(TargetServersApi.list).mockResolvedValue([techbeyServer, secondServer]);
+      const user = userEvent.setup();
+      renderPage([Permissions.ApplicationsManage]);
+
+      const configureButtons = await screen.findAllByRole('button', { name: 'Configure environment' });
+      await user.click(configureButtons[0]);
+
+      await user.type(screen.getByLabelText('Deployment root path'), '/custom/path');
+      await user.selectOptions(screen.getByLabelText('Target server'), 'server-2');
+
+      expect(screen.getByLabelText('Deployment root path')).toHaveValue('/custom/path');
     });
   });
 });
