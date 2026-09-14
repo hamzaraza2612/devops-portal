@@ -36,6 +36,7 @@ import type {
   LoginResponse,
   PagedResult,
   DiscoverApplicationsResultDto,
+  RepositoryBranchesResultDto,
   PromotionRequestDto,
   RecreateWithVolumesRequest,
   ReleaseDto,
@@ -207,6 +208,9 @@ export const RepositoriesApi = {
    * (one folder per app) so the source folder never has to be typed in by hand. */
   discoverApplications: (id: string, branch?: string) =>
     api.get<DiscoverApplicationsResultDto>(`/repositories/${id}/discover-applications${branch ? `?branch=${encodeURIComponent(branch)}` : ''}`),
+  /** Every real branch on this repository — lets an admin pick a branch from a
+   * live list instead of typing a name and hoping it exists. */
+  listBranches: (id: string) => api.get<RepositoryBranchesResultDto>(`/repositories/${id}/branches`),
 };
 
 export const TargetServersApi = {

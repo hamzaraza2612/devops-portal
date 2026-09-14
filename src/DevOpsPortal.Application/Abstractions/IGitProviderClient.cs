@@ -83,4 +83,14 @@ public interface IGitProviderClient
     /// GitProviderResult contract as every other method here.</summary>
     Task<GitProviderResult<IReadOnlyList<GitRepositoryFolder>>> ListRepositoryFoldersAsync(
         Repository repository, string refName, CancellationToken cancellationToken = default);
+
+    /// <summary>Lists every branch on this repository (name only, no commit
+    /// detail) — the "developer just gives a repo link, the portal shows every
+    /// branch to pick from" flow for a repository dedicated to one application
+    /// (release-management-style: one Git repo per app, the selected branch's
+    /// HEAD already holds the deployable build). Read-only: only ever calls
+    /// GitLab's own repository-branches API. Same GitProviderResult contract as
+    /// every other method here.</summary>
+    Task<GitProviderResult<IReadOnlyList<string>>> GetBranchesAsync(
+        Repository repository, CancellationToken cancellationToken = default);
 }

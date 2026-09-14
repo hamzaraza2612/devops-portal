@@ -343,6 +343,12 @@ export interface DiscoverApplicationsResultDto {
   errorMessage: string | null;
 }
 
+export interface RepositoryBranchesResultDto {
+  success: boolean;
+  branches: string[];
+  errorMessage: string | null;
+}
+
 // --- Target servers (SSH) ---
 
 export interface AllowedDeploymentRootDto {

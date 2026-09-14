@@ -12,23 +12,11 @@ import {
   type ApplicationDto,
   type CreateApplicationRequest,
   type DeploymentDto,
-  type DiscoveredRepositoryFolderDto,
   type RepositoryDto,
   type UpdateApplicationRequest,
 } from '../types/api';
 import { appEnvKey, latestByAppEnvironment } from '../utils/deploymentIndex';
 import { formatRelative } from '../utils/format';
-
-/** Folder path -> a reasonable default application name/slug, so "Discover
- * applications from repository" never requires typing a source folder path
- * by hand — only confirming the pre-filled Create form. */
-function slugify(value: string) {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-}
-function titleCaseFromFolder(path: string) {
-  const last = path.split('/').pop() ?? path;
-  return last.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 const deploymentModeLabels: Record<DeploymentMode, string> = {
   [DeploymentMode.LegacyFilesystem]: 'Legacy filesystem',
@@ -46,8 +34,6 @@ export function ApplicationsListPage() {
   const [search, setSearch] = useState('');
   const [showInactive, setShowInactive] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
-  const [showDiscover, setShowDiscover] = useState(false);
-  const [createInitial, setCreateInitial] = useState<{ name: string; slug: string; repositoryId: string; sourcePath: string } | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const latest = useMemo(() => (data ? latestByAppEnvironment(data.deployments) : new Map<string, DeploymentDto>()), [data]);
@@ -74,57 +60,22 @@ export function ApplicationsListPage() {
         subtitle="Applications you're authorized to view, with current status per environment."
         actions={
           <Can permission={Permissions.ApplicationsManage}>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowDiscover((v) => !v);
-                  setShowCreate(false);
-                }}
-                className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
-              >
-                {showDiscover ? 'Cancel' : 'Discover from repository'}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setCreateInitial(null);
-                  setShowCreate((v) => !v);
-                  setShowDiscover(false);
-                }}
-                className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
-              >
-                {showCreate ? 'Cancel' : 'New Application'}
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => setShowCreate((v) => !v)}
+              className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
+            >
+              {showCreate ? 'Cancel' : 'New Application'}
+            </button>
           </Can>
         }
       />
 
-      {showDiscover && (
-        <DiscoverApplicationsPanel
-          repositories={data.repositories}
-          onCreateFromFolder={(repo, folder) => {
-            setCreateInitial({
-              name: titleCaseFromFolder(folder.path),
-              slug: slugify(folder.path),
-              repositoryId: repo.id,
-              sourcePath: folder.path,
-            });
-            setShowDiscover(false);
-            setShowCreate(true);
-          }}
-        />
-      )}
-
       {showCreate && (
         <ApplicationCreateForm
-          key={createInitial ? `discovered-${createInitial.sourcePath}` : 'blank'}
           repositories={data.repositories}
-          initial={createInitial}
           onSubmitted={() => {
             setShowCreate(false);
-            setCreateInitial(null);
             reload();
           }}
         />
@@ -351,145 +302,19 @@ function ApplicationEditForm({
   );
 }
 
-/** "Discover applications from this repository" — scans a monorepo-style
- * repository (one folder per app, e.g. the Techbey techbey-apps/
- * techbey-apps8 transition) and lists its top-level folders, so the source
- * folder never has to be typed in by hand — just confirmed on the Create form. */
-function DiscoverApplicationsPanel({
-  repositories,
-  onCreateFromFolder,
-}: {
-  repositories: RepositoryDto[];
-  onCreateFromFolder: (repo: RepositoryDto, folder: DiscoveredRepositoryFolderDto) => void;
-}) {
-  const [repositoryId, setRepositoryId] = useState(repositories[0]?.id ?? '');
-  const [branch, setBranch] = useState('');
-  const [scanning, setScanning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [folders, setFolders] = useState<DiscoveredRepositoryFolderDto[] | null>(null);
-  const [scannedBranch, setScannedBranch] = useState<string | null>(null);
-
-  const repo = repositories.find((r) => r.id === repositoryId);
-
-  async function scan() {
-    if (!repo) return;
-    setScanning(true);
-    setError(null);
-    try {
-      const result = await RepositoriesApi.discoverApplications(repo.id, branch.trim() || undefined);
-      if (!result.success) {
-        setError(result.errorMessage ?? 'Failed to scan the repository.');
-        setFolders(null);
-      } else {
-        setFolders(result.folders);
-        setScannedBranch(result.branch);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to scan the repository.');
-      setFolders(null);
-    } finally {
-      setScanning(false);
-    }
-  }
-
-  return (
-    <Card className="mb-4">
-      <h2 className="text-sm font-semibold text-slate-900">Discover applications from repository</h2>
-      {repositories.length === 0 ? (
-        <p className="mt-2 text-xs text-slate-400">
-          No repositories configured yet — add one on the Repositories admin page first.
-        </p>
-      ) : (
-        <>
-          <div className="mt-3 grid gap-3 sm:grid-cols-3">
-            <Field label="Repository">
-              <select value={repositoryId} onChange={(e) => { setRepositoryId(e.target.value); setFolders(null); }} className={inputClass}>
-                {repositories.map((r) => (
-                  <option key={r.id} value={r.id}>{r.name}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Branch">
-              <input
-                value={branch}
-                onChange={(e) => setBranch(e.target.value)}
-                className={inputClass}
-                placeholder={repo?.defaultBranch ?? 'main'}
-              />
-            </Field>
-            <div className="flex items-end">
-              <button
-                type="button"
-                onClick={scan}
-                disabled={scanning || !repo}
-                className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-              >
-                {scanning ? 'Scanning…' : 'Scan'}
-              </button>
-            </div>
-          </div>
-
-          {error && <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-xs font-medium text-red-700">{error}</p>}
-
-          {folders && (
-            <div className="mt-3">
-              <p className="mb-2 text-xs text-slate-500">
-                {folders.length} folder(s) found at '{scannedBranch}'.
-              </p>
-              {folders.length === 0 ? (
-                <EmptyState title="No folders found at this branch." />
-              ) : (
-                <ul className="divide-y divide-slate-100 rounded-md border border-slate-200">
-                  {folders.map((folder) => (
-                    <li key={folder.path} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
-                      <div>
-                        <span className="font-mono text-slate-800">{folder.path}</span>
-                        {!folder.hasComposeFile && (
-                          <span className="ml-2 text-xs text-slate-400">(no compose file found)</span>
-                        )}
-                      </div>
-                      {folder.existingApplicationId ? (
-                        <Link to={`/applications/${folder.existingApplicationId}`} className="text-xs font-medium text-slate-500 hover:underline">
-                          Already linked to '{folder.existingApplicationName}'
-                        </Link>
-                      ) : folder.hasComposeFile ? (
-                        <button
-                          type="button"
-                          onClick={() => repo && onCreateFromFolder(repo, folder)}
-                          className="text-xs font-medium text-blue-600 hover:underline"
-                        >
-                          Create application
-                        </button>
-                      ) : (
-                        <span className="text-xs text-slate-300">Not deployable</span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
-        </>
-      )}
-    </Card>
-  );
-}
-
 function ApplicationCreateForm({
   repositories,
-  initial,
   onSubmitted,
 }: {
   repositories: RepositoryDto[];
-  initial?: { name: string; slug: string; repositoryId: string; sourcePath: string } | null;
   onSubmitted: () => void;
 }) {
-  const [name, setName] = useState(initial?.name ?? '');
-  const [slug, setSlug] = useState(initial?.slug ?? '');
+  const [name, setName] = useState('');
+  const [slug, setSlug] = useState('');
   const [description, setDescription] = useState('');
   const [deploymentMode, setDeploymentMode] = useState<DeploymentMode>(DeploymentMode.LegacyFilesystem);
-  const [repositoryId, setRepositoryId] = useState(initial?.repositoryId ?? '');
-  const [sourcePath, setSourcePath] = useState(initial?.sourcePath ?? '');
+  const [repositoryId, setRepositoryId] = useState('');
+  const [sourcePath, setSourcePath] = useState('');
 
   const canSubmit = name.trim() && slug.trim();
 
@@ -537,9 +362,7 @@ function ApplicationCreateForm({
         </Field>
       </div>
       <p className="mt-2 text-xs text-slate-400">
-        {initial
-          ? `Pre-filled from '${initial.sourcePath}' in the repository — adjust if needed, then create.`
-          : 'After creating this application, configure it per environment (target server, deployment path, application URL) from its details page.'}
+        After creating this application, configure it per environment (target server, branch, deployment path, application URL) from its details page.
       </p>
       <div className="mt-3">
         <ActionButton

@@ -42,3 +42,8 @@ public record DiscoveredRepositoryFolderDto(
 
 public record DiscoverApplicationsResultDto(
     bool Success, string? Branch, IReadOnlyList<DiscoveredRepositoryFolderDto> Folders, string? ErrorMessage);
+
+/// <summary>Every branch on a repository — lets an admin pick a real branch
+/// from a live list (e.g. when configuring which branch an environment
+/// deploys) instead of typing a branch name by hand and hoping it exists.</summary>
+public record RepositoryBranchesResultDto(bool Success, IReadOnlyList<string> Branches, string? ErrorMessage);

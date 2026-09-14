@@ -240,7 +240,11 @@ public class DeploymentExecutor(
     /// unless this is explicitly turned on for it. No local `git` binary is ever
     /// invoked: the archive is downloaded from GitLab's REST API and streamed to
     /// the target server over SFTP — see IGitProviderClient.DownloadRepositoryArchiveAsync
-    /// and IRemoteExecutionProvider.SyncSourceArchiveAsync.</summary>
+    /// and IRemoteExecutionProvider.SyncSourceArchiveAsync. Always backs up the
+    /// existing PublishSubPath contents into a dated BackupSubPath subfolder
+    /// first (IRemoteExecutionProvider.BackupPathAsync) — matches the manual
+    /// deployment script this portal replaces, and a failed backup is fatal
+    /// (never syncs new source without a rollback snapshot to fall back to).</summary>
     private async Task SyncSourceAsync(Deployment deployment, ApplicationEnvironment appEnv, DeploymentLogWriter log, CancellationToken cancellationToken)
     {
         if (deployment.Application.RepositoryId is null)
@@ -253,16 +257,36 @@ public class DeploymentExecutor(
             ?? throw new DeploymentExecutionException("The application's configured repository could not be found.");
 
         var refName = !string.IsNullOrWhiteSpace(deployment.Branch) ? deployment.Branch : deployment.CommitSha;
-        await log.WriteAsync(DeploymentLogLevel.Info, $"Downloading source archive for '{refName}' from repository '{repository.Name}'.", cancellationToken);
 
+        // PublishSubPath/BackupSubPath are already validated (DeploymentPathValidator.IsSafeRelativePath)
+        // as relative paths with no '.'/'..' segments — safe to concatenate onto the
+        // already-allow-listed DeploymentRootPath.
+        var destinationPath = $"{appEnv.DeploymentRootPath!.TrimEnd('/')}/{appEnv.PublishSubPath}";
+        var backupRootPath = $"{appEnv.DeploymentRootPath!.TrimEnd('/')}/{appEnv.BackupSubPath}";
+
+        // Always taken before the new source ever touches destinationPath — matches the
+        // manual deployment script this portal replaces (backup first, then sync), and
+        // means a bad deploy is never unrecoverable. Fatal on failure: a source sync
+        // must never proceed without a rollback snapshot to fall back to.
+        var backupFolderName = deployment.StartedAt is { } startedAt ? startedAt.ToString("yyyyMMdd-HHmmss") : DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
+        var backupResult = await remoteExecutionProvider.BackupPathAsync(
+            appEnv.TargetServer, destinationPath, backupRootPath, backupFolderName, appEnv.BackupRetentionCount, cancellationToken);
+        await log.WriteAsync(
+            backupResult.Success ? DeploymentLogLevel.Info : DeploymentLogLevel.Error,
+            backupResult.Success
+                ? (backupResult.BackupTaken
+                    ? $"Backed up existing deployment to '{backupRootPath}/{backupFolderName}' before syncing new source."
+                    : "No existing deployment found to back up (first deployment for this application-environment).")
+                : $"Backup failed: {backupResult.Error}",
+            cancellationToken);
+        if (!backupResult.Success)
+            throw new DeploymentExecutionException($"Backup failed: {backupResult.Error}");
+
+        await log.WriteAsync(DeploymentLogLevel.Info, $"Downloading source archive for '{refName}' from repository '{repository.Name}'.", cancellationToken);
         var archiveResult = await gitProviderClient.DownloadRepositoryArchiveAsync(repository, refName, cancellationToken);
         if (!archiveResult.Success || archiveResult.Data is null)
             throw new DeploymentExecutionException($"Failed to download source archive for '{refName}': {archiveResult.ErrorMessage}");
 
-        // PublishSubPath is already validated (DeploymentPathValidator.IsSafeRelativePath) as a
-        // relative path with no '.'/'..' segments — safe to concatenate onto the
-        // already-allow-listed DeploymentRootPath.
-        var destinationPath = $"{appEnv.DeploymentRootPath!.TrimEnd('/')}/{appEnv.PublishSubPath}";
         var syncResult = await remoteExecutionProvider.SyncSourceArchiveAsync(
             appEnv.TargetServer, destinationPath, archiveResult.Data, SourceSyncExcludePatterns, deployment.Application.SourcePath, cancellationToken);
 

@@ -8,6 +8,49 @@ procedure — in short: back up first, `git pull` / pull the new image,
 (new nullable columns/tables); none has ever dropped or destructively
 altered existing data.
 
+## v1.6.0 — Simplified deployment workflow: real backups, real branches, one repo per app
+
+Follow-up to live feedback: the real developer workflow at this deployment is
+one dedicated GitLab repository per application (a repo link handed off per
+app, e.g. `.../application_releases/loop.git`), with the selected branch's
+HEAD already holding the deployable build — not the monorepo-with-folders
+layout the discovery-scan feature (v1.5.1–v1.5.3) was built for. The manual
+process it replaces always took a dated backup before overwriting a
+deployment's files; the portal's `SyncSourceFromRepository` step never did.
+
+**New:**
+- **Real backups before every source sync.** A deployment with
+  `SyncSourceFromRepository` enabled now always copies the existing
+  `PublishSubPath` contents into a dated `BackupSubPath` subfolder
+  (`IRemoteExecutionProvider.BackupPathAsync`) *before* the new source is
+  extracted — matching the manual script this portal replaces. A backup
+  failure is fatal: a deployment never proceeds to overwrite files with no
+  rollback snapshot to fall back to. `BackupRetentionCount` (already a
+  configurable field, previously unused) is now honored — old backup
+  folders beyond the configured count are pruned after each backup.
+- **Real branch picker.** `GET /repositories/{id}/branches` (and
+  `GitLabProviderClient.GetBranchesAsync`) lists every branch GitLab
+  actually has; the per-environment configuration form's Branch field is now
+  a live-populated dropdown once an application has a linked repository,
+  falling back to a plain text field otherwise — a branch is chosen from
+  what's really there instead of typed in and hoped to exist.
+- **`down -v` now defaults to on** for a brand-new environment configuration
+  (still a normal, freely-editable checkbox, and never changes an existing
+  saved configuration) — matches this deployment's real process, which
+  always ran `docker compose down -v` before syncing new source.
+
+**Removed:** the "Discover from repository" monorepo folder-scan button and
+panel on the Applications page — it doesn't match the real one-repo-per-app
+workflow and was reported as unwanted friction. The underlying scan endpoint
+(`GET /repositories/{id}/discover-applications`) and its service/tests are
+left in place, unused by the UI, in case a future monorepo-style application
+needs it again — creating an application is now a single, always-visible
+form (Name/Slug/Repository/Description).
+
+449/449 backend tests pass (up from 441); 56/56 frontend tests pass (up from
+55, net of 2 removed discovery tests + 3 added: branch-picker loading,
+`down -v` default, and a simplified Create-application smoke test).
+
 ## v1.5.4 — Fix: real deployments failed downloading a monorepo's source archive
 
 **Fixes a live deployment failure** reported with a screenshot: a

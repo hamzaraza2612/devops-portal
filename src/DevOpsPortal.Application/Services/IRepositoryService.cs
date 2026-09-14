@@ -28,4 +28,9 @@ public interface IRepositoryService
     /// anything itself; the caller uses the result to pre-fill
     /// CreateApplicationRequest.SourcePath for a folder they choose.</summary>
     Task<DiscoverApplicationsResultDto> DiscoverApplicationsAsync(Guid id, string? branch, CancellationToken cancellationToken = default);
+
+    /// <summary>Every branch on this repository — the "developer just pastes a
+    /// repo link and picks a branch from what's really there" flow, so a branch
+    /// name is never typed in and hoped to exist.</summary>
+    Task<RepositoryBranchesResultDto> GetBranchesAsync(Guid id, CancellationToken cancellationToken = default);
 }

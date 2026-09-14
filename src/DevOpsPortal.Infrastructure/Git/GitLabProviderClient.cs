@@ -329,6 +329,53 @@ public class GitLabProviderClient(HttpClient httpClient, ISecretProvider secretP
         }
     }
 
+    /// <summary>See IGitProviderClient.GetBranchesAsync. One repository's worth of
+    /// branch names — paginated the same way ListTreeAsync is, since a repository
+    /// can have more branches than fit on GitLab's default page.</summary>
+    public async Task<GitProviderResult<IReadOnlyList<string>>> GetBranchesAsync(
+        Repository repository, CancellationToken cancellationToken = default)
+    {
+        if (!TryBuildProjectApiBase(repository, out var apiBase, out var buildError))
+            return GitProviderResult<IReadOnlyList<string>>.Fail(buildError!);
+
+        const int perPage = 100;
+        const int maxPages = 20; // 2000 branches is generous for any real repository
+        var names = new List<string>();
+
+        for (var page = 1; page <= maxPages; page++)
+        {
+            var url = $"{apiBase}/repository/branches?per_page={perPage}&page={page}";
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            await ApplyAuthAsync(repository, request, cancellationToken);
+
+            try
+            {
+                using var response = await httpClient.SendAsync(request, cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    logger.LogWarning(
+                        "GitLab branch listing for {RepositoryName} returned {StatusCode}", repository.Name, response.StatusCode);
+                    return GitProviderResult<IReadOnlyList<string>>.Fail(
+                        $"GitLab returned {(int)response.StatusCode} {response.ReasonPhrase} listing branches — " +
+                        "check the URL and, for private projects, that the access token has repository read access.");
+                }
+
+                var pageEntries = await response.Content.ReadFromJsonAsync<List<GitLabBranchDto>>(cancellationToken) ?? [];
+                names.AddRange(pageEntries.Select(b => b.Name).Where(n => !string.IsNullOrEmpty(n)));
+                if (pageEntries.Count < perPage)
+                    break;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                logger.LogWarning(ex, "GitLab branch listing failed for repository {RepositoryName}", repository.Name);
+                return GitProviderResult<IReadOnlyList<string>>.Fail("Could not reach the configured GitLab instance.");
+            }
+        }
+
+        IReadOnlyList<string> sorted = names.Distinct(StringComparer.Ordinal).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+        return GitProviderResult<IReadOnlyList<string>>.Ok(sorted);
+    }
+
     private static readonly HashSet<string> ComposeFileNames = new(StringComparer.OrdinalIgnoreCase) { "docker-compose.yml", "docker-compose.yaml" };
 
     /// <summary>See IGitProviderClient.ListRepositoryFoldersAsync. Deliberately
@@ -441,6 +488,12 @@ public class GitLabProviderClient(HttpClient httpClient, ISecretProvider secretP
 
         [JsonPropertyName("path")]
         public string Path { get; set; } = string.Empty;
+    }
+
+    private sealed class GitLabBranchDto
+    {
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = string.Empty;
     }
 
     private sealed class GitLabCommitDto

@@ -64,4 +64,13 @@ public class RepositoriesController(IRepositoryService repositoryService) : Cont
     [RequirePermission(PermissionCodes.RepositoriesManage)]
     public async Task<IActionResult> DiscoverApplications(Guid id, [FromQuery] string? branch, CancellationToken cancellationToken) =>
         Ok(await repositoryService.DiscoverApplicationsAsync(id, branch, cancellationToken));
+
+    /// <summary>Read-only — gated the same as GetAll/GetById (RepositoriesView),
+    /// not RepositoriesManage, since picking a branch to deploy is something any
+    /// user configuring an application-environment they can already manage needs
+    /// to do, independent of whether they can also edit Repository entities.</summary>
+    [HttpGet("{id:guid}/branches")]
+    [RequirePermission(PermissionCodes.RepositoriesView)]
+    public async Task<IActionResult> GetBranches(Guid id, CancellationToken cancellationToken) =>
+        Ok(await repositoryService.GetBranchesAsync(id, cancellationToken));
 }
