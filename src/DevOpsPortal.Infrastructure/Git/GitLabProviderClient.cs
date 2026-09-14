@@ -321,11 +321,20 @@ public class GitLabProviderClient(HttpClient httpClient, ISecretProvider secretP
         }
     }
 
-    /// <summary>See IGitProviderClient.ListRepositoryFoldersAsync. Uses GitLab's
-    /// `/repository/tree?recursive=true` endpoint (paginated, capped) rather than
-    /// downloading/extracting an archive just to see folder names — much
-    /// cheaper for a scan that may be run repeatedly while an admin browses a
-    /// large monorepo.</summary>
+    private static readonly HashSet<string> ComposeFileNames = new(StringComparer.OrdinalIgnoreCase) { "docker-compose.yml", "docker-compose.yaml" };
+
+    /// <summary>See IGitProviderClient.ListRepositoryFoldersAsync. Deliberately
+    /// two shallow, non-recursive scans rather than one `recursive=true` call:
+    /// (1) list only the repository's top-level entries, then (2) for each
+    /// top-level folder, list only *that folder's own direct children* to check
+    /// for a compose file. A single recursive call was tried first and found to
+    /// be actively wrong for a real monorepo layout — GitLab's recursive tree
+    /// walks depth-first, so a folder's own `docker-compose.yml` can sit behind
+    /// an arbitrarily large `Backups/` (or similar) subdirectory full of old
+    /// deployment snapshots, meaning a page-count cap on the recursive listing
+    /// can exhaust itself deep inside the first folder's Backups tree and never
+    /// even reach a single compose file. This N+1-call approach never descends
+    /// into any subdirectory, so it can never get lost in one.</summary>
     public async Task<GitProviderResult<IReadOnlyList<GitRepositoryFolder>>> ListRepositoryFoldersAsync(
         Repository repository, string refName, CancellationToken cancellationToken = default)
     {
@@ -335,13 +344,52 @@ public class GitLabProviderClient(HttpClient httpClient, ISecretProvider secretP
         if (string.IsNullOrWhiteSpace(refName))
             return GitProviderResult<IReadOnlyList<GitRepositoryFolder>>.Fail("A branch name or commit SHA is required to list repository folders.");
 
+        var topLevelResult = await ListTreeAsync(apiBase, repository, refName, path: null, cancellationToken);
+        if (!topLevelResult.Success)
+            return GitProviderResult<IReadOnlyList<GitRepositoryFolder>>.Fail(topLevelResult.ErrorMessage!);
+
+        var topLevelFolders = topLevelResult.Data!
+            .Where(e => e.Type == "tree" && !string.IsNullOrEmpty(e.Path))
+            .Select(e => e.Path)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+            // A hard cap on how many folders get their own direct-children lookup —
+            // generous for any real monorepo, but bounds worst-case request count.
+            .Take(500)
+            .ToList();
+
+        var folders = new List<GitRepositoryFolder>();
+        foreach (var folder in topLevelFolders)
+        {
+            var childrenResult = await ListTreeAsync(apiBase, repository, refName, folder, cancellationToken);
+            if (!childrenResult.Success)
+                return GitProviderResult<IReadOnlyList<GitRepositoryFolder>>.Fail(childrenResult.ErrorMessage!);
+
+            var hasComposeFile = childrenResult.Data!.Any(e => e.Type == "blob" && ComposeFileNames.Contains(e.Name));
+            folders.Add(new GitRepositoryFolder(folder, hasComposeFile));
+        }
+
+        return GitProviderResult<IReadOnlyList<GitRepositoryFolder>>.Ok(folders);
+    }
+
+    /// <summary>One non-recursive `/repository/tree` page (GitLab defaults to
+    /// 20 entries per page without `per_page`, so this always passes a generous
+    /// explicit value) — <paramref name="path"/> null lists the repository
+    /// root; set, it lists only that path's own direct children, never
+    /// anything nested deeper. Paginated in case a single directory has more
+    /// than one page of direct children (a top-level scan with hundreds of
+    /// application folders, for instance).</summary>
+    private async Task<GitProviderResult<List<GitLabTreeEntryDto>>> ListTreeAsync(
+        string apiBase, Repository repository, string refName, string? path, CancellationToken cancellationToken)
+    {
         const int perPage = 100;
-        const int maxPages = 20; // hard cap: 2000 entries — plenty for a monorepo scan, avoids unbounded pagination
+        const int maxPages = 10; // 1000 direct children of one path is generous; never applies to the whole-tree case since this is always non-recursive
         var entries = new List<GitLabTreeEntryDto>();
 
         for (var page = 1; page <= maxPages; page++)
         {
-            var url = $"{apiBase}/repository/tree?ref={Uri.EscapeDataString(refName)}&recursive=true&per_page={perPage}&page={page}";
+            var pathQuery = string.IsNullOrEmpty(path) ? string.Empty : $"&path={Uri.EscapeDataString(path)}";
+            var url = $"{apiBase}/repository/tree?ref={Uri.EscapeDataString(refName)}{pathQuery}&per_page={perPage}&page={page}";
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             await ApplyAuthAsync(repository, request, cancellationToken);
 
@@ -351,9 +399,10 @@ public class GitLabProviderClient(HttpClient httpClient, ISecretProvider secretP
                 if (!response.IsSuccessStatusCode)
                 {
                     logger.LogWarning(
-                        "GitLab repository tree listing for {RepositoryName}@{Ref} returned {StatusCode}", repository.Name, refName, response.StatusCode);
-                    return GitProviderResult<IReadOnlyList<GitRepositoryFolder>>.Fail(
-                        $"GitLab returned {(int)response.StatusCode} {response.ReasonPhrase} listing the repository tree for '{refName}'.");
+                        "GitLab repository tree listing for {RepositoryName}@{Ref} ({Path}) returned {StatusCode}",
+                        repository.Name, refName, path ?? "/", response.StatusCode);
+                    return GitProviderResult<List<GitLabTreeEntryDto>>.Fail(
+                        $"GitLab returned {(int)response.StatusCode} {response.ReasonPhrase} listing '{path ?? refName}'.");
                 }
 
                 var pageEntries = await response.Content.ReadFromJsonAsync<List<GitLabTreeEntryDto>>(cancellationToken) ?? [];
@@ -364,29 +413,11 @@ public class GitLabProviderClient(HttpClient httpClient, ISecretProvider secretP
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
             {
                 logger.LogWarning(ex, "GitLab repository tree listing failed for repository {RepositoryName}", repository.Name);
-                return GitProviderResult<IReadOnlyList<GitRepositoryFolder>>.Fail("Could not reach the configured GitLab instance.");
+                return GitProviderResult<List<GitLabTreeEntryDto>>.Fail("Could not reach the configured GitLab instance.");
             }
         }
 
-        var topLevelFolders = entries
-            .Where(e => e.Type == "tree" && !string.IsNullOrEmpty(e.Path) && !e.Path.Contains('/'))
-            .Select(e => e.Path)
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var composeFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "docker-compose.yml", "docker-compose.yaml" };
-        var folders = topLevelFolders
-            .Select(folder => new GitRepositoryFolder(
-                folder,
-                entries.Any(e =>
-                    e.Type == "blob" &&
-                    e.Path.StartsWith(folder + "/", StringComparison.Ordinal) &&
-                    !e.Path[(folder.Length + 1)..].Contains('/') &&
-                    composeFileNames.Contains(e.Name))))
-            .ToList();
-
-        return GitProviderResult<IReadOnlyList<GitRepositoryFolder>>.Ok(folders);
+        return GitProviderResult<List<GitLabTreeEntryDto>>.Ok(entries);
     }
 
     private sealed class GitLabTreeEntryDto

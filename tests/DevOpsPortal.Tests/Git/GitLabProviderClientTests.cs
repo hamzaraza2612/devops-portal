@@ -1,3 +1,6 @@
+using System.Net;
+using System.Text;
+using System.Text.Json;
 using DevOpsPortal.Domain.Entities;
 using DevOpsPortal.Domain.Enums;
 using DevOpsPortal.Infrastructure.Git;
@@ -11,6 +14,9 @@ public class GitLabProviderClientTests
 {
     private static GitLabProviderClient CreateSut() =>
         new(new HttpClient(), new FakeSecretProvider(), NullLogger<GitLabProviderClient>.Instance);
+
+    private static GitLabProviderClient CreateSut(HttpMessageHandler handler) =>
+        new(new HttpClient(handler), new FakeSecretProvider(), NullLogger<GitLabProviderClient>.Instance);
 
     [Fact]
     public async Task GetLatestCommitAsync_WithInvalidRepositoryUrl_ReturnsFail()
@@ -151,5 +157,87 @@ public class GitLabProviderClientTests
 
         Assert.False(result.Success);
         Assert.NotNull(result.ErrorMessage);
+    }
+
+    /// <summary>Regression test for a real production bug: a first version of
+    /// ListRepositoryFoldersAsync used one `recursive=true` tree call. GitLab
+    /// walks a recursive tree depth-first, so a folder's own docker-compose.yml
+    /// (a direct sibling of e.g. a `Backups/` subdirectory) can sit behind an
+    /// arbitrarily large recursively-listed subtree — on a real monorepo where
+    /// every application folder has a `Backups/` directory full of historical
+    /// deployment snapshots, this caused every single folder to report "no
+    /// compose file found" because the scan's page cap was exhausted deep
+    /// inside the first folder's Backups tree before ever reaching a compose
+    /// file. This test proves the fix (non-recursive top-level listing + one
+    /// non-recursive direct-children listing per folder) never even requests
+    /// Backups'/publish's contents, so it cannot get lost in them however large
+    /// they are.</summary>
+    [Fact]
+    public async Task ListRepositoryFoldersAsync_FindsComposeFileEvenWhenItsSiblingFolderIsHuge_NeverRecursingIntoSiblings()
+    {
+        var requestedUrls = new List<string>();
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            var url = request.RequestUri!.ToString();
+            requestedUrls.Add(url);
+
+            // Never allowed to ask for a recursive listing again — that's the exact bug being guarded against.
+            Assert.DoesNotContain("recursive=true", url);
+
+            if (!url.Contains("path="))
+            {
+                // Top-level listing: two application folders, no files (matches a real repo root).
+                return JsonResponse([
+                    new { id = "1", name = "dmsapi", type = "tree", path = "dmsapi" },
+                    new { id = "2", name = "emptyapp", type = "tree", path = "emptyapp" },
+                ]);
+            }
+
+            if (url.Contains("path=dmsapi"))
+            {
+                // dmsapi's own direct children only — Backups/publish are NOT expanded here,
+                // however many thousands of files they might recursively contain on a real repo.
+                return JsonResponse([
+                    new { id = "3", name = "Backups", type = "tree", path = "dmsapi/Backups" },
+                    new { id = "4", name = "docker-compose.yml", type = "blob", path = "dmsapi/docker-compose.yml" },
+                    new { id = "5", name = "publish", type = "tree", path = "dmsapi/publish" },
+                ]);
+            }
+
+            if (url.Contains("path=emptyapp"))
+            {
+                return JsonResponse([
+                    new { id = "6", name = "readme.md", type = "blob", path = "emptyapp/readme.md" },
+                ]);
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {url}");
+        });
+        var sut = CreateSut(handler);
+        var repository = new Repository { Name = "monorepo", Url = "https://gitlab.example.com/group/monorepo", Provider = RepositoryProvider.GitLab };
+
+        var result = await sut.ListRepositoryFoldersAsync(repository, "DEV");
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.Count);
+        var dmsapi = result.Data!.Single(f => f.Path == "dmsapi");
+        Assert.True(dmsapi.HasComposeFile);
+        var emptyapp = result.Data!.Single(f => f.Path == "emptyapp");
+        Assert.False(emptyapp.HasComposeFile);
+
+        // Exactly 3 requests: the top-level scan plus one direct-children scan per folder —
+        // never one for each of Backups/publish, and never a recursive whole-tree call.
+        Assert.Equal(3, requestedUrls.Count);
+    }
+
+    private static HttpResponseMessage JsonResponse(IReadOnlyList<object> entries) => new(HttpStatusCode.OK)
+    {
+        Content = new StringContent(JsonSerializer.Serialize(entries), Encoding.UTF8, "application/json"),
+    };
+
+    private sealed class FakeHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(respond(request));
     }
 }
